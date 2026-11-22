@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, 
 use ratatui::Frame;
 
 use crate::theme::*;
-use crate::v2app::{Focus, ProfileMenu, V2App, V2Effect};
+use crate::v2app::{DragTarget, Focus, ProfileMenu, ProfileRole, V2App, V2Effect};
 use crate::viewport::{item_at, window};
 
 /// Shared quiet panel chrome; focus is identified by the border and selected row.
@@ -46,7 +46,11 @@ pub struct V2Geometry {
 
 pub fn geometry(app: &V2App, area: Rect) -> V2Geometry {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).split(area);
-    let sidebar_w = if area.width >= 96 && rows[1].height >= 8 { 26 } else { 0 };
+    let sidebar_w = if !app.zoomed && !app.sidebar_hidden && area.width >= 96 && rows[1].height >= 8 {
+        app.sidebar_width.clamp(18, (area.width / 3).clamp(18, 44))
+    } else {
+        0
+    };
     let mut sidebar = Rect::new(rows[1].x, rows[1].y, sidebar_w, rows[1].height);
     let content = Rect::new(rows[1].x + sidebar_w, rows[1].y, rows[1].width.saturating_sub(sidebar_w), rows[1].height);
     let nav_h = u16::from(content.height >= 8);
@@ -80,8 +84,11 @@ pub fn geometry(app: &V2App, area: Rect) -> V2Geometry {
     .split(content);
     let mut chat = chunks[0];
     let mut inspector = Rect::new(chat.right(), chat.y, 0, chat.height);
-    if app.team.view == crate::team::View::Conversation && area.width >= 132 && chat.height >= 8 {
-        let width = (chat.width * 2 / 5).max(36);
+    if !app.zoomed && app.team.view == crate::team::View::Conversation && area.width >= 132 && chat.height >= 8 {
+        let max_w = chat.width.saturating_sub(24);
+        let min_w = 36u16.min(max_w);
+        let width = ((chat.width as u32 * app.inspector_pct as u32) / 100) as u16;
+        let width = width.clamp(min_w, max_w);
         chat.width -= width;
         inspector = Rect::new(chat.right(), chat.y, width, chat.height);
     }
@@ -130,6 +137,8 @@ struct ModelDialog {
     list: Rect,
     save: Rect,
     back: Rect,
+    leader_tab: Rect,
+    workers_tab: Rect,
 }
 
 impl ModelDialog {
@@ -143,17 +152,83 @@ impl ModelDialog {
         let save = Rect::new(buttons.x, buttons.y, buttons.width.min(6), buttons.height);
         let back =
             Rect::new(buttons.x.saturating_add(8), buttons.y, buttons.width.saturating_sub(8).min(6), buttons.height);
-        Self { popup, list, save, back }
+        let title_len = match menu.role {
+            ProfileRole::Leader => 21u16,
+            ProfileRole::Workers => 28u16,
+        };
+        let workers_w = 9u16;
+        let leader_w = 8u16;
+        let workers_x = popup.right().saturating_sub(2 + workers_w);
+        let leader_x = workers_x.saturating_sub(1 + leader_w);
+        let (leader_tab, workers_tab) = if popup.height >= 3 && leader_x >= popup.x.saturating_add(2 + title_len) {
+            (Rect::new(leader_x, popup.y, leader_w, 1), Rect::new(workers_x, popup.y, workers_w, 1))
+        } else {
+            (Rect::default(), Rect::default())
+        };
+        Self { popup, list, save, back, leader_tab, workers_tab }
     }
+}
+
+fn chat_latest_button(chat: Rect, scroll: usize) -> Option<Rect> {
+    if scroll == 0 || chat.height == 0 {
+        return None;
+    }
+    let label = format!("↓ {scroll} below · latest");
+    let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
+    if chat.width < 25 + w {
+        return None;
+    }
+    Some(Rect::new(chat.right().saturating_sub(w + 1), chat.y, w, 1))
+}
+
+fn help_popup(area: Rect) -> Rect {
+    dialog_area(area, 76, 30)
+}
+
+fn report_popup(area: Rect) -> Rect {
+    dialog_area(area, 92, 32)
+}
+
+fn chat_body_rect(app: &V2App, area: Rect) -> Rect {
+    let header_rows = u16::from(area.height > 0);
+    let search_rows = u16::from(app.chat_search.is_some() && area.height >= 3);
+    let top = header_rows + search_rows;
+    let body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
+    Rect::new(body.x + u16::from(body.width > 2), body.y, body.width.saturating_sub(2), body.height)
 }
 
 /// Pointer routing uses the rendered rectangles; selecting an approval never decides it.
 pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseEvent) -> Option<V2Effect> {
     use crossterm::event::{MouseButton, MouseEventKind};
+    let point = ratatui::layout::Position::new(mouse.column, mouse.row);
+    let clicked = mouse.kind == MouseEventKind::Down(MouseButton::Left);
+    if let Some(confirm) = app.confirm.clone() {
+        match confirm.mouse(area, mouse) {
+            crate::overlays::ModalKey::Close => app.confirm = None,
+            crate::overlays::ModalKey::Submit(action) => {
+                app.confirm = None;
+                return app.apply_confirm_action(action);
+            }
+            _ => {}
+        }
+        return None;
+    }
+    if let Some(detail) = app.approval_detail.as_mut() {
+        match detail.mouse(area, mouse) {
+            crate::overlays::ModalKey::Close => app.approval_detail = None,
+            crate::overlays::ModalKey::Submit(decision) => {
+                app.approval_detail = None;
+                return app.apply_approval_decision(decision);
+            }
+            _ => {}
+        }
+        return None;
+    }
     if let Some(report) = app.report.as_mut() {
         match mouse.kind {
             MouseEventKind::ScrollUp => report.scroll = report.scroll.saturating_sub(3),
             MouseEventKind::ScrollDown => report.scroll = report.scroll.saturating_add(3),
+            MouseEventKind::Down(MouseButton::Left) if !report_popup(area).contains(point) => app.report = None,
             _ => {}
         }
         return None;
@@ -162,6 +237,7 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
         match mouse.kind {
             MouseEventKind::ScrollUp => app.help_scroll = app.help_scroll.saturating_sub(3),
             MouseEventKind::ScrollDown => app.help_scroll = app.help_scroll.saturating_add(3),
+            MouseEventKind::Down(MouseButton::Left) if !help_popup(area).contains(point) => app.help_open = false,
             _ => {}
         }
         return None;
@@ -169,15 +245,22 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
     if app.queue.is_some() {
         return None;
     }
-    let point = ratatui::layout::Position::new(mouse.column, mouse.row);
-    let clicked = mouse.kind == MouseEventKind::Down(MouseButton::Left);
     if let Some(menu) = &mut app.profile {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let dialog = ModelDialog::new(area, menu);
+        let switch_role = clicked
+            && ((!dialog.leader_tab.is_empty()
+                && dialog.leader_tab.contains(point)
+                && menu.role == ProfileRole::Workers)
+                || (!dialog.workers_tab.is_empty()
+                    && dialog.workers_tab.contains(point)
+                    && menu.role == ProfileRole::Leader));
         let key = if clicked && dialog.save.contains(point) {
             KeyCode::Enter
         } else if clicked && dialog.back.contains(point) {
             KeyCode::Esc
+        } else if switch_role {
+            KeyCode::Tab
         } else if dialog.list.contains(point) {
             match mouse.kind {
                 MouseEventKind::ScrollDown => KeyCode::Down,
@@ -200,23 +283,144 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
         };
         return app.handle_key(KeyEvent::new(key, KeyModifiers::NONE));
     }
+    if let Some(palette) = app.palette.as_mut() {
+        match palette.mouse(area, mouse) {
+            crate::overlays::ModalKey::Close => app.palette = None,
+            crate::overlays::ModalKey::Submit(action) => {
+                app.palette = None;
+                return app.apply_palette_action(action);
+            }
+            _ => {}
+        }
+        return None;
+    }
+    if let Some(rewind) = app.rewind_modal.as_mut() {
+        match rewind.mouse(area, mouse) {
+            crate::overlays::ModalKey::Close => app.rewind_modal = None,
+            crate::overlays::ModalKey::Submit(action) => return app.apply_rewind_action(action),
+            _ => {}
+        }
+        return None;
+    }
+    if let Some(mcp) = app.mcp_modal.as_mut() {
+        match mcp.mouse(area, mouse) {
+            crate::overlays::ModalKey::Close => app.mcp_modal = None,
+            crate::overlays::ModalKey::Submit(action) => return app.apply_mcp_action(action),
+            _ => {}
+        }
+        return None;
+    }
     let geo = geometry(app, area);
+    match mouse.kind {
+        MouseEventKind::Drag(MouseButton::Left) => {
+            match app.drag {
+                Some(DragTarget::Sidebar) => {
+                    app.sidebar_width = mouse.column.saturating_sub(area.x).saturating_add(1).clamp(18, 44);
+                }
+                Some(DragTarget::Inspector) => {
+                    let total = geo.chat.width + geo.inspector.width;
+                    if total > 0 {
+                        let desired = geo.inspector.right().saturating_sub(mouse.column);
+                        app.inspector_pct = ((desired as u32 * 100) / total as u32).clamp(25, 65) as u16;
+                    }
+                }
+                None => {}
+            }
+            return None;
+        }
+        MouseEventKind::Up(MouseButton::Left) if app.drag.take().is_some() => return None,
+        _ => {}
+    }
     if clicked && model_button(geo.composer).contains(point) {
         return app.open_profile();
     }
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            if let Some(index) = approval_at(&geo, app, mouse.row, mouse.column) {
+            if !geo.sidebar.is_empty()
+                && mouse.column == geo.sidebar.right().saturating_sub(1)
+                && mouse.row >= geo.sidebar.y
+                && mouse.row < geo.sidebar.bottom()
+            {
+                app.drag = Some(DragTarget::Sidebar);
+            } else if !geo.inspector.is_empty()
+                && mouse.column == geo.inspector.x
+                && mouse.row >= geo.inspector.y
+                && mouse.row < geo.inspector.bottom()
+            {
+                app.drag = Some(DragTarget::Inspector);
+            } else if geo.status.contains(point) && !app.approvals.is_empty() {
                 app.focus = Focus::Approvals;
-                app.approval_sel = index;
+            } else if let Some(index) = approval_at(&geo, app, mouse.row, mouse.column) {
+                if app.focus == Focus::Approvals && app.approval_sel == index {
+                    if let Some(approval) = app.approvals.get(index) {
+                        app.approval_detail =
+                            Some(crate::overlays::ApprovalDetail { approval_id: approval.id.clone(), scroll: 0 });
+                    }
+                } else {
+                    app.focus = Focus::Approvals;
+                    app.approval_sel = index;
+                }
+            } else if geo.completion.contains(point) {
+                let row = (mouse.row - geo.completion.y) as usize;
+                if app.attachments.visible(&app.composer) {
+                    if let Some(index) = item_at(
+                        app.attachments.candidates.len(),
+                        app.attachments.selected,
+                        geo.completion.height as usize,
+                        row,
+                    ) {
+                        app.attachments.apply_at(&mut app.composer, index);
+                        if let Some(note) = app.attachments.take_notice() {
+                            app.command_note(note);
+                        }
+                    }
+                } else {
+                    let candidates = app.completion.candidates(&app.composer);
+                    let selected = app.completion.selected(&app.composer).min(candidates.len().saturating_sub(1));
+                    if let Some(index) = item_at(candidates.len(), selected, geo.completion.height as usize, row) {
+                        app.completion.apply_at(&mut app.composer, index);
+                    }
+                }
+                app.focus = Focus::Composer;
             } else if geo.composer.contains(point) {
                 app.focus = Focus::Composer;
             } else if geo.nav.contains(point) {
                 if let Some(view) = crate::team::nav_at(geo.nav, mouse.column) {
                     app.team.show(view);
                     app.focus = if view == crate::team::View::Conversation { Focus::Composer } else { Focus::Panel };
+                    if view == crate::team::View::Tree {
+                        app.team.tree_dirty = true;
+                        if !app.disconnected && app.team.tree.is_none() {
+                            return Some(V2Effect::SearchTree);
+                        }
+                    }
+                } else if let Some((_, action, _, _)) = crate::team::nav_actions(app, geo.nav, area.width)
+                    .into_iter()
+                    .find(|(rect, _, _, _)| rect.contains(point))
+                {
+                    match action {
+                        crate::team::NavAction::Alert => app.jump_next_attention(),
+                        crate::team::NavAction::Zoom => app.toggle_zoom(),
+                        crate::team::NavAction::Sidebar => app.toggle_sidebar(),
+                    }
                 }
             } else if geo.sidebar.contains(point) {
+                if let Some(sess_rect) = crate::team::live_sessions_window(app, geo.sidebar) {
+                    if sess_rect.contains(point) && mouse.row > sess_rect.y {
+                        let idx = (mouse.row - sess_rect.y - 1) as usize;
+                        if let Some(s) = app.live_sessions.get(idx) {
+                            return Some(V2Effect::Sessions(crate::sessions::SessionAction::Open(
+                                crate::sessions::SessionRow {
+                                    id: s.id.clone(),
+                                    name: s.name.clone(),
+                                    path: s.root.clone(),
+                                    archived: false,
+                                    live: s.live,
+                                },
+                            )));
+                        }
+                    }
+                }
                 let (list, start, count) = crate::team::member_window(app, geo.sidebar);
                 if list.contains(point) {
                     let index = (mouse.row - list.y) as usize / 2;
@@ -228,11 +432,125 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
                         }
                     }
                 }
-                app.focus = if area.width < 96 { Focus::Panel } else { Focus::Team };
+                app.focus =
+                    if area.width < 96 || app.sidebar_hidden || app.zoomed { Focus::Panel } else { Focus::Team };
             } else if geo.inspector.contains(point)
                 || (geo.chat.contains(point) && app.team.view != crate::team::View::Conversation)
             {
+                let right_inspector = geo.inspector.contains(point);
+                let panel_area = if right_inspector { geo.inspector } else { geo.chat };
+                let is_inspect = right_inspector || app.team.view == crate::team::View::Inspect;
+                if is_inspect {
+                    if let Some((_, verb, _)) = crate::team::inspector_actions(app, panel_area, right_inspector)
+                        .into_iter()
+                        .find(|(rect, _, _)| rect.contains(point))
+                    {
+                        let target = app.team.inspected_id(right_inspector).to_string();
+                        match verb {
+                            crate::team::InspectorVerb::Message => {
+                                app.direct_target = (target != app.team.leader_id).then_some(target);
+                                app.focus = Focus::Composer;
+                                return None;
+                            }
+                            crate::team::InspectorVerb::Pause => {
+                                app.confirm = Some(crate::overlays::ConfirmAction::PauseMember(target));
+                                return None;
+                            }
+                            crate::team::InspectorVerb::Resume => {
+                                app.confirm = Some(crate::overlays::ConfirmAction::ResumeMember(target));
+                                return None;
+                            }
+                            crate::team::InspectorVerb::Terminate => {
+                                app.confirm = Some(crate::overlays::ConfirmAction::TerminateMember(target));
+                                return None;
+                            }
+                            crate::team::InspectorVerb::Pin => {
+                                if app.team.pinned.as_deref() == Some(target.as_str()) {
+                                    app.team.pinned = None;
+                                } else {
+                                    app.team.pinned = Some(target.clone());
+                                }
+                                app.team.ensure_inspected_history(&target);
+                            }
+                        }
+                    } else if app.team.inspected_id(right_inspector) != app.team.leader_id {
+                        if let Some((details_tab, history_tab)) = crate::team::inspector_tabs(panel_area) {
+                            if details_tab.contains(point) {
+                                app.team.history_open = false;
+                                app.team.scroll = 0;
+                            } else if history_tab.contains(point) {
+                                let target = app.team.inspected_id(right_inspector).to_string();
+                                app.team.ensure_inspected_history(&target);
+                                app.team.history_open = true;
+                            }
+                        }
+                    }
+                } else if app.team.view == crate::team::View::Activity {
+                    if let Some(filter_rect) = crate::team::activity_filter_rect(panel_area) {
+                        if filter_rect.contains(point) {
+                            app.team.activity_filter_selected = !app.team.activity_filter_selected;
+                            app.team.scroll = 0;
+                        }
+                    }
+                } else if app.team.view == crate::team::View::Wall {
+                    if let Some((_, id)) =
+                        crate::team::wall_cards(app, panel_area).into_iter().find(|(rect, _)| rect.contains(point))
+                    {
+                        app.team.select(&id);
+                    }
+                } else if app.team.view == crate::team::View::Tree {
+                    if let Some(list_area) = crate::team::tree_list_rect(panel_area) {
+                        if list_area.contains(point) {
+                            let nodes = app.team.visible_tree_nodes();
+                            if let Some(index) = item_at(
+                                nodes.len(),
+                                app.team.tree_selected,
+                                list_area.height as usize,
+                                (point.y - list_area.y) as usize,
+                            ) {
+                                let was_selected = app.team.tree_selected == index;
+                                let fold_id = if was_selected && nodes[index].2 {
+                                    nodes[index].1["id"].as_str().map(str::to_string)
+                                } else {
+                                    None
+                                };
+                                app.team.tree_selected = index;
+                                if let Some(id) = fold_id {
+                                    if !app.team.tree_collapsed.remove(&id) {
+                                        app.team.tree_collapsed.insert(id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 app.focus = Focus::Panel;
+            } else if geo.chat.contains(point) {
+                if chat_latest_button(geo.chat, app.chat_scroll).is_some_and(|button| button.contains(point)) {
+                    app.chat_scroll = 0;
+                } else {
+                    let body = chat_body_rect(app, geo.chat);
+                    if body.contains(point) {
+                        let start =
+                            app.last_chat_lines.saturating_sub(app.last_chat_height).saturating_sub(app.chat_scroll);
+                        let doc_line = start + (mouse.row - body.y) as usize;
+                        if let Some((_, code)) =
+                            app.transcript.code_blocks.iter().find(|(range, _)| range.contains(&doc_line))
+                        {
+                            return Some(V2Effect::CopyClipboard(code.clone()));
+                        }
+                        if let Some((entry_idx, _)) =
+                            app.transcript.entry_ranges.iter().find(|(_, range)| range.contains(&doc_line))
+                        {
+                            if app.entries.get(*entry_idx).is_some_and(|e| e.kind == crate::v2app::ChatKind::Tool) {
+                                let idx = *entry_idx;
+                                if !app.expanded_entries.remove(&idx) {
+                                    app.expanded_entries.insert(idx);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -266,6 +584,7 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
     app.pictures.clear();
     app.team.member_visible = false;
     app.team.tasks_visible = false;
+    app.team.tree_visible = false;
     app.graphics.begin_frame();
     app.graphics.deferred = true;
     render_content(frame, app);
@@ -294,7 +613,7 @@ fn render_content(frame: &mut Frame, app: &mut V2App) {
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
     render_status(frame, app, geo.status);
     crate::team::render_sidebar(frame, app, geo.sidebar);
-    crate::team::render_nav(frame, app, geo.nav);
+    crate::team::render_nav(frame, app, geo.nav, area.width);
     if !geo.chat.is_empty() {
         if app.team.view == crate::team::View::Conversation {
             render_chat(frame, app, geo.chat);
@@ -309,13 +628,37 @@ fn render_content(frame: &mut Frame, app: &mut V2App) {
     render_composer(frame, app, geo.composer);
     render_footer(frame, app, geo.footer);
     render_profile(frame, app, area);
-    if app.profile.is_some() {
-        app.pictures.clear();
-    }
     if app.help_open {
         render_help(frame, app, area);
     }
     render_report(frame, app, area);
+    if let Some(mcp) = &app.mcp_modal {
+        mcp.render(frame, area);
+    }
+    if let Some(rewind) = &app.rewind_modal {
+        rewind.render(frame, area);
+    }
+    if let Some(palette) = &app.palette {
+        palette.render(frame, area);
+    }
+    if let Some(detail) = &app.approval_detail {
+        let approval = app.approvals.iter().find(|a| a.id == detail.approval_id);
+        detail.render(frame, approval, area);
+    }
+    if let Some(confirm) = &app.confirm {
+        confirm.render(frame, area);
+    }
+    if app.profile.is_some()
+        || app.help_open
+        || app.report.is_some()
+        || app.mcp_modal.is_some()
+        || app.rewind_modal.is_some()
+        || app.palette.is_some()
+        || app.approval_detail.is_some()
+        || app.confirm.is_some()
+    {
+        app.pictures.clear();
+    }
 }
 
 /// Both roles use the same local catalogue; only confirmation submits a selection.
@@ -331,9 +674,21 @@ fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
     let block = panel(title).border_style(Style::default().fg(ACCENT));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
+    if !dialog.leader_tab.is_empty() && !dialog.workers_tab.is_empty() {
+        let (l_text, l_style, w_text, w_style) = match menu.role {
+            ProfileRole::Leader => ("[Leader]", selection(), " Workers ", secondary()),
+            ProfileRole::Workers => (" Leader ", secondary(), "[Workers]", selection()),
+        };
+        frame.render_widget(Paragraph::new(l_text).style(l_style), dialog.leader_tab);
+        frame.render_widget(Paragraph::new(w_text).style(w_style), dialog.workers_tab);
+    }
     let effort = menu.efforts.get(menu.effort_ix).cloned().unwrap_or_else(|| "?".into());
     let (start, count) = window(menu.models.len(), menu.model_ix, dialog.list.height as usize);
-    let search = if menu.search.is_empty() { "Type a name or provider to search" } else { &menu.search };
+    let search = if menu.search.is_empty() {
+        "Type a name or provider to search".to_string()
+    } else {
+        format!("{} ({}/{})", menu.search, menu.models.len(), menu.all_models.len())
+    };
     let mut lines = vec![Line::styled(fit(&format!("Search  {search}"), inner.width as usize), secondary())];
     if menu.models.is_empty() {
         let hint = if menu.all_models.is_empty() {
@@ -370,6 +725,20 @@ fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
     lines.push(Line::styled(fit(&option, inner.width as usize), secondary()));
     lines.push(Line::styled(format!("Tab for {other_role}"), secondary()));
     frame.render_widget(Paragraph::new(lines), inner);
+    if menu.models.len() > dialog.list.height as usize && dialog.list.height >= 2 && dialog.list.width > 2 {
+        let max_scroll = menu.models.len().saturating_sub(dialog.list.height as usize);
+        let mut state = ScrollbarState::new(max_scroll + 1).position(start.min(max_scroll));
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(ACCENT))
+                .thumb_symbol("▏")
+                .track_symbol(None),
+            dialog.list,
+            &mut state,
+        );
+    }
     frame.render_widget(Paragraph::new("[Save]").style(selection()), dialog.save);
     frame.render_widget(Paragraph::new("[Back]").style(secondary()), dialog.back);
 }
@@ -387,13 +756,35 @@ fn compact_tokens(value: i64) -> String {
     format!("{text}{suffix}")
 }
 
+fn budget_bar(used: i64, ceiling: i64) -> String {
+    let ceiling = ceiling.max(1);
+    let pct = ((used.max(0) as f64 / ceiling as f64) * 100.0).round().clamp(0.0, 999.0) as u64;
+    let filled = (((used.max(0) as f64 / ceiling as f64) * 4.0).round() as usize).clamp(0, 4);
+    format!("{}{} {}%", "▰".repeat(filled), "▱".repeat(4 - filled), pct)
+}
+
 /// Session identity and recorded work usage remain visible while browsing members.
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
-    let status = app.activity_line();
+    let base_status = app.runtime_status_line();
+    let status = if let Some(leader) = app.active_instance() {
+        if leader.lifecycle == "ACTIVE"
+            && matches!(leader.phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING")
+        {
+            if let Some(secs) = app.team.phase_elapsed(&leader.id).filter(|&s| s >= 1) {
+                format!("{base_status} {secs}s")
+            } else {
+                base_status
+            }
+        } else {
+            base_status
+        }
+    } else {
+        base_status
+    };
     let status_style = if app.disconnected {
         Style::default().fg(ERROR)
     } else if !app.approvals.is_empty() {
-        Style::default().fg(WARNING)
+        Style::default().fg(WARNING).add_modifier(Modifier::BOLD)
     } else if status.starts_with("Ready") {
         Style::default().fg(SUCCESS)
     } else {
@@ -402,16 +793,34 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     let width = area.width as usize;
     let usage = app.work.as_ref().map(|work| {
         let limit = work.limit_total.map(|n| format!("/{}", compact_tokens(n))).unwrap_or_default();
-        format!("{}{limit} tokens{}", compact_tokens(work.known_total), if work.unknown { " + ?" } else { "" })
+        let mut text =
+            format!("{}{limit} tokens{}", compact_tokens(work.known_total), if work.unknown { " + ?" } else { "" });
+        if let Some(usd) = work.cost_usd {
+            let approx = if work.cost_complete { "" } else { "~" };
+            let cost_str =
+                if usd > 0.0 && usd < 0.01 { format!("${usd:.4}{approx}") } else { format!("${usd:.2}{approx}") };
+            text.push_str(&format!(" · {cost_str}"));
+        }
+        if width >= 88 {
+            if let Some(ceiling) = work.limit_total.or_else(|| app.active_context_window()).filter(|&n| n > 0) {
+                text.push_str(&format!(" · {}", budget_bar(work.known_total, ceiling)));
+            }
+        }
+        text
     });
-    let right = fit(usage.as_deref().unwrap_or(""), width.saturating_div(3));
-    let right_width = if right.is_empty() { 0 } else { unicode_width::UnicodeWidthStr::width(right.as_str()) + 2 };
+    let right_cap = if width >= 88 { width / 2 } else { width / 3 };
+    let right = fit(usage.as_deref().unwrap_or(""), right_cap);
+    let right_cols = unicode_width::UnicodeWidthStr::width(right.as_str());
+    let right_width = if right.is_empty() { 0 } else { right_cols + 2 };
     let left_width = width.saturating_sub(right_width);
     let mut left = Line::from(Span::styled(" ", Style::default()));
     left.spans.push(Span::styled(
         if left_width >= 20 { "◆ TeamAgents" } else { "TA" },
         Style::default().fg(CODEX).add_modifier(Modifier::BOLD),
     ));
+    if app.zoomed && left_width >= 28 {
+        left.spans.push(Span::styled(" [ZOOM]", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)));
+    }
     if left_width >= 12 {
         left.spans.push(Span::styled(" · ", secondary()));
         left.spans.push(Span::styled(fit(&status, 28), status_style));
@@ -431,7 +840,8 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
         Rect::new(area.x, area.y, left_width as u16, 1),
     );
     if !right.is_empty() && area.width >= 2 {
-        let right_area = Rect::new(area.right().saturating_sub(right.len() as u16 + 1), area.y, right.len() as u16, 1);
+        let cols = right_cols as u16;
+        let right_area = Rect::new(area.right().saturating_sub(cols + 1), area.y, cols, 1);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(right, secondary())))
                 .alignment(Alignment::Right)
@@ -513,19 +923,51 @@ fn render_activity(frame: &mut Frame, app: &V2App, area: Rect) {
 }
 
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
+    let header_style = if app.focus == Focus::Composer {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        secondary()
+    };
     frame.render_widget(
-        Paragraph::new(" Leader · conversation").style(Style::default().fg(ACCENT)),
+        Paragraph::new(" Leader · conversation").style(header_style),
         Rect::new(area.x, area.y, area.width, area.height.min(1)),
     );
-    let area = Rect::new(area.x, area.y + u16::from(area.height > 0), area.width, area.height.saturating_sub(1));
-    let area = Rect::new(area.x + u16::from(area.width > 2), area.y, area.width.saturating_sub(2), area.height);
-    let width = area.width as usize;
+    if let Some(button) = chat_latest_button(area, app.chat_scroll) {
+        frame.render_widget(
+            Paragraph::new(format!("↓ {} below · latest", app.chat_scroll))
+                .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            button,
+        );
+    }
+    if let Some(search) = &app.chat_search {
+        if area.height >= 3 && area.width > 2 {
+            let count = if search.matches.is_empty() {
+                if search.query.trim().is_empty() {
+                    String::new()
+                } else {
+                    "0 matches".into()
+                }
+            } else {
+                format!("{}/{}", search.current + 1, search.matches.len())
+            };
+            let state = if search.editing { "[editing]" } else { "n/N jump" };
+            let bar = format!(" Find: {}  {count}  ({state} · Esc clear)", search.query);
+            frame.render_widget(
+                Paragraph::new(fit(&bar, area.width as usize))
+                    .style(Style::default().bg(PANEL_BG).fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Rect::new(area.x, area.y + 1, area.width, 1),
+            );
+        }
+    }
+    let body = chat_body_rect(app, area);
+    let width = body.width as usize;
     let preview = app.active_preview().map(str::to_owned);
     let workspace = app.workspace().map(str::to_owned);
-    let base = app.transcript.document(
+    let base = app.transcript.document_with_expanded(
         &app.entries,
         width,
         Some(if app.expanded_tools { 40 } else { 4 }),
+        &app.expanded_entries,
         Some(&mut app.graphics),
         &app.session_root,
     );
@@ -587,7 +1029,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
         ));
     }
     let total = base.lines.len() + document.lines.len();
-    let height = area.height as usize;
+    let height = body.height as usize;
     let previous = if app.last_chat_width == width { app.last_chat_lines } else { total };
     let (start, offset) = crate::viewport::transcript_window(total, previous, height, app.chat_scroll);
     app.chat_scroll = offset;
@@ -595,10 +1037,35 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     app.last_chat_width = width;
     app.last_chat_height = height.max(1);
     let max_scroll = total.saturating_sub(height);
-    let (visible, pictures) = base.viewport(&document, &mut app.graphics, start, area);
+    let (mut visible, pictures) = base.viewport(&document, &mut app.graphics, start, body);
+    if let Some(search) = &app.chat_search {
+        let q = search.query.trim().to_lowercase();
+        if !q.is_empty() {
+            let current_range = search
+                .matches
+                .get(search.current)
+                .and_then(|entry_ix| app.transcript.entry_ranges.iter().find(|(ix, _)| ix == entry_ix))
+                .map(|(_, r)| r.clone());
+            for (row_offset, line) in visible.iter_mut().enumerate() {
+                let doc_line = start + row_offset;
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                if text.to_lowercase().contains(&q) {
+                    let is_current = current_range.as_ref().is_some_and(|r| r.contains(&doc_line));
+                    let hl = if is_current {
+                        selection()
+                    } else {
+                        Style::default().fg(WARNING).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    };
+                    for span in &mut line.spans {
+                        span.style = span.style.patch(hl);
+                    }
+                }
+            }
+        }
+    }
     app.pictures = pictures;
-    frame.render_widget(Paragraph::new(visible), area);
-    if total > height && area.width > 0 {
+    frame.render_widget(Paragraph::new(visible), body);
+    if total > height && body.width > 0 {
         let mut state = ScrollbarState::new(max_scroll + 1).position(start);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -607,7 +1074,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
                 .thumb_style(Style::default().fg(ACCENT))
                 .thumb_symbol("▏")
                 .track_symbol(None),
-            Rect::new(area.right(), area.y, 1, area.height),
+            Rect::new(body.right(), body.y, 1, body.height),
             &mut state,
         );
     }
@@ -700,13 +1167,26 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     if area.height < 3 || area.width < 3 {
         return;
     }
-    let focused = app.focus == Focus::Composer && app.profile.is_none() && !app.help_open;
-    let title = if app.team.selected != app.team.leader_id {
-        format!("Message Leader · viewing {}", fit(&app.team.selected, 24))
+    let overlay_open = app.profile.is_some()
+        || app.help_open
+        || app.palette.is_some()
+        || app.rewind_modal.is_some()
+        || app.mcp_modal.is_some()
+        || app.approval_detail.is_some()
+        || app.confirm.is_some()
+        || app.chat_search.as_ref().is_some_and(|s| s.editing);
+    let focused = app.focus == Focus::Composer && !overlay_open;
+    let (title, composer_border) = if let Some(target) = &app.direct_target {
+        (
+            format!("Direct to {} · Esc back to Leader", fit(target, 24)),
+            if focused { Style::default().fg(CODEX).add_modifier(Modifier::BOLD) } else { border(false) },
+        )
+    } else if app.team.selected != app.team.leader_id {
+        (format!("Message Leader · viewing {}", fit(&app.team.selected, 24)), border(focused))
     } else {
-        "Message Leader".to_string()
+        ("Message Leader".to_string(), border(focused))
     };
-    let block = panel(title).border_style(border(focused));
+    let block = panel(title).border_style(composer_border);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new("[Model]").style(Style::default().fg(ACCENT)), model_button(area));
@@ -844,27 +1324,53 @@ fn dialog_area(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 fn render_help(frame: &mut Frame, app: &mut V2App, area: Rect) {
-    let popup = dialog_area(area, 76, 30);
+    let popup = help_popup(area);
     frame.render_widget(Clear, popup);
-    let block = panel("Shortcuts").border_style(Style::default().fg(ACCENT));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
     let sections = crate::v2app::HELP_SECTIONS;
+    let inner_approx = popup.inner(ratatui::layout::Margin::new(1, 1));
     let mut lines = Vec::new();
     for &(title, hints) in sections {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        lines.extend(crate::markdown::plain(title, inner.width as usize, selection()));
+        lines.extend(crate::markdown::plain(title, inner_approx.width as usize, selection()));
         for hint in hints {
-            lines.extend(crate::wrap::wrap_line(&hint_line(hint), inner.width as usize));
+            lines.extend(crate::wrap::wrap_line(&hint_line(hint), inner_approx.width as usize));
         }
     }
-    app.help_scroll = app.help_scroll.min(lines.len().saturating_sub(inner.height as usize));
+    let total = lines.len();
+    let height = inner_approx.height as usize;
+    let max_scroll = total.saturating_sub(height);
+    app.help_scroll = app.help_scroll.min(max_scroll);
+    let footer_label = if popup.width >= 26 && total > height && height > 0 {
+        let start = app.help_scroll + 1;
+        let end = (app.help_scroll + height).min(total);
+        format!(" {start}-{end}/{total} · Esc close ")
+    } else {
+        " Esc close ".to_string()
+    };
+    let block = panel("Shortcuts")
+        .title_bottom(Line::from(footer_label).alignment(Alignment::Right))
+        .border_style(Style::default().fg(ACCENT));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
     frame.render_widget(
         Paragraph::new(lines.into_iter().skip(app.help_scroll).take(inner.height as usize).collect::<Vec<_>>()),
         inner,
     );
+    if total > height && inner.width > 1 {
+        let mut state = ScrollbarState::new(max_scroll + 1).position(app.help_scroll);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(ACCENT))
+                .thumb_symbol("▏")
+                .track_symbol(None),
+            inner,
+            &mut state,
+        );
+    }
     // Overlays own the caret as well as key, mouse and paste input.
     app.pictures.clear();
 }
@@ -872,15 +1378,41 @@ fn render_help(frame: &mut Frame, app: &mut V2App, area: Rect) {
 /// A command's readable output in its own dismissible overlay, so reading it never costs the transcript.
 fn render_report(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let Some(mut report) = app.report.take() else { return };
-    let popup = dialog_area(area, 92, 32);
+    let popup = report_popup(area);
     frame.render_widget(Clear, popup);
-    let block = panel(report.title.clone()).border_style(Style::default().fg(ACCENT));
+    let inner_approx = popup.inner(ratatui::layout::Margin::new(1, 1));
+    let lines = crate::markdown::plain(&report.text, inner_approx.width as usize, Style::default().fg(FG));
+    let total = lines.len();
+    let height = inner_approx.height as usize;
+    let max_scroll = total.saturating_sub(height);
+    report.scroll = report.scroll.min(max_scroll);
+    let footer_label = if popup.width >= 26 && total > height && height > 0 {
+        let start = report.scroll + 1;
+        let end = (report.scroll + height).min(total);
+        format!(" {start}-{end}/{total} · Esc close ")
+    } else {
+        " Esc close ".to_string()
+    };
+    let block = panel(report.title.clone())
+        .title_bottom(Line::from(footer_label).alignment(Alignment::Right))
+        .border_style(Style::default().fg(ACCENT));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let lines = crate::markdown::plain(&report.text, inner.width as usize, Style::default().fg(FG));
-    report.scroll = report.scroll.min(lines.len().saturating_sub(inner.height as usize));
     let shown: Vec<_> = lines.into_iter().skip(report.scroll).take(inner.height as usize).collect();
     frame.render_widget(Paragraph::new(shown), inner);
+    if total > height && inner.width > 1 {
+        let mut state = ScrollbarState::new(max_scroll + 1).position(report.scroll);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(ACCENT))
+                .thumb_symbol("▏")
+                .track_symbol(None),
+            inner,
+            &mut state,
+        );
+    }
     app.report = Some(report);
     app.pictures.clear();
 }

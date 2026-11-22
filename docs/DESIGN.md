@@ -244,9 +244,13 @@ connection or explicit retention resync adopts a consistent checkpoint; ordinary
 unread events. Frames are at most 32 MiB; event/history pages have 4 MiB byte budgets and bounded row counts.
 Streaming previews are transient and never authoritative facts.
 
-The TUI uses a Herdr-inspired member sidebar, a Leader conversation and an inspection pane on wide terminals.
-Tasks, recent observed activity and member diagnostics/history are directly navigable; narrow terminals use
-one content pane. Browsing is read-only: the composer, interrupt and model controls still target the Leader.
+The TUI uses a Herdr-inspired member sidebar, a Leader conversation, an inspection pane on wide terminals, and a
+multi-member live wall (`View::Wall`) and foldable exploration tree (`View::Tree`) (D-532). Tasks, recent observed
+activity, tree nodes and member diagnostics/history are directly navigable; narrow terminals use one content pane.
+By default composer, interrupt and model controls target the Leader; explicit single-shot worker messaging (`m`) and
+confirmed lifecycle/task interventions (`p`/`r`/`X`/`x`) never bypass daemon ownership or capability rules. Interactive
+modals (`Ctrl+K` palette, `/rewind`, `/mcp`, approval detail drawer), `Ctrl+F` chat search, per-tool click expansion,
+OSC 52 code copy and a read-only sibling-session monitor compose over the same protocol without becoming a second store.
 Member histories stay in a separate User-visible projection and never enter the Leader context or session tree.
 Markdown/code/media rendering, draft preservation and explicit approval input ownership remain supported.
 `/tree` shows the session exploration tree; natural language requests let the Leader reorganize it. CLI and
@@ -257,7 +261,7 @@ JSON export are read-only projections, not second business stores.
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current source has 895 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
+The current source has 906 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
 configurations, 323 controls and one separate wide configuration, evaluated in 60 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 

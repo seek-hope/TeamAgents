@@ -506,32 +506,53 @@ pub fn render(
             .iter()
             .enumerate()
             .map(|(offset, row)| {
-                Line::styled(
-                    format!(
-                        "{} {}  {}  {}",
-                        if start + offset == browser.selected {
-                            ">"
-                        } else if row.attached_path() == current {
-                            "*"
-                        } else {
-                            " "
-                        },
-                        crate::v2ui::fit(&row.name, usize::from(inner.width.saturating_sub(13)).min(32)),
-                        if row.archived {
-                            "archived"
-                        } else if row.live {
-                            "running"
-                        } else {
-                            "idle"
-                        },
-                        row.id,
-                    ),
-                    if start + offset == browser.selected { crate::v2ui::selection() } else { Style::default().fg(FG) },
-                )
+                let selected = start + offset == browser.selected;
+                let marker = if selected {
+                    ">"
+                } else if row.attached_path() == current {
+                    "*"
+                } else {
+                    " "
+                };
+                let (badge, badge_color, status) = if row.archived {
+                    ("◌", GREY, "archived")
+                } else if row.live {
+                    ("●", SUCCESS, "running")
+                } else {
+                    ("○", GREY, "idle")
+                };
+                let name = crate::v2ui::fit(&row.name, usize::from(inner.width.saturating_sub(15)).min(32));
+                if selected {
+                    Line::styled(format!("{marker} {badge} {name}  {status}  {}", row.id), crate::v2ui::selection())
+                } else {
+                    Line::from(vec![
+                        ratatui::text::Span::styled(format!("{marker} "), Style::default().fg(ACCENT)),
+                        ratatui::text::Span::styled(format!("{badge} "), Style::default().fg(badge_color)),
+                        ratatui::text::Span::styled(format!("{name}  "), Style::default().fg(FG)),
+                        ratatui::text::Span::styled(format!("{status}  "), Style::default().fg(badge_color)),
+                        ratatui::text::Span::styled(row.id.clone(), secondary()),
+                    ])
+                }
             })
             .collect()
     };
+    let list_total = if browser.search_active() { browser.search_hits.len() } else { browser.rows.len() };
+    let list_selected = if browser.search_active() { browser.search_selected } else { browser.selected };
     frame.render_widget(Paragraph::new(rows), inner);
+    if list_total > inner.height as usize && inner.width > 1 {
+        let mut state = ratatui::widgets::ScrollbarState::new(list_total.saturating_sub(inner.height as usize) + 1)
+            .position(list_selected.min(list_total.saturating_sub(inner.height as usize)));
+        frame.render_stateful_widget(
+            ratatui::widgets::Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(ACCENT))
+                .thumb_symbol("▏")
+                .track_symbol(None),
+            inner,
+            &mut state,
+        );
+    }
     let title = if browser.search_active() {
         browser
             .search_hits
@@ -588,6 +609,20 @@ pub fn render(
     let (visible, pictures) =
         document.viewport(&crate::graphics::Document::text(lines), graphics, browser.scroll, inner);
     frame.render_widget(Paragraph::new(visible), inner);
+    if browser.last_lines > browser.last_height && inner.width > 1 {
+        let max_scroll = browser.last_lines.saturating_sub(browser.last_height);
+        let mut state = ratatui::widgets::ScrollbarState::new(max_scroll + 1).position(browser.scroll);
+        frame.render_stateful_widget(
+            ratatui::widgets::Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(ACCENT))
+                .thumb_symbol("▏")
+                .track_symbol(None),
+            inner,
+            &mut state,
+        );
+    }
     let footer = if browser.search_editing {
         format!(
             "{}\nType a query; Enter: search  Backspace: edit  Esc: cancel",

@@ -68,8 +68,10 @@ HANDLED["Shift+Enter"] = r"(?s)(?=.{0,400}SHIFT)(?=.{0,400}KeyCode::Enter)"
 for code in ("Left", "Right", "Backspace"):
     HANDLED[f"Alt+{code}"] = rf"KeyCode::{code} if (?:control \|\| )?alt =>"
 
-for code in "1234":
-    HANDLED[f"Alt+{code}"] = r"(?s)KeyModifiers::ALT.{0,120}KeyCode::Char\(\w+ @ '1'\.\.='4'\)"
+for code in "123456":
+    HANDLED[f"Alt+{code}"] = r"(?s)KeyModifiers::ALT.{0,120}KeyCode::Char\(\w+ @ '1'\.\.='6'\)"
+for letter in "BZN":
+    HANDLED[f"Alt+{letter}"] = rf"(?s)KeyModifiers::ALT.{{0,900}}KeyCode::Char\('{letter.lower()}'\)"
 
 # what the interface prints and what the documents name, as canonical keys
 HINT_WORDS = {
@@ -78,7 +80,7 @@ HINT_WORDS = {
     "ctrl+o": "Ctrl+O", "ctrl+w": "Ctrl+W", "ctrl+s": "Ctrl+S", "ctrl+c": "Ctrl+C", "ctrl+d": "Ctrl+D", "ctrl+left": "Ctrl+Left",
     "ctrl+right": "Ctrl+Right", "shift+enter": "Shift+Enter",
 }
-PANEL_KEYS = {"p", "r", "t", "c", "a", "d", "h", "y", "n"}
+PANEL_KEYS = {"p", "r", "t", "c", "a", "d", "h", "y", "n", "b", "z", "f", "j", "k", "m", "s", "x"}
 
 
 def arm(letter: str) -> str:
@@ -88,7 +90,7 @@ def arm(letter: str) -> str:
     `matches!`, which satisfied the first version of this audit for the approvals panel's `d` even after its
     arm was renamed (measured 2026-09-27 while running the controls).
     """
-    return rf"Char\('{letter}'\)[^\n]{{0,60}}=>"
+    return rf"Char\('{letter}'\)[^\n]{{0,140}}=>"
 
 
 CHORD = re.compile(r"ctrl\+(shift\+)?(left|right|[a-z]|←|→)(?![a-z])", re.I)
@@ -160,7 +162,8 @@ def documented_keys() -> dict:
 def main() -> int:
     source = "\n".join((REPO / path).read_text() for path in
                        ("tui/src/v2app.rs", "tui/src/sessions.rs", "tui/src/completion.rs",
-                        "tui/src/attachments.rs", "tui/src/queue.rs", "tui/src/text.rs", "tui/src/v2ui.rs", "tui/src/team.rs"))
+                        "tui/src/attachments.rs", "tui/src/queue.rs", "tui/src/text.rs", "tui/src/v2ui.rs",
+                        "tui/src/team.rs", "tui/src/overlays.rs"))
     findings = []
     advertised = hint_keys(source)
     for key in sorted(key for key in advertised if not key.startswith("Key ")):

@@ -241,7 +241,7 @@ impl SupervisorHandle {
                     } else {
                         p.efforts.clone()
                     };
-                    json!({"key":key,"model":p.model,"provider":p.provider,"efforts":efforts})
+                    json!({"key":key,"model":p.model,"provider":p.provider,"efforts":efforts,"context_window":p.context_window})
                 })
                 .collect(),
         ))

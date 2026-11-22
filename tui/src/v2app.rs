@@ -18,6 +18,12 @@ pub enum Focus {
     Panel,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DragTarget {
+    Sidebar,
+    Inspector,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ChatKind {
     User,
@@ -81,6 +87,17 @@ pub struct ModelInfo {
     pub provider: String,
     /// The ordered effort levels this model declares (D-476), or empty for the built-in list.
     pub efforts: Vec<String>,
+    /// Native context window reported by the daemon catalog (`[models.<key>] context_window`).
+    pub context_window: Option<i64>,
+}
+
+/// Active Ctrl+F transcript search state (Conversation view).
+#[derive(Clone, Debug, Default)]
+pub struct ChatSearch {
+    pub query: String,
+    pub editing: bool,
+    pub matches: Vec<usize>,
+    pub current: usize,
 }
 
 impl ModelInfo {
@@ -192,8 +209,10 @@ fn filter_models(menu: &mut ProfileMenu, fallback: &[String]) {
 pub struct ApprovalInfo {
     pub id: String,
     pub operation_id: String,
+    pub instance_id: String,
     pub tool: String,
     pub preview: String,
+    pub args: String,
 }
 
 #[derive(Clone, Debug)]
@@ -202,6 +221,8 @@ pub struct WorkInfo {
     pub known_total: i64,
     pub unknown: bool,
     pub limit_total: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub cost_complete: bool,
     /// The work's absolute deadline in epoch seconds (`[limits] deadline_minutes`,
     /// D-64): shown as the time left, so a configured ceiling is visible.
     pub deadline: Option<f64>,
@@ -274,6 +295,16 @@ pub enum V2Effect {
         approval_id: String,
         decision: &'static str,
     },
+    SetLifecycle {
+        instance: String,
+        lifecycle: &'static str,
+        reason: String,
+    },
+    CancelTask {
+        task_id: String,
+        reason: String,
+    },
+    CopyClipboard(String),
     /// Interrupt the Leader at the runtime boundary; leaving the TUI is independent.
     Interrupt {
         instance: String,
@@ -315,7 +346,8 @@ pub const HELP_SECTIONS: &[(&str, &[&str])] = &[
     (
         "Conversation",
         &[
-            "PgUp/PgDn / wheel read history · Ctrl+O tool details",
+            "Ctrl+K command & goto palette · Ctrl+F find in chat (n/N jump)",
+            "PgUp/PgDn / wheel read history · Ctrl+O tool details (or click)",
             "Ctrl+G graphics/source · / commands · Tab complete",
             "Ctrl+C interrupt model request; tools may continue",
             "Ctrl+Q detach; the session keeps running",
@@ -325,10 +357,11 @@ pub const HELP_SECTIONS: &[(&str, &[&str])] = &[
         "Team workspace",
         &[
             "F6 cycles team, inspection and composer focus",
-            "Alt+1 chat · Alt+2 tasks · Alt+3 activity · Alt+4 inspect",
-            "Team: Up/Down member · Enter inspect · h history",
-            "Inspect: d details · h member history · Esc compose",
-            "Browsing is read-only; messages and Ctrl+C target Leader",
+            "Alt+1 chat · Alt+2 tasks · Alt+3 activity · Alt+4 inspect · Alt+5 tree · Alt+6 wall",
+            "Alt+B toggle sidebar · Alt+Z zoom pane · Alt+N next alert",
+            "Team: Up/Down or j/k member · Enter inspect · m direct · p pause · r resume · X stop · ! alert",
+            "Inspect: d details · h history · P pin · f filter · Space fold tree · x cancel task · z zoom · Esc compose",
+            "Direct message (m) sends once to the selected member and returns to Leader",
         ],
     ),
     (
@@ -339,7 +372,10 @@ pub const HELP_SECTIONS: &[(&str, &[&str])] = &[
             "/attach PATH or @PATH + Tab · /detach INDEX",
         ],
     ),
-    ("Approvals", &["Ctrl+A focus approvals · Up/Down select", "a approve once · d deny · Esc return to draft"]),
+    (
+        "Approvals",
+        &["Ctrl+A focus approvals · Up/Down select · Enter detail", "a approve once · d deny · Esc return to draft"],
+    ),
     ("More", &["/help session, environment and command list", "Esc close · Up/Down scroll · PgUp/PgDn page"]),
 ];
 
@@ -414,6 +450,25 @@ pub struct V2App {
     pub previews: Vec<(String, String)>,
     /// Visible chat height at the last render (page scrolling).
     pub last_chat_height: usize,
+    pub sidebar_hidden: bool,
+    pub zoomed: bool,
+    pub sidebar_width: u16,
+    pub inspector_pct: u16,
+    pub drag: Option<DragTarget>,
+    pub direct_target: Option<String>,
+    pub palette: Option<crate::overlays::Palette>,
+    pub rewind_modal: Option<crate::overlays::RewindModal>,
+    pub mcp_modal: Option<crate::overlays::McpModal>,
+    pub pending_mcp_modal: bool,
+    pub approval_detail: Option<crate::overlays::ApprovalDetail>,
+    pub confirm: Option<crate::overlays::ConfirmAction>,
+    pub chat_search: Option<ChatSearch>,
+    pub expanded_entries: HashSet<usize>,
+    pub live_sessions: Vec<crate::live_sessions::LiveSession>,
+    pub mcp_snapshot: Json,
+    pub mcp_policy: Json,
+    pub mcp_drivers: Json,
+    pub sibling_sessions: Vec<(String, String, String)>,
 }
 
 impl V2App {
@@ -461,6 +516,49 @@ impl V2App {
             last_chat_width: 0,
             previews: vec![],
             last_chat_height: 1,
+            sidebar_hidden: false,
+            zoomed: false,
+            sidebar_width: 26,
+            inspector_pct: 40,
+            drag: None,
+            direct_target: None,
+            palette: None,
+            rewind_modal: None,
+            mcp_modal: None,
+            pending_mcp_modal: false,
+            approval_detail: None,
+            confirm: None,
+            chat_search: None,
+            expanded_entries: HashSet::new(),
+            live_sessions: vec![],
+            mcp_snapshot: Json::Null,
+            mcp_policy: Json::Null,
+            mcp_drivers: Json::Null,
+            sibling_sessions: vec![],
+        }
+    }
+
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_hidden = !self.sidebar_hidden;
+        if self.sidebar_hidden && self.focus == Focus::Team {
+            self.focus = Focus::Composer;
+        }
+    }
+
+    pub fn toggle_zoom(&mut self) {
+        self.zoomed = !self.zoomed;
+    }
+
+    pub fn jump_next_attention(&mut self) {
+        if self.team.next_attention().is_some() {
+            if self.team.view != crate::team::View::Conversation {
+                self.team.show(crate::team::View::Inspect);
+            }
+            self.focus = Focus::Panel;
+        } else if !self.approvals.is_empty() {
+            self.focus = Focus::Approvals;
+        } else {
+            self.flash("No members currently need attention.");
         }
     }
 
@@ -652,11 +750,17 @@ impl V2App {
                 return None;
             }
             let known = &g["known_usage"];
+            let cost = &g["cost"];
+            let has_cost = cost.is_object()
+                && (cost["attempts"].as_i64().unwrap_or(0) > 0
+                    || cost["known_estimated_usd"].as_f64().unwrap_or(0.0) > 0.0);
             Some(WorkInfo {
                 status: g["status"].as_str().unwrap_or("").to_string(),
                 known_total: known["total"].as_i64().unwrap_or(0),
                 unknown: g["unknown_usage"].as_i64().unwrap_or(0) != 0,
                 limit_total: g["limits"]["max_total_tokens"].as_i64(),
+                cost_usd: has_cost.then(|| cost["known_estimated_usd"].as_f64()).flatten(),
+                cost_complete: has_cost && cost["complete"].as_bool().unwrap_or(false),
                 deadline: g["deadline"].as_f64(),
                 summary: g["summary"]
                     .as_str()
@@ -682,10 +786,29 @@ impl V2App {
                         provider: row["provider"].as_str().unwrap_or("").to_string(),
                         key,
                         efforts,
+                        context_window: row["context_window"].as_i64(),
                     })
                 })
                 .collect();
             self.models.sort_by(|a, b| (&a.model, &a.provider, &a.key).cmp(&(&b.model, &b.provider, &b.key)));
+        }
+        self.mcp_snapshot = snapshot["mcp"].clone();
+        self.mcp_policy = snapshot["mcp_policy"].clone();
+        self.mcp_drivers = snapshot["mcp_drivers"].clone();
+        if let Some(modal) = self.mcp_modal.as_mut() {
+            modal.refresh_from(&self.mcp_snapshot, &self.mcp_policy, &self.mcp_drivers);
+        }
+        if let Some(rows) = snapshot["sessions"].as_array() {
+            self.sibling_sessions = rows
+                .iter()
+                .filter(|row| row["active"] != true)
+                .filter_map(|row| {
+                    let id = row["id"].as_str()?.to_string();
+                    let name = row["name"].as_str().unwrap_or(&id).to_string();
+                    let root = row["root"].as_str().or_else(|| row["path"].as_str())?.to_string();
+                    Some((id, name, root))
+                })
+                .collect();
         }
         self.watermark = self.watermark.max(watermark);
         // a fresh checkpoint supersedes earlier UI-level notes — runtime chatter, not a command's answer
@@ -742,6 +865,11 @@ impl V2App {
         self.entries.extend(rebuilt);
         self.entries.extend(pending);
         self.entries.extend(notes);
+        let entry_len = self.entries.len();
+        self.expanded_entries.retain(|&idx| idx < entry_len);
+        if self.chat_search.is_some() {
+            self.update_chat_search();
+        }
         if self.chat_scroll == 0 {
             self.last_chat_lines = 0; // follow: force the render to re-clamp
         }
@@ -921,12 +1049,19 @@ impl V2App {
             .map(|a| ApprovalInfo {
                 id: a["id"].as_str().unwrap_or("").to_string(),
                 operation_id: a["operation_id"].as_str().unwrap_or("").to_string(),
+                instance_id: a["instance_id"].as_str().unwrap_or("").to_string(),
                 tool: a["tool"].as_str().unwrap_or("").to_string(),
                 preview: a["preview"].as_str().unwrap_or("").to_string(),
+                args: a["args"].as_str().unwrap_or("").to_string(),
             })
             .collect();
         let retained = selected.as_ref().and_then(|id| self.approvals.iter().position(|approval| &approval.id == id));
         self.approval_sel = retained.unwrap_or(0);
+        if let Some(detail) = &self.approval_detail {
+            if !self.approvals.iter().any(|a| a.id == detail.approval_id) {
+                self.approval_detail = None;
+            }
+        }
         if self.focus == Focus::Approvals && (self.approvals.is_empty() || (selected.is_some() && retained.is_none())) {
             self.focus = Focus::Composer;
         }
@@ -1028,16 +1163,89 @@ impl V2App {
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
+        let modal_open = self.confirm.is_some()
+            || self.approval_detail.is_some()
+            || self.rewind_modal.is_some()
+            || self.mcp_modal.is_some();
         if key.kind == crossterm::event::KeyEventKind::Release
             || (key.kind == crossterm::event::KeyEventKind::Repeat
                 && (matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::F(6))
                     || (key.modifiers.contains(KeyModifiers::CONTROL)
-                        && matches!(key.code, KeyCode::Char('a' | 'c' | 'e' | 'g' | 'm' | 'o' | 'p' | 'q' | 's')))
-                    || (key.modifiers == KeyModifiers::ALT && matches!(key.code, KeyCode::Char('1'..='4')))))
+                        && matches!(
+                            key.code,
+                            KeyCode::Char('a' | 'c' | 'e' | 'f' | 'g' | 'k' | 'm' | 'o' | 'p' | 'q' | 's')
+                        ))
+                    || (key.modifiers == KeyModifiers::ALT
+                        && matches!(key.code, KeyCode::Char('1'..='6' | 'b' | 'z' | 'n')))
+                    || ((self.focus != Focus::Composer || modal_open)
+                        && self.palette.is_none()
+                        && !self.chat_search.as_ref().is_some_and(|s| s.editing)
+                        && matches!(
+                            key.code,
+                            KeyCode::Char(
+                                ' ' | 'a'
+                                    | 'c'
+                                    | 'd'
+                                    | 'f'
+                                    | 'h'
+                                    | 'm'
+                                    | 'n'
+                                    | 'p'
+                                    | 'r'
+                                    | 's'
+                                    | 'x'
+                                    | 'y'
+                                    | 'N'
+                                    | 'P'
+                                    | 'X'
+                            )
+                        ))))
         {
             return None;
         }
         if key.code == KeyCode::Esc && !key.modifiers.is_empty() {
+            return None;
+        }
+        if let Some(confirm) = self.confirm.clone() {
+            if key.modifiers == KeyModifiers::CONTROL {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        self.quit = true;
+                        return Some(V2Effect::Quit);
+                    }
+                    KeyCode::Char('c') => return self.interrupt(),
+                    _ => {}
+                }
+            }
+            match confirm.key(key) {
+                crate::overlays::ModalKey::Close => self.confirm = None,
+                crate::overlays::ModalKey::Submit(action) => {
+                    self.confirm = None;
+                    return self.apply_confirm_action(action);
+                }
+                crate::overlays::ModalKey::Consumed | crate::overlays::ModalKey::Ignored => {}
+            }
+            return None;
+        }
+        if let Some(detail) = self.approval_detail.as_mut() {
+            if key.modifiers == KeyModifiers::CONTROL {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        self.quit = true;
+                        return Some(V2Effect::Quit);
+                    }
+                    KeyCode::Char('c') => return self.interrupt(),
+                    _ => {}
+                }
+            }
+            match detail.key(key) {
+                crate::overlays::ModalKey::Close => self.approval_detail = None,
+                crate::overlays::ModalKey::Submit(decision) => {
+                    self.approval_detail = None;
+                    return self.apply_approval_decision(decision);
+                }
+                crate::overlays::ModalKey::Consumed | crate::overlays::ModalKey::Ignored => {}
+            }
             return None;
         }
         if self.report.is_some() {
@@ -1139,8 +1347,154 @@ impl V2App {
             }
             return browser.key(key).map(V2Effect::Sessions);
         }
+        if let Some(palette) = self.palette.as_mut() {
+            if key.modifiers == KeyModifiers::CONTROL {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        self.quit = true;
+                        return Some(V2Effect::Quit);
+                    }
+                    KeyCode::Char('c') => return self.interrupt(),
+                    KeyCode::Char('k') => {
+                        self.palette = None;
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+            match palette.key(key) {
+                crate::overlays::ModalKey::Close => self.palette = None,
+                crate::overlays::ModalKey::Submit(action) => {
+                    self.palette = None;
+                    return self.apply_palette_action(action);
+                }
+                crate::overlays::ModalKey::Consumed | crate::overlays::ModalKey::Ignored => {}
+            }
+            return None;
+        }
+        if let Some(rewind) = self.rewind_modal.as_mut() {
+            if key.modifiers == KeyModifiers::CONTROL {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        self.quit = true;
+                        return Some(V2Effect::Quit);
+                    }
+                    KeyCode::Char('c') => return self.interrupt(),
+                    _ => {}
+                }
+            }
+            match rewind.key(key) {
+                crate::overlays::ModalKey::Close => self.rewind_modal = None,
+                crate::overlays::ModalKey::Submit(action) => return self.apply_rewind_action(action),
+                crate::overlays::ModalKey::Consumed | crate::overlays::ModalKey::Ignored => {}
+            }
+            return None;
+        }
+        if let Some(mcp) = self.mcp_modal.as_mut() {
+            if key.modifiers == KeyModifiers::CONTROL {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        self.quit = true;
+                        return Some(V2Effect::Quit);
+                    }
+                    KeyCode::Char('c') => return self.interrupt(),
+                    _ => {}
+                }
+            }
+            match mcp.key(key) {
+                crate::overlays::ModalKey::Close => self.mcp_modal = None,
+                crate::overlays::ModalKey::Submit(action) => return self.apply_mcp_action(action),
+                crate::overlays::ModalKey::Consumed | crate::overlays::ModalKey::Ignored => {}
+            }
+            return None;
+        }
+        if self.team.view == crate::team::View::Conversation {
+            if self.chat_search.as_ref().is_some_and(|s| s.editing) {
+                match (key.code, key.modifiers) {
+                    (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
+                        self.quit = true;
+                        return Some(V2Effect::Quit);
+                    }
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return self.interrupt(),
+                    (KeyCode::Esc, _) => {
+                        self.chat_search = None;
+                        return None;
+                    }
+                    (KeyCode::Enter, _) => {
+                        if let Some(search) = self.chat_search.as_mut() {
+                            if search.query.is_empty() {
+                                self.chat_search = None;
+                            } else {
+                                search.editing = false;
+                                self.scroll_chat_to_search_match();
+                            }
+                        }
+                        return None;
+                    }
+                    (KeyCode::Up, _) => {
+                        self.jump_chat_search(false);
+                        return None;
+                    }
+                    (KeyCode::Down, _) => {
+                        self.jump_chat_search(true);
+                        return None;
+                    }
+                    (KeyCode::Backspace, _) => {
+                        if let Some(search) = self.chat_search.as_mut() {
+                            search.query.pop();
+                        }
+                        self.update_chat_search();
+                        self.scroll_chat_to_search_match();
+                        return None;
+                    }
+                    (KeyCode::Char(c), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                        if let Some(search) = self.chat_search.as_mut() {
+                            search.query.push(c);
+                        }
+                        self.update_chat_search();
+                        self.scroll_chat_to_search_match();
+                        return None;
+                    }
+                    _ => return None,
+                }
+            } else if self.chat_search.is_some() {
+                let empty_draft = self.focus != Focus::Composer || self.composer.text().is_empty();
+                match key.code {
+                    KeyCode::Esc
+                        if key.modifiers.is_empty()
+                            && self.attachments.rewind_source.is_none()
+                            && self.direct_target.is_none() =>
+                    {
+                        self.chat_search = None;
+                        return None;
+                    }
+                    KeyCode::Char('n') if key.modifiers.is_empty() && empty_draft => {
+                        self.jump_chat_search(true);
+                        return None;
+                    }
+                    KeyCode::Char('N')
+                        if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) && empty_draft =>
+                    {
+                        self.jump_chat_search(false);
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+        }
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
+                KeyCode::Char('k') => {
+                    self.palette = Some(crate::overlays::Palette::open(self));
+                    return None;
+                }
+                KeyCode::Char('f') if self.team.view == crate::team::View::Conversation => {
+                    let mut search = self.chat_search.take().unwrap_or_default();
+                    search.editing = true;
+                    self.chat_search = Some(search);
+                    self.update_chat_search();
+                    return None;
+                }
                 KeyCode::Char('s') => return self.open_sessions(),
                 KeyCode::Char('p') if self.focus == Focus::Composer => return self.open_queue(),
                 KeyCode::Char('m') if self.focus == Focus::Composer => return self.open_profile(),
@@ -1179,10 +1533,32 @@ impl V2App {
             return None;
         }
         if key.modifiers == KeyModifiers::ALT {
-            if let KeyCode::Char(number @ '1'..='4') = key.code {
-                self.team.show(crate::team::VIEWS[number as usize - '1' as usize].0);
-                self.focus = if number == '1' { Focus::Composer } else { Focus::Panel };
-                return None;
+            match key.code {
+                KeyCode::Char(number @ '1'..='6') => {
+                    let view = crate::team::VIEWS[number as usize - '1' as usize].0;
+                    self.team.show(view);
+                    self.focus = if number == '1' { Focus::Composer } else { Focus::Panel };
+                    if view == crate::team::View::Tree {
+                        self.team.tree_dirty = true;
+                        if self.team.tree.is_none() && !self.disconnected {
+                            return Some(V2Effect::SearchTree);
+                        }
+                    }
+                    return None;
+                }
+                KeyCode::Char('b') => {
+                    self.toggle_sidebar();
+                    return None;
+                }
+                KeyCode::Char('z') => {
+                    self.toggle_zoom();
+                    return None;
+                }
+                KeyCode::Char('n') => {
+                    self.jump_next_attention();
+                    return None;
+                }
+                _ => {}
             }
         }
         match self.focus {
@@ -1192,6 +1568,220 @@ impl V2App {
             }
             Focus::Approvals => self.approval_key(key),
             Focus::Composer => self.composer_key(key),
+        }
+    }
+
+    pub fn active_context_window(&self) -> Option<i64> {
+        let key = if !self.leader_catalog_key.is_empty() {
+            self.leader_catalog_key.as_str()
+        } else {
+            self.active_instance().map(|i| i.model.as_str()).unwrap_or("")
+        };
+        self.models.iter().find(|m| m.key == key || m.model == key).and_then(|m| m.context_window)
+    }
+
+    pub fn open_mcp_modal(&mut self) {
+        self.mcp_modal =
+            Some(crate::overlays::McpModal::from_snapshot(&self.mcp_snapshot, &self.mcp_policy, &self.mcp_drivers));
+    }
+
+    pub fn apply_palette_action(&mut self, action: crate::overlays::PaletteAction) -> Option<V2Effect> {
+        use crate::overlays::PaletteAction;
+        match action {
+            PaletteAction::SelectMember(id) => {
+                self.team.select(&id);
+                self.team.show(crate::team::View::Inspect);
+                self.focus = Focus::Panel;
+                None
+            }
+            PaletteAction::OpenView(view) => {
+                self.team.show(view);
+                self.focus = if view == crate::team::View::Conversation { Focus::Composer } else { Focus::Panel };
+                if view == crate::team::View::Tree {
+                    self.team.tree_dirty = true;
+                    if !self.disconnected && self.team.tree.is_none() {
+                        return Some(V2Effect::SearchTree);
+                    }
+                }
+                None
+            }
+            PaletteAction::SelectTask(idx) => {
+                self.team.selected_task = idx;
+                self.team.show(crate::team::View::Tasks);
+                self.focus = Focus::Panel;
+                None
+            }
+            PaletteAction::FocusTreeNode(prefix) => {
+                let current = self.composer.text();
+                let next = if current.trim().is_empty() { prefix } else { format!("{prefix}{current}") };
+                self.composer.set_text(&next);
+                self.team.show(crate::team::View::Conversation);
+                self.focus = Focus::Composer;
+                None
+            }
+            PaletteAction::OpenSession(row) => Some(V2Effect::Sessions(crate::sessions::SessionAction::Open(row))),
+            PaletteAction::OpenRewind => {
+                if self.disconnected {
+                    self.command_note("Reconnect before inspecting or changing the conversation.");
+                    return None;
+                }
+                if !self.attachments.paths.is_empty() {
+                    self.command_note("Remove staged files before inspecting rewind points.");
+                    return None;
+                }
+                self.rewind_modal = Some(crate::overlays::RewindModal::loading());
+                Some(V2Effect::RewindList { before: None })
+            }
+            PaletteAction::OpenMcp => {
+                if self.disconnected {
+                    self.command_note("Disconnected: no MCP request sent.");
+                    return None;
+                }
+                self.open_mcp_modal();
+                Some(V2Effect::McpStatus)
+            }
+            PaletteAction::OpenModel => self.open_profile(),
+            PaletteAction::OpenQueue => self.open_queue(),
+            PaletteAction::OpenSessions => self.open_sessions(),
+            PaletteAction::OpenHelp => {
+                self.open_help();
+                None
+            }
+            PaletteAction::ToggleZoom => {
+                self.toggle_zoom();
+                None
+            }
+            PaletteAction::ToggleSidebar => {
+                self.toggle_sidebar();
+                None
+            }
+            PaletteAction::CopyLastCode => {
+                if let Some((_, code)) = self.transcript.code_blocks.last() {
+                    Some(V2Effect::CopyClipboard(code.clone()))
+                } else {
+                    self.flash("No code block in visible conversation.");
+                    None
+                }
+            }
+            PaletteAction::Compact => self.dispatch_command(crate::completion::Command::Compact, None),
+            PaletteAction::Interrupt => self.interrupt(),
+        }
+    }
+
+    pub fn apply_rewind_action(&mut self, action: crate::overlays::RewindAction) -> Option<V2Effect> {
+        match action {
+            crate::overlays::RewindAction::LoadMore(before) => Some(V2Effect::RewindList { before }),
+            crate::overlays::RewindAction::Preview { key, files } => {
+                if files {
+                    Some(V2Effect::RewindFiles { key })
+                } else {
+                    Some(V2Effect::RewindPreview { key })
+                }
+            }
+            crate::overlays::RewindAction::Apply(preview) => Some(V2Effect::RewindApply { preview }),
+        }
+    }
+
+    pub fn apply_mcp_action(&mut self, action: crate::overlays::McpModalAction) -> Option<V2Effect> {
+        match action {
+            crate::overlays::McpModalAction::Refresh => Some(V2Effect::McpStatus),
+            crate::overlays::McpModalAction::Change { action, service } => {
+                Some(V2Effect::McpChange { action, service })
+            }
+        }
+    }
+
+    pub fn apply_confirm_action(&mut self, action: crate::overlays::ConfirmAction) -> Option<V2Effect> {
+        if self.disconnected {
+            self.command_note("Disconnected: no control command sent.");
+            return None;
+        }
+        match action {
+            crate::overlays::ConfirmAction::PauseMember(instance) => Some(V2Effect::SetLifecycle {
+                instance,
+                lifecycle: "PAUSED",
+                reason: "PAUSED by the user (TUI)".into(),
+            }),
+            crate::overlays::ConfirmAction::ResumeMember(instance) => Some(V2Effect::SetLifecycle {
+                instance,
+                lifecycle: "ACTIVE",
+                reason: "ACTIVE by the user (TUI)".into(),
+            }),
+            crate::overlays::ConfirmAction::TerminateMember(instance) => Some(V2Effect::SetLifecycle {
+                instance,
+                lifecycle: "TERMINATED",
+                reason: "TERMINATED by the user (TUI)".into(),
+            }),
+            crate::overlays::ConfirmAction::CancelTask(task_id) => {
+                Some(V2Effect::CancelTask { task_id, reason: "cancelled by the user (TUI)".into() })
+            }
+        }
+    }
+
+    pub fn apply_approval_decision(&mut self, decision: crate::overlays::ApprovalDecision) -> Option<V2Effect> {
+        match decision {
+            crate::overlays::ApprovalDecision::Approve(approval_id) => {
+                Some(V2Effect::Decide { approval_id, decision: "approve" })
+            }
+            crate::overlays::ApprovalDecision::Deny(approval_id) => {
+                Some(V2Effect::Decide { approval_id, decision: "deny" })
+            }
+        }
+    }
+
+    pub fn update_chat_search(&mut self) {
+        let Some(search) = self.chat_search.as_mut() else { return };
+        let q = search.query.trim().to_lowercase();
+        search.matches.clear();
+        if !q.is_empty() {
+            for (idx, entry) in self.entries.iter().enumerate() {
+                let mut hay = format!("{} {}", entry.who, entry.text).to_lowercase();
+                if let Some(tool) = &entry.tool {
+                    hay.push(' ');
+                    hay.push_str(&tool.name.to_lowercase());
+                    hay.push(' ');
+                    hay.push_str(&tool.arguments.to_lowercase());
+                    if let Some(out) = &tool.output {
+                        hay.push(' ');
+                        hay.push_str(&out.to_lowercase());
+                    }
+                }
+                if hay.contains(&q) {
+                    search.matches.push(idx);
+                }
+            }
+        }
+        if search.matches.is_empty() {
+            search.current = 0;
+        } else {
+            search.current = search.current.min(search.matches.len() - 1);
+        }
+    }
+
+    pub fn jump_chat_search(&mut self, next: bool) {
+        if let Some(search) = self.chat_search.as_mut() {
+            if search.matches.is_empty() {
+                return;
+            }
+            if next {
+                search.current = (search.current + 1) % search.matches.len();
+            } else if search.current == 0 {
+                search.current = search.matches.len() - 1;
+            } else {
+                search.current -= 1;
+            }
+        }
+        self.scroll_chat_to_search_match();
+    }
+
+    fn scroll_chat_to_search_match(&mut self) {
+        let Some(entry_idx) = self.chat_search.as_ref().and_then(|s| s.matches.get(s.current).copied()) else {
+            return;
+        };
+        if let Some((_, range)) = self.transcript.entry_ranges.iter().find(|(ix, _)| *ix == entry_idx) {
+            let max_scroll = self.last_chat_lines.saturating_sub(self.last_chat_height);
+            let target_start = range.start.saturating_sub(self.last_chat_height / 3);
+            self.chat_scroll = max_scroll.saturating_sub(target_start).min(max_scroll);
         }
     }
 
@@ -1378,7 +1968,7 @@ impl V2App {
     fn approval_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyEventKind};
         if !key.modifiers.is_empty()
-            || (key.kind == KeyEventKind::Repeat && matches!(key.code, KeyCode::Char('a' | 'd')))
+            || (key.kind == KeyEventKind::Repeat && matches!(key.code, KeyCode::Char('a' | 'd' | ' ') | KeyCode::Enter))
         {
             return None;
         }
@@ -1394,6 +1984,13 @@ impl V2App {
             KeyCode::Down => {
                 if self.approval_sel + 1 < self.approvals.len() {
                     self.approval_sel += 1;
+                }
+                None
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if let Some(approval) = self.approvals.get(self.approval_sel) {
+                    self.approval_detail =
+                        Some(crate::overlays::ApprovalDetail { approval_id: approval.id.clone(), scroll: 0 });
                 }
                 None
             }
@@ -1483,6 +2080,7 @@ impl V2App {
                     return None;
                 }
                 if arg.is_empty() {
+                    self.rewind_modal = Some(crate::overlays::RewindModal::loading());
                     return Some(V2Effect::RewindList { before: None });
                 }
                 if arg == "draft" {
@@ -1512,7 +2110,12 @@ impl V2App {
                     return None;
                 }
                 let arg = argument.unwrap_or("").trim();
-                if arg.is_empty() || arg == "status" {
+                if arg.is_empty() {
+                    self.pending_mcp_modal = true;
+                    return Some(V2Effect::McpStatus);
+                }
+                if arg == "status" {
+                    self.pending_mcp_modal = false;
                     return Some(V2Effect::McpStatus);
                 }
                 if let Some((action, key)) = arg.split_once(char::is_whitespace) {
@@ -1580,7 +2183,12 @@ impl V2App {
             }
             Command::Sessions => return self.open_sessions(),
             Command::Queue => return self.open_queue(),
-            Command::Tree => return Some(V2Effect::SearchTree),
+            Command::Tree => {
+                self.team.show(crate::team::View::Tree);
+                self.focus = Focus::Panel;
+                self.team.tree_dirty = true;
+                return Some(V2Effect::SearchTree);
+            }
             Command::Later => {
                 let Some(text) = argument.filter(|s| !s.trim().is_empty()) else {
                     self.command_note("Use /later TEXT.");
@@ -1647,6 +2255,15 @@ impl V2App {
             );
             return None;
         }
+        if self.direct_target.is_some()
+            && key.code == KeyCode::Esc
+            && key.modifiers.is_empty()
+            && self.attachments.rewind_source.is_none()
+        {
+            self.direct_target = None;
+            self.flash("Returned composer target to Leader.");
+            return None;
+        }
         if self.attachments.rewind_source.is_none() && self.attachments.key(&mut self.composer, key) {
             if let Some(note) = self.attachments.take_notice() {
                 self.command_note(note);
@@ -1676,6 +2293,7 @@ impl V2App {
                 let raw = self.composer.text();
                 if self.attachments.rewind_source.is_none() && raw.starts_with('/') {
                     self.composer.clear();
+                    self.direct_target = None;
                     return self.slash_command(&raw);
                 }
                 if self.disconnected || self.active_instance().is_none() {
@@ -1684,10 +2302,14 @@ impl V2App {
                 }
                 let text = self.composer.submit()?;
                 self.composer.record_submission(&text);
-                let instance = self.active_instance()?.id.clone();
                 let envelope = self.attachments.envelope(&text);
                 if let Some(source) = self.attachments.rewind_source.clone() {
+                    self.direct_target = None;
                     return Some(V2Effect::RewindSend { source, envelope, text });
+                }
+                let instance = self.direct_target.take().unwrap_or_else(|| self.team.leader_id.clone());
+                if instance != self.team.leader_id {
+                    self.flash(format!("Direct message sent to {instance}; composer returned to Leader."));
                 }
                 Some(V2Effect::SubmitInput {
                     instance,
@@ -1910,8 +2532,19 @@ impl V2App {
         format!("{state}{usage}{deadline}{wait}")
     }
 
-    /// Concise state for the session header and activity row. Detailed diagnostics stay
-    /// in `status_line`; ordinary busy/ready states do not repeat the work usage shown in the header.
+    /// Concise runtime state for the top status bar (excludes transient flash notices so
+    /// action feedback shows solely in `activity_line` above the composer).
+    pub fn runtime_status_line(&self) -> String {
+        if let Some(status) = self.attention_line() {
+            return status;
+        }
+        let status = self.status_line();
+        if ["Ready", "Working", "Thinking", "Checking"].iter().any(|state| status.starts_with(state)) {
+            return status.split(" · ").next().unwrap_or(&status).to_string();
+        }
+        status
+    }
+
     /// The one line above the composer: a decision that needs the user outranks feedback, because feedback is
     /// transient and a pending approval is not.
     pub fn activity_line(&self) -> String {
@@ -1921,11 +2554,7 @@ impl V2App {
         if let Some(notice) = &self.notice {
             return notice.text.clone();
         }
-        let status = self.status_line();
-        if ["Ready", "Working", "Thinking", "Checking"].iter().any(|state| status.starts_with(state)) {
-            return status.split(" · ").next().unwrap_or(&status).to_string();
-        }
-        status
+        self.runtime_status_line()
     }
 
     /// The notice the activity row is currently showing, when it is showing one.
@@ -1946,6 +2575,21 @@ impl V2App {
     }
 
     pub fn footer_hint(&self) -> String {
+        if self.confirm.is_some() {
+            return "y/Enter confirm · n/Esc cancel".into();
+        }
+        if self.approval_detail.is_some() {
+            return "a approve · d deny · Up/Down scroll · Esc close".into();
+        }
+        if self.palette.is_some() {
+            return "Type filter · Up/Down choose · Enter run · Esc close".into();
+        }
+        if self.rewind_modal.is_some() {
+            return "Up/Down choose · r chat preview · f file diff · Enter apply · Esc close".into();
+        }
+        if self.mcp_modal.is_some() {
+            return "s start/stop · h hide/expose · r reconnect · Enter refresh · Esc close".into();
+        }
         if self.report.is_some() {
             return "Esc close · Up/Down scroll · PgUp/PgDn page".into();
         }
@@ -1955,14 +2599,30 @@ impl V2App {
         if self.profile.is_some() {
             return "↑/↓ choose · Enter save · Esc back · Ctrl+U clear search".into();
         }
+        if self.team.view == crate::team::View::Conversation {
+            if let Some(search) = &self.chat_search {
+                if search.editing {
+                    return "Type query · Enter apply · Up/Down jump · Esc cancel".into();
+                }
+                return "n next match · N prev match · Ctrl+F edit · Esc clear search".into();
+            }
+        }
         if self.focus == Focus::Team {
-            return "Up/Down member · Enter inspect · h history · F6 focus · Esc compose".into();
+            return "Up/Down member · Enter inspect · m direct · p pause · r resume · X stop · ! alert · Esc compose"
+                .into();
         }
         if self.focus == Focus::Panel {
-            return "PgUp/PgDn scroll · d details · h history · F6 focus · Esc compose".into();
+            return match self.team.view {
+                crate::team::View::Activity => "PgUp/PgDn scroll · f filter · z zoom · F6 focus · Esc compose",
+                crate::team::View::Tasks => "Up/Down select · Enter inspect assignee · x cancel · z zoom · Esc compose",
+                crate::team::View::Tree => "Up/Down select · Space fold · Enter focus in draft · z zoom · Esc compose",
+                crate::team::View::Wall => "Up/Down or 1-9 member · Enter history · m direct · z zoom · Esc compose",
+                _ => "PgUp/PgDn scroll · d details · h history · P pin · m direct · z zoom · Esc compose",
+            }
+            .into();
         }
         if self.focus == Focus::Approvals {
-            return "a approve once · d deny · Up/Down select · Esc back".into();
+            return "Enter detail · a approve once · d deny · Up/Down select · Esc back".into();
         }
         if self.attachments.visible(&self.composer) || !self.completion.candidates(&self.composer).is_empty() {
             return "Tab/Enter fill · Esc cancel · Up/Down select · Enter again submits".into();
@@ -1976,13 +2636,16 @@ impl V2App {
         if self.chat_scroll > 0 {
             return format!("PgDn newer · {} lines above latest · PgUp older · Enter send", self.chat_scroll);
         }
+        if self.direct_target.is_some() {
+            return "Enter send direct · Esc back to Leader · Ctrl+Q quit".into();
+        }
         if self.active_instance().is_some_and(|i| i.lifecycle == "ACTIVE" && i.phase != "READY") {
-            return "Ctrl+C interrupt · Enter send · Ctrl+P queue · Ctrl+Q quit".into();
+            return "Ctrl+C interrupt · Enter send · Ctrl+P queue · Ctrl+K palette · Ctrl+Q quit".into();
         }
         if self.composer.text().is_empty() {
-            "Enter send · F6 team · ? shortcuts · Ctrl+S sessions · Ctrl+Q quit".into()
+            "Enter send · F6 team · ? shortcuts · Ctrl+S sessions · Ctrl+K palette · Ctrl+Q quit".into()
         } else {
-            "Enter send · Ctrl+S sessions · Ctrl+E editor · Ctrl+Q quit".into()
+            "Enter send · Ctrl+S sessions · Ctrl+E editor · Ctrl+K palette · Ctrl+Q quit".into()
         }
     }
 }

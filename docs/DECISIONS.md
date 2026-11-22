@@ -60,6 +60,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Selected workflows | Manual Leader compaction and after-work input; scoped native graph reads and authenticated search caching | D-530 |
 | Leak-guard ownership | Only processes that inherited this run's marker are this run's leaks | D-528 |
 | Interface feedback | Command answers are transient feedback or a dismissible overlay; the conversation holds only the model exchange and input receipts | D-531 |
+| Interactive workspace UX | TUI modals (`Ctrl+K` palette, `/rewind`, `/mcp`, approval drawer), interactive tree/wall/pinning, confirmed member/task interventions, single-shot direct message, search/OSC 52 copy, and multi-session monitor | D-532 |
 
 ## Authority and runtime
 
@@ -285,10 +286,20 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   event history. Reads run only for visible content, failed reads retain refresh debt, focus stays visible after
   resize/command receipts, and image metadata/cache retention spans every viewport in a frame. Task outcomes
   remain distinct from process-stop evidence; missing usage and unknown effects remain explicit.
-- F6 cycles composer/team/inspection focus; Alt+1 through Alt+4 select Chat/Tasks/Activity/Inspect. Enter submits,
-  Shift+Enter inserts a newline, Ctrl+C interrupts, Ctrl+Q detaches, Ctrl+S opens sessions, Ctrl+P pending inputs
-  and Ctrl+M model/effort selection. All slash commands share one registry. Completion edits the draft;
-  a separate Enter executes it.
+- F6 cycles composer/team/inspection focus; Alt+1 through Alt+6 select Chat/Tasks/Activity/Inspect/Tree/Wall. Enter submits,
+  Shift+Enter inserts a newline, Ctrl+C interrupts, Ctrl+Q detaches, Ctrl+K opens the command/goto palette, Ctrl+F searches
+  chat, Ctrl+S opens sessions, Ctrl+P pending inputs and Ctrl+M model/effort selection. All slash commands share one
+  registry. Completion edits the draft; a separate Enter executes it.
+- D-532: the interactive workspace TUI extends Herdr-style multi-pane observation with: (1) explicitly confirmed
+  member pause/resume/terminate (`p`/`r`/`X`) and task cancellation (`x`) plus single-shot worker direct messaging (`m`,
+  automatically resetting to Leader after submit or on `Esc`); (2) fuzzy `Ctrl+K` command/goto palette and interactive
+  `/rewind` / `/mcp` / approval-detail modals alongside direct CLI/subcommand fallbacks; (3) foldable session exploration
+  tree (`View::Tree`), multi-member live wall (`View::Wall`), and inspector pinning (`P`); (4) per-tool click toggle,
+  `edit_file` diff counts, `Ctrl+F` in-chat search, and OSC 52 code-block copy; (5) de-duplicated top bar (keeping flash
+  notices in the composer activity line), known USD cost, budget/context progress, and busy phase elapsed seconds; and
+  (6) a bounded read-only background `LiveMonitor` probing sibling daemon sockets for the sidebar live-session strip.
+  All lifecycle/task actions require explicit non-repeat confirmation, never alter capability grants or ownership, and
+  keep Leader fallback intact.
 - Session search/fork/rename/archive/restore/delete preserve authoritative history. Fork needs a stopped source
   and fresh execution evidence. Listening endpoints are protected regardless of greeting; only missing/refused
   sockets establish absence. Other errors retain/refuse. Explicit stop propagates failures and rechecks absence
@@ -312,7 +323,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 895 Rust tests: core 210, engine 563 and TUI 122.
+- Current source contains 906 Rust tests: core 210, engine 563 and TUI 133.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified

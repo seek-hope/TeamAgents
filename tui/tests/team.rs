@@ -310,3 +310,379 @@ fn sidebar_and_tabs_mouse_targets_match_rendered_rows_and_narrow_focus_can_reach
     assert_eq!(app.focus, Focus::Composer);
     assert_eq!(app.composer.text(), "kept draft");
 }
+
+#[test]
+fn member_badges_attention_jump_and_focus_distinction() {
+    use crossterm::event::KeyEventKind;
+    use ratatui::style::Modifier;
+    use teamagents_tui::{team, theme};
+
+    let tasks = vec![json!({"id":"task-1","assignee":"i-worker","status":"BLOCKED"})];
+    let (g_parked, s_parked) = team::state_badge(
+        &json!({"id":"i-worker","lifecycle":"PARKED","phase":"READY","diagnosis":{"attention":true}}),
+        &tasks,
+    );
+    assert_eq!(g_parked, "!");
+    assert_eq!(s_parked.fg, Some(theme::ERROR));
+    assert!(s_parked.add_modifier.contains(Modifier::BOLD));
+
+    let (g_approval, s_approval) =
+        team::state_badge(&json!({"id":"a","lifecycle":"ACTIVE","phase":"WAITING_CAPABILITY"}), &[]);
+    assert_eq!(g_approval, "◆");
+    assert!(s_approval.add_modifier.contains(Modifier::BOLD));
+
+    let (g_idle, s_idle) = team::state_badge(&json!({"id":"b","lifecycle":"ACTIVE","phase":"READY"}), &[]);
+    assert_eq!(g_idle, "○");
+    assert!(s_idle.add_modifier.contains(Modifier::DIM));
+
+    let (g_term, s_term) = team::state_badge(&json!({"id":"c","lifecycle":"TERMINATED","phase":"READY"}), &[]);
+    assert_eq!(g_term, "×");
+    assert!(s_term.add_modifier.contains(Modifier::DIM));
+
+    let mut app = app();
+    app.composer.set_text("keep-draft");
+    let area = Rect::new(0, 0, 140, 36);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let geo = v2ui::geometry(&app, area);
+    let (list, _, _) = team::member_window(&app, geo.sidebar);
+    // Unfocused sidebar keeps selection marker without reversed video so composer stays clear.
+    let unfocused_cell = terminal.backend().buffer()[(list.x + 1, list.y)].clone();
+    assert!(!unfocused_cell.modifier.contains(Modifier::REVERSED));
+
+    app.focus = Focus::Team;
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let focused_cell = terminal.backend().buffer()[(list.x + 1, list.y)].clone();
+    assert!(focused_cell.modifier.contains(Modifier::REVERSED));
+
+    app.focus = Focus::Composer;
+    assert!(app
+        .handle_key(KeyEvent::new_with_kind(KeyCode::Char('n'), KeyModifiers::ALT, KeyEventKind::Repeat))
+        .is_none());
+    assert_eq!(app.team.selected, "i-leader");
+    assert!(app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)).is_none());
+    assert_eq!(app.team.selected, "i-worker");
+    assert_eq!(app.focus, Focus::Panel);
+
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.focus, Focus::Composer);
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Some(V2Effect::Interrupt { instance: "i-leader".into() })
+    );
+    assert!(
+        matches!(app.handle_key(key(KeyCode::Enter)), Some(V2Effect::SubmitInput { instance, text, .. }) if instance == "i-leader" && text == "keep-draft")
+    );
+
+    app.team.select("i-leader");
+    app.focus = Focus::Team;
+    assert!(app
+        .handle_key(KeyEvent::new_with_kind(KeyCode::Char('!'), KeyModifiers::SHIFT, KeyEventKind::Repeat))
+        .is_none());
+    assert_eq!(app.team.selected, "i-leader");
+    assert!(app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::SHIFT)).is_none());
+    assert_eq!(app.team.selected, "i-worker");
+}
+
+#[test]
+fn sidebar_toggle_zoom_and_border_drag_keep_disjoint_geometry() {
+    use crossterm::event::KeyEventKind;
+
+    let mut app = app();
+    let area = Rect::new(0, 0, 140, 36);
+    app.focus = Focus::Team;
+    assert!(app
+        .handle_key(KeyEvent::new_with_kind(KeyCode::Char('b'), KeyModifiers::ALT, KeyEventKind::Repeat))
+        .is_none());
+    assert!(!app.sidebar_hidden);
+    assert!(app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT)).is_none());
+    assert!(app.sidebar_hidden);
+    assert_eq!(app.focus, Focus::Composer);
+    assert!(v2ui::geometry(&app, area).sidebar.is_empty());
+
+    assert!(app
+        .handle_key(KeyEvent::new_with_kind(KeyCode::Char('z'), KeyModifiers::ALT, KeyEventKind::Repeat))
+        .is_none());
+    assert!(!app.zoomed);
+    assert!(app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT)).is_none());
+    assert!(app.zoomed);
+    let zoomed_screen = render(&mut app, area.width, area.height);
+    assert!(zoomed_screen.contains("[ZOOM]"));
+    assert_eq!(v2ui::geometry(&app, area).chat.width, area.width);
+    assert!(v2ui::geometry(&app, area).inspector.is_empty());
+
+    // Clicking the [Zoom] pill in the nav bar toggles zoom back off, and [Team] restores the sidebar.
+    let nav_rect = v2ui::geometry(&app, area).nav;
+    let zoom_pill = teamagents_tui::team::nav_actions(&app, nav_rect, area.width)
+        .into_iter()
+        .find(|(_, action, _, _)| *action == teamagents_tui::team::NavAction::Zoom)
+        .unwrap()
+        .0;
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: zoom_pill.x,
+            row: zoom_pill.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(!app.zoomed);
+    let nav_rect = v2ui::geometry(&app, area).nav;
+    let team_pill = teamagents_tui::team::nav_actions(&app, nav_rect, area.width)
+        .into_iter()
+        .find(|(_, action, _, _)| *action == teamagents_tui::team::NavAction::Sidebar)
+        .unwrap()
+        .0;
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: team_pill.x,
+            row: team_pill.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(!app.sidebar_hidden);
+
+    // Dragging split borders resizes within bounds and clears drag state on release.
+    let geo = v2ui::geometry(&app, area);
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: geo.sidebar.right() - 1,
+            row: geo.sidebar.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 34,
+            row: geo.sidebar.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert_eq!(app.sidebar_width, 35);
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 2,
+            row: geo.sidebar.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert_eq!(app.sidebar_width, 18);
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 2,
+            row: geo.sidebar.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(app.drag.is_none());
+
+    let geo = v2ui::geometry(&app, area);
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: geo.inspector.x,
+            row: geo.inspector.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: geo.inspector.right() - 10,
+            row: geo.inspector.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert_eq!(app.inspector_pct, 25);
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: geo.inspector.right() - 10,
+            row: geo.inspector.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(app.drag.is_none());
+
+    for sidebar_hidden in [false, true] {
+        for zoomed in [false, true] {
+            for width in [0, 1, 24, 80, 96, 132, 160] {
+                for height in [0, 1, 8, 24, 40] {
+                    app.sidebar_hidden = sidebar_hidden;
+                    app.zoomed = zoomed;
+                    let rect = Rect::new(0, 0, width, height);
+                    render(&mut app, width, height);
+                    let g = v2ui::geometry(&app, rect);
+                    let regions = [
+                        g.status,
+                        g.nav,
+                        g.sidebar,
+                        g.chat,
+                        g.inspector,
+                        g.activity,
+                        g.approvals,
+                        g.completion,
+                        g.composer,
+                        g.footer,
+                    ];
+                    for (i, region) in regions.iter().enumerate() {
+                        assert_eq!(region.intersection(rect), *region);
+                        for other in &regions[i + 1..] {
+                            assert!(region.intersection(*other).is_empty());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn clickable_inspector_tabs_activity_filter_chat_latest_and_completion() {
+    use crossterm::event::KeyEventKind;
+
+    let mut app = app();
+    let area = Rect::new(0, 0, 140, 30);
+    app.team.select("i-worker");
+    let geo = v2ui::geometry(&app, area);
+    let (details_tab, history_tab) = teamagents_tui::team::inspector_tabs(geo.inspector).unwrap();
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: history_tab.x,
+            row: history_tab.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(app.team.history_open);
+    assert_eq!(app.focus, Focus::Panel);
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: details_tab.x,
+            row: details_tab.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(!app.team.history_open);
+
+    app.apply_events(&[
+        json!({"sequence": 2, "scope": "i-leader", "kind": "leader_event_marker", "payload": {}}),
+        json!({"sequence": 3, "scope": "i-worker", "kind": "worker_event_marker", "payload": {}}),
+    ]);
+    app.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT));
+    assert_eq!(app.team.view, View::Activity);
+    assert!(app
+        .handle_key(KeyEvent::new_with_kind(KeyCode::Char('f'), KeyModifiers::NONE, KeyEventKind::Repeat))
+        .is_none());
+    assert!(!app.team.activity_filter_selected);
+    app.handle_key(key(KeyCode::Char('f')));
+    assert!(app.team.activity_filter_selected);
+    let filtered = render(&mut app, area.width, area.height);
+    assert!(filtered.contains("worker_event_marker"));
+    assert!(!filtered.contains("leader_event_marker"));
+    let filter_rect = teamagents_tui::team::activity_filter_rect(v2ui::geometry(&app, area).chat).unwrap();
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: filter_rect.x,
+            row: filter_rect.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(!app.team.activity_filter_selected);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT));
+    for i in 0..60 {
+        app.entries.push(teamagents_tui::v2app::ChatEntry {
+            kind: teamagents_tui::v2app::ChatKind::Assistant,
+            who: "i-leader".into(),
+            text: format!("chat-row-{i:02}"),
+            tool: None,
+            workspace: String::new(),
+            media: vec![],
+        });
+    }
+    render(&mut app, area.width, area.height);
+    app.scroll_chat(15);
+    assert!(app.chat_scroll > 0);
+    let scrolled_screen = render(&mut app, area.width, area.height);
+    assert!(scrolled_screen.contains("below · latest"));
+    let chat_rect = v2ui::geometry(&app, area).chat;
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: chat_rect.right() - 4,
+            row: chat_rect.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert_eq!(app.chat_scroll, 0);
+
+    app.composer.set_text("/");
+    let comp_rect = v2ui::geometry(&app, area).completion;
+    assert!(comp_rect.height >= 2);
+    let expected = app.completion.candidates(&app.composer)[1].0;
+    let effect = v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: comp_rect.x + 1,
+            row: comp_rect.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(effect.is_none());
+    assert_eq!(app.composer.text(), expected);
+
+    app.composer.clear();
+    app.handle_key(key(KeyCode::Char('?')));
+    assert!(app.help_open);
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 0, row: 0, modifiers: KeyModifiers::NONE },
+    );
+    assert!(!app.help_open);
+
+    app.open_report("Output", "Report body");
+    assert!(app.report.is_some());
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 0, row: 0, modifiers: KeyModifiers::NONE },
+    );
+    assert!(app.report.is_none());
+}

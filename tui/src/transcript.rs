@@ -11,8 +11,9 @@ use ratatui::{
 };
 use serde_json::Value as Json;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
+    ops::Range,
 };
 
 /// Pair results only with a call in the same member and epoch. An orphan remains visible.
@@ -146,8 +147,10 @@ fn preview(text: &str, cap: usize) -> String {
 /// Parsing and wrapping are cached independently of the composer and streamed tail.
 #[derive(Default)]
 pub struct Transcript {
-    key: Option<(u64, usize, Option<usize>)>,
+    key: Option<(u64, usize, Option<usize>, u64)>,
     document: Document,
+    pub entry_ranges: Vec<(usize, Range<usize>)>,
+    pub code_blocks: Vec<(Range<usize>, String)>,
 }
 impl Transcript {
     pub fn lines(&mut self, entries: &[ChatEntry], width: usize, tool_limit: Option<usize>) -> &[Line<'static>] {
@@ -158,6 +161,18 @@ impl Transcript {
         entries: &[ChatEntry],
         width: usize,
         tool_limit: Option<usize>,
+        graphics: Option<&mut Graphics>,
+        session: &str,
+    ) -> &Document {
+        static EMPTY: std::sync::OnceLock<HashSet<usize>> = std::sync::OnceLock::new();
+        self.document_with_expanded(entries, width, tool_limit, EMPTY.get_or_init(HashSet::new), graphics, session)
+    }
+    pub fn document_with_expanded(
+        &mut self,
+        entries: &[ChatEntry],
+        width: usize,
+        tool_limit: Option<usize>,
+        expanded_entries: &HashSet<usize>,
         mut graphics: Option<&mut Graphics>,
         session: &str,
     ) -> &Document {
@@ -165,9 +180,15 @@ impl Transcript {
         entries.hash(&mut hasher);
         session.hash(&mut hasher);
         graphics.as_ref().map(|g| (g.revision, g.enabled, g.native, g.cell)).hash(&mut hasher);
-        let key = (hasher.finish(), width, tool_limit);
+        let mut exp_hash = 0u64;
+        for &idx in expanded_entries {
+            exp_hash ^= (idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left((idx % 64) as u32);
+        }
+        let key = (hasher.finish(), width, tool_limit, exp_hash);
         if self.key != Some(key) {
             self.document = Document::default();
+            self.entry_ranges.clear();
+            self.code_blocks.clear();
             for (position, entry) in entries.iter().enumerate() {
                 let tool_continuation = entry.tool.is_some()
                     && position > 0
@@ -187,6 +208,14 @@ impl Transcript {
                         ));
                     }
                 }
+                let entry_start = self.document.lines.len();
+                let entry_limit = match tool_limit {
+                    None => None,
+                    Some(limit) => {
+                        let expanded = (limit > 4) ^ expanded_entries.contains(&position);
+                        Some(if expanded { 40 } else { 4 })
+                    }
+                };
                 let origin = Origin {
                     session: session.into(),
                     workspace: (&entry.workspace).into(),
@@ -207,7 +236,7 @@ impl Transcript {
                         self.document.lines.extend(markdown::plain("Conversation compacted", width, secondary()));
                         self.document.append(markdown::render_media(&entry.text, width, Some(g), &origin));
                     } else {
-                        self.document.lines.extend(render_entry(entry, width, tool_limit));
+                        self.document.lines.extend(render_entry(entry, width, entry_limit));
                         if entry.kind == ChatKind::User {
                             for event in pulldown_cmark::Parser::new(&entry.text) {
                                 if let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image { dest_url, .. }) = event
@@ -225,12 +254,79 @@ impl Transcript {
                         self.document.append(g.block(source.clone(), &origin, width));
                     }
                 } else {
-                    self.document.lines.extend(render_entry(entry, width, tool_limit));
+                    self.document.lines.extend(render_entry(entry, width, entry_limit));
+                }
+                let entry_end = self.document.lines.len();
+                if entry.tool.is_some() && entry_end > entry_start {
+                    self.entry_ranges.push((position, entry_start..entry_end));
+                }
+                if matches!(entry.kind, ChatKind::Assistant | ChatKind::Summary) && entry_end > entry_start {
+                    collect_code_blocks(
+                        &entry.text,
+                        &self.document.lines,
+                        entry_start..entry_end,
+                        &mut self.code_blocks,
+                    );
                 }
             }
             self.key = Some(key);
         }
         &self.document
+    }
+}
+
+fn collect_code_blocks(
+    source: &str,
+    lines: &[Line<'static>],
+    span: Range<usize>,
+    out: &mut Vec<(Range<usize>, String)>,
+) {
+    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+    let mut blocks = Vec::new();
+    let mut events = Parser::new_ext(source, Options::ENABLE_TABLES).peekable();
+    while let Some(event) = events.next() {
+        if let Event::Start(Tag::CodeBlock(kind)) = event {
+            let lang = match kind {
+                CodeBlockKind::Fenced(l) => l.split_whitespace().next().unwrap_or("").to_lowercase(),
+                _ => String::new(),
+            };
+            let mut code = String::new();
+            for inner in events.by_ref() {
+                match inner {
+                    Event::End(TagEnd::CodeBlock) => break,
+                    Event::Text(t) => code.push_str(&t),
+                    _ => {}
+                }
+            }
+            if !matches!(lang.as_str(), "mermaid" | "svg" | "dot" | "graphviz") && !code.is_empty() {
+                blocks.push(code);
+            }
+        }
+    }
+    if blocks.is_empty() {
+        return;
+    }
+    let mut block_ix = 0usize;
+    let mut i = span.start;
+    while i < span.end && block_ix < blocks.len() {
+        let text: String = lines[i].spans.iter().map(|s| s.content.as_ref()).collect();
+        if text.trim_start_matches(['●', ' ']).starts_with("╭─ ") {
+            let start = i;
+            let mut end = i + 1;
+            while end < span.end {
+                let row: String = lines[end].spans.iter().map(|s| s.content.as_ref()).collect();
+                if row.trim_start_matches(['●', ' ']).starts_with("╰─") {
+                    end += 1;
+                    break;
+                }
+                end += 1;
+            }
+            out.push((start..end, blocks[block_ix].clone()));
+            block_ix += 1;
+            i = end;
+        } else {
+            i += 1;
+        }
     }
 }
 
@@ -350,6 +446,49 @@ fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> V
     out
 }
 
+fn text_pair_diff(old: &str, new: &str) -> (usize, usize) {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let mut prefix = 0usize;
+    while prefix < old_lines.len() && prefix < new_lines.len() && old_lines[prefix] == new_lines[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix + prefix < old_lines.len()
+        && suffix + prefix < new_lines.len()
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    (new_lines.len().saturating_sub(prefix + suffix), old_lines.len().saturating_sub(prefix + suffix))
+}
+
+fn edit_arg_diff_stats(args: &Json) -> Option<(usize, usize)> {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    if let (Some(old), Some(new)) = (
+        args["old_text"].as_str().or_else(|| args["old_string"].as_str()),
+        args["new_text"].as_str().or_else(|| args["new_string"].as_str()),
+    ) {
+        let (a, r) = text_pair_diff(old, new);
+        added += a;
+        removed += r;
+    }
+    if let Some(edits) = args["edits"].as_array() {
+        for edit in edits {
+            if let (Some(old), Some(new)) = (
+                edit["old_text"].as_str().or_else(|| edit["old_string"].as_str()),
+                edit["new_text"].as_str().or_else(|| edit["new_string"].as_str()),
+            ) {
+                let (a, r) = text_pair_diff(old, new);
+                added += a;
+                removed += r;
+            }
+        }
+    }
+    (added > 0 || removed > 0).then_some((added, removed))
+}
+
 fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<'static>> {
     let status = if tool.output.is_some() { "result received" } else { "awaiting result" };
     let args: Json = serde_json::from_str(&tool.arguments).unwrap_or(Json::Null);
@@ -370,15 +509,33 @@ fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<
             })
             .unwrap_or_else(|| tool.arguments.clone())
     };
-    let header = Line::from(vec![
+    let diff_stats = if matches!(tool.name.as_str(), "edit_file" | "edit_files") {
+        tool.output
+            .as_deref()
+            .and_then(|out| {
+                let added = out.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
+                let removed = out.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
+                (added > 0 || removed > 0).then_some((added, removed))
+            })
+            .or_else(|| edit_arg_diff_stats(&args))
+    } else {
+        None
+    };
+    let mut header_spans = vec![
         Span::styled("› ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(markdown::clean(&tool.name), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" · {status}"), secondary()),
-        Span::styled(
-            if compact { format!("  {}", markdown::clean(&summary).replace('\n', " ")) } else { String::new() },
-            Style::default().fg(CODE),
-        ),
-    ]);
+    ];
+    if let Some((added, removed)) = diff_stats {
+        header_spans.push(Span::styled(" · ", secondary()));
+        header_spans.push(Span::styled(format!("+{added}"), Style::default().fg(ADDED)));
+        header_spans.push(Span::styled(format!(" -{removed}"), Style::default().fg(ERROR)));
+    }
+    header_spans.push(Span::styled(
+        if compact { format!("  {}", markdown::clean(&summary).replace('\n', " ")) } else { String::new() },
+        Style::default().fg(CODE),
+    ));
+    let header = Line::from(header_spans);
     let mut out = crate::wrap::wrap_line(&header, width);
     if compact {
         shorten(&mut out, 2, width);

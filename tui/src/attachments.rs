@@ -94,6 +94,16 @@ impl Attachments {
         ));
     }
 
+    fn accept_selected(&mut self, composer: &mut Composer) {
+        match self.target.clone() {
+            Some(Target::Mention { row, start, end }) => self.accept_mention(composer, row, start, end),
+            _ => {
+                composer.set_text(&format!("/attach {}", self.candidates[self.selected]));
+                self.candidates.clear();
+            }
+        }
+    }
+
     pub fn key(&mut self, composer: &mut Composer, key: KeyEvent) -> bool {
         if !self.visible(composer) || !key.modifiers.is_empty() {
             return false;
@@ -102,15 +112,19 @@ impl Attachments {
             KeyCode::Esc => self.candidates.clear(),
             KeyCode::Up => self.selected = (self.selected + self.candidates.len() - 1) % self.candidates.len(),
             KeyCode::Down => self.selected = (self.selected + 1) % self.candidates.len(),
-            KeyCode::Tab | KeyCode::Enter => match self.target.clone() {
-                Some(Target::Mention { row, start, end }) => self.accept_mention(composer, row, start, end),
-                _ => {
-                    composer.set_text(&format!("/attach {}", self.candidates[self.selected]));
-                    self.candidates.clear();
-                }
-            },
+            KeyCode::Tab | KeyCode::Enter => self.accept_selected(composer),
             _ => return false,
         }
+        true
+    }
+
+    /// Select and accept one path candidate into the draft without submitting it.
+    pub fn apply_at(&mut self, composer: &mut Composer, index: usize) -> bool {
+        if !self.visible(composer) || index >= self.candidates.len() {
+            return false;
+        }
+        self.selected = index;
+        self.accept_selected(composer);
         true
     }
 

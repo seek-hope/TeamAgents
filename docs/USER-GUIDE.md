@@ -206,11 +206,23 @@ The Herdr-inspired workspace shows members and their recorded state beside the L
 columns the member sidebar becomes persistent; at 132 columns and sufficient height, Chat also has an inspector.
 Narrow terminals use one content pane. The composer always names its Leader recipient, even while viewing a member.
 
-- F6 cycles composer, team and inspection focus. In the team list, Up/Down selects a member and Enter opens details.
-  `h` opens read-only member history, `d` returns to details, and Esc returns to the draft. Mouse selection uses
-  the same member rows and view tabs. Navigation preserves the draft and staged attachments.
-- Alt+1 opens Chat, Alt+2 Tasks, Alt+3 Activity and Alt+4 Inspect. The task view includes recorded terminal outcomes;
-  a task result or cancellation does not establish process termination.
+- F6 cycles composer, team and inspection focus. In the team list, Up/Down (or `j`/`k`, `Home`/`End`) selects a
+  member and Enter opens details. `h` opens read-only member history, `d` returns to details, `P` pins/unpins the
+  right-hand inspector target, and Esc returns to the draft. Explicit confirmation modals guard member `p` (pause),
+  `r` (resume), `X` (terminate) and task `x` (cancel). `m` switches the composer to a single-shot direct message to
+  the selected member and resets automatically to Leader after submission or on Esc. Mouse selection supports member
+  rows, sibling `LIVE SESSIONS`, view tabs, inspector tabs/actions, wall cards, tree nodes and draggable split borders.
+- Alt+1 opens Chat, Alt+2 Tasks, Alt+3 Activity, Alt+4 Inspect, Alt+5 Tree (foldable with Space/Left/Right; Enter inserts
+  a focus prompt into the draft) and Alt+6 Wall (multi-member live grid). Alt+B (or `b` in team/panel focus) toggles the
+  team sidebar, Alt+Z (or `z`) zooms the active pane, and Alt+N (or `!`) jumps to the next member needing
+  attention. In Activity, `f` filters events to the selected member. The task view includes recorded terminal
+  outcomes; a task result or cancellation does not establish process termination.
+- Ctrl+K opens a fuzzy command/member/task/tree/session palette. Ctrl+F searches the Leader conversation (`n`/`N` jump
+  between matches, Esc clears). Clicking a code block copies it via OSC 52; clicking a tool entry toggles its
+  expanded output; `Enter` on a focused approval row opens its full-argument detail drawer.
+- Top status shows runtime state (with elapsed busy seconds), token/context progress bar and known USD cost estimate;
+  transient command/copy notices appear solely above the composer. A background read-only monitor probes sibling daemon
+  sockets under the same registry for quick session switching from the sidebar.
 - Inspect shows saved reasons, work state, next steps, waits and operations. Member history has its own scrolling,
   streamed preview and media. Its newest 400 entries are loaded only while visible; `/sessions` offers older
   history. Read failures keep refresh debt and a visible stale warning until a valid reply arrives.

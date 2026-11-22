@@ -177,12 +177,35 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
         }
         lines
     };
-    let title =
-        if queue.editor.is_some() { "Edit pending text (attachments retained)" } else { "Accepted, not yet consumed" };
-    if let Some(editor) = &queue.editor {
-        crate::v2ui::render_editor(frame, editor, rows[1], title, true, "Edit queued message");
+    let title = if queue.editor.is_some() {
+        "Edit pending text (attachments retained)".to_string()
+    } else if !queue.rows.is_empty() {
+        format!("Accepted, not yet consumed ({}/{})", queue.selected + 1, queue.rows.len())
     } else {
-        frame.render_widget(Paragraph::new(lines).block(panel(title)), rows[1]);
+        "Accepted, not yet consumed".to_string()
+    };
+    if let Some(editor) = &queue.editor {
+        crate::v2ui::render_editor(frame, editor, rows[1], &title, true, "Edit queued message");
+    } else {
+        let block = panel(title);
+        let inner = block.inner(rows[1]);
+        frame.render_widget(Paragraph::new(lines).block(block), rows[1]);
+        let height = rows[1].height.saturating_sub(2) as usize;
+        if queue.rows.len() > height && inner.width > 1 {
+            let max_scroll = queue.rows.len().saturating_sub(height);
+            let start = queue.selected.saturating_sub(height.saturating_sub(1)).min(max_scroll);
+            let mut state = ratatui::widgets::ScrollbarState::new(max_scroll + 1).position(start);
+            frame.render_stateful_widget(
+                ratatui::widgets::Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None)
+                    .thumb_style(Style::default().fg(crate::theme::ACCENT))
+                    .thumb_symbol("▏")
+                    .track_symbol(None),
+                inner,
+                &mut state,
+            );
+        }
     }
     let footer = if queue.confirming {
         format!("Cancel {}? y confirms; Esc keeps it.", queue.target.as_ref().map(|t| t.0.as_str()).unwrap_or("input"))

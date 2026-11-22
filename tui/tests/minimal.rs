@@ -126,6 +126,7 @@ fn ctrl_m_opens_the_model_menu_and_enter_changes_the_profile() {
         model: "test".into(),
         provider: "compatible".into(),
         efforts: vec![],
+        context_window: None,
     }];
     app.efforts = vec!["low".into(), "high".into()];
     app.apply_checkpoint(
@@ -235,6 +236,7 @@ fn a_missing_effort_falls_back_to_the_nearest_lower_level() {
         model: "test".into(),
         provider: "compatible".into(),
         efforts: vec!["high".into(), "max".into()],
+        context_window: None,
     }];
     app.apply_checkpoint(
         json!({"instances": [{"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY",
@@ -260,12 +262,14 @@ fn switching_models_rebuilds_efforts_and_applies_the_same_fallback() {
             model: "wide".into(),
             provider: "compatible".into(),
             efforts: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into(), "max".into()],
+            context_window: None,
         },
         ModelInfo {
             key: "narrow".into(),
             model: "narrow".into(),
             provider: "compatible".into(),
             efforts: vec!["high".into(), "max".into()],
+            context_window: None,
         },
     ];
     app.apply_checkpoint(

@@ -209,7 +209,16 @@ fn v2_refresh_history(client: &mut DaemonClient, app: &mut V2App) {
 }
 
 fn v2_refresh_observations(client: &mut DaemonClient, app: &mut V2App, retry: bool) -> bool {
-    if app.browser.is_some() || app.queue.is_some() || app.profile.is_some() || app.help_open {
+    if app.browser.is_some()
+        || app.queue.is_some()
+        || app.profile.is_some()
+        || app.help_open
+        || app.palette.is_some()
+        || app.rewind_modal.is_some()
+        || app.mcp_modal.is_some()
+        || app.approval_detail.is_some()
+        || app.confirm.is_some()
+    {
         return false;
     }
     let mut changed = false;
@@ -217,6 +226,13 @@ fn v2_refresh_observations(client: &mut DaemonClient, app: &mut V2App, retry: bo
         match client.call("tasks", json!({})) {
             Ok(reply) => app.team.apply_tasks(&reply),
             Err(error) => app.team.tasks_error = Some(error),
+        }
+        changed = true;
+    }
+    if app.team.tree_visible && app.team.tree_dirty && (retry || app.team.tree_error.is_none()) {
+        match client.call("search_tree", json!({})) {
+            Ok(reply) => app.team.apply_tree(&reply),
+            Err(error) => app.team.fail_tree(error),
         }
         changed = true;
     }
@@ -324,65 +340,222 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
                 Err(e) => app.decide_failed(&e),
             }
         }
-        V2Effect::RewindList{before} => match client.call("rewind_points",json!({"before":before})) {
-            Ok(r)=>app.command_note(format!("Applicable Leader prompts (newest first): {}. Use /rewind preview KEY; older points: /rewind before {}",r["points"],r["next_before"])),Err(e)=>app.command_failed(&e),
-        },
-        V2Effect::RewindFiles {key} => match client.call("rewind_points",json!({"envelope":key,"files":true})) {
-            Ok(report) if report["scope"] == "git_tracked_workspace" => {
-                let mut lines=vec![format!("Restore Git-tracked workspace files to their contents when {key} was delivered, and reopen that prompt.")];
-                for file in report["files"].as_array().into_iter().flatten() {
-                    lines.push(format!("{}  {}",file["status"].as_str().unwrap_or("unavailable"),file["path"]));
+        V2Effect::SetLifecycle { instance, lifecycle, reason } => {
+            let command_id = match lifecycle {
+                "TERMINATED" => format!("lifecycle-{instance}-{lifecycle}"),
+                _ => format!("lifecycle-{instance}-{lifecycle}-{}", uuid::Uuid::new_v4()),
+            };
+            match client.command(
+                &command_id,
+                "set_lifecycle",
+                json!({"instance_id": instance, "lifecycle": lifecycle, "reason": reason}),
+            ) {
+                Ok(_) => {
+                    app.flash(format!("{instance} -> {lifecycle}"));
+                    v2_sync_checkpoint(client, app);
                 }
-                lines.push("snapshot_difference includes edits by shells or external editors. Review every path.".into());
-                if report["apply_available"]==true { lines.push("Confirm with /rewind apply.".into()); app.rewind_preview=Some(report); } else {lines.push("Conflicts prevent restoration.".into());}
-                app.command_note(lines.join("\n"));
+                Err(e) => app.command_failed(&e),
             }
-            Ok(report) if report["scope"] == "recorded_leader_edits" => {
-                let mut lines = vec![format!("Recorded Leader edits since {key} (read-only preview)")];
-                if let Some(files) = report["files"].as_array() {
-                    for file in files {
+        }
+        V2Effect::CancelTask { task_id, reason } => {
+            match client.command(
+                &format!("cancel-{task_id}"),
+                "cancel_task",
+                json!({"task_id": task_id, "reason": reason}),
+            ) {
+                Ok(_) => {
+                    app.flash(format!("Cancelled task {task_id}."));
+                    v2_sync_checkpoint(client, app);
+                }
+                Err(e) => app.command_failed(&e),
+            }
+        }
+        V2Effect::CopyClipboard(text) => {
+            use std::io::Write;
+            let seq = teamagents_tui::overlays::osc52_sequence(&text);
+            let mut out = std::io::stdout();
+            let _ = out.write_all(seq.as_bytes());
+            let _ = out.flush();
+            app.flash("Copied code block to clipboard (OSC 52).");
+        }
+        V2Effect::RewindList { before } => match client.call("rewind_points", json!({"before": before})) {
+            Ok(r) => {
+                if let Some(modal) = app.rewind_modal.as_mut() {
+                    if let Some(follow) = modal.apply_points(&r, before.is_some()) {
+                        if let Some(effect) = app.apply_rewind_action(follow) {
+                            run_v2_effect(effect, client, app, sessions);
+                        }
+                    }
+                } else {
+                    app.command_note(format!(
+                        "Applicable Leader prompts (newest first): {}. Use /rewind preview KEY; older points: /rewind before {}",
+                        r["points"], r["next_before"]
+                    ));
+                }
+            }
+            Err(e) => {
+                if let Some(modal) = app.rewind_modal.as_mut() {
+                    modal.fail(e);
+                } else {
+                    app.command_failed(&e);
+                }
+            }
+        },
+        V2Effect::RewindFiles { key } => match client.call("rewind_points", json!({"envelope": key, "files": true})) {
+            Ok(report) => {
+                if let Some(modal) = app.rewind_modal.as_mut() {
+                    modal.apply_preview(report);
+                } else if report["scope"] == "git_tracked_workspace" {
+                    let mut lines = vec![format!(
+                        "Restore Git-tracked workspace files to their contents when {key} was delivered, and reopen that prompt."
+                    )];
+                    for file in report["files"].as_array().into_iter().flatten() {
                         lines.push(format!("{}  {}", file["status"].as_str().unwrap_or("unavailable"), file["path"]));
                     }
+                    lines.push(
+                        "snapshot_difference includes edits by shells or external editors. Review every path.".into(),
+                    );
+                    if report["apply_available"] == true {
+                        lines.push("Confirm with /rewind apply.".into());
+                        app.rewind_preview = Some(report);
+                    } else {
+                        lines.push("Conflicts prevent restoration.".into());
+                    }
+                    app.command_note(lines.join("\n"));
+                } else if report["scope"] == "recorded_leader_edits" {
+                    let mut lines = vec![format!("Recorded Leader edits since {key} (read-only preview)")];
+                    if let Some(files) = report["files"].as_array() {
+                        for file in files {
+                            lines.push(format!(
+                                "{}  {}",
+                                file["status"].as_str().unwrap_or("unavailable"),
+                                file["path"]
+                            ));
+                        }
+                    }
+                    lines.push(format!("Workspace snapshot unavailable: {}", report["snapshot_error"]));
+                    lines.push(format!(
+                        "Other successful file operations without edit records: {}",
+                        report["untracked_file_operations"]
+                    ));
+                    app.command_note(lines.join("\n"));
+                } else {
+                    app.command_failed("This daemon does not support file previews.");
                 }
-                lines.push(format!("Workspace snapshot unavailable: {}", report["snapshot_error"]));
-                lines.push(format!("Other successful file operations without edit records: {}",report["untracked_file_operations"]));
-                app.command_note(lines.join("\n"));
             }
-            Ok(_) => app.command_failed("This daemon does not support file previews."),
+            Err(e) => {
+                if let Some(modal) = app.rewind_modal.as_mut() {
+                    modal.fail(e);
+                } else {
+                    app.command_failed(&e);
+                }
+            }
+        },
+        V2Effect::RewindPreview { key } => match client.call("rewind_points", json!({"envelope": key})) {
+            Ok(p) => {
+                if let Some(modal) = app.rewind_modal.as_mut() {
+                    modal.apply_preview(p);
+                } else {
+                    app.command_note(format!(
+                        "Conversation only. Keep the prefix before {} and reopen its prompt. Files, work and external effects are unchanged. Old history stays readable. Confirm with /rewind apply. Prompt: {}",
+                        key, p["draft"]["text"]
+                    ));
+                    app.rewind_preview = Some(p);
+                }
+            }
+            Err(e) => {
+                if let Some(modal) = app.rewind_modal.as_mut() {
+                    modal.fail(e);
+                } else {
+                    app.command_failed(&e);
+                }
+            }
+        },
+        V2Effect::RewindApply { preview } => {
+            let mut params = json!({"mode":preview["mode"],"envelope":preview["envelope"],"epoch":preview["epoch"],"revision":preview["revision"],"head":preview["head"]});
+            if let Some(digest) = preview.get("preview_digest") {
+                params["preview_digest"] = digest.clone();
+            }
+            match client.command(&format!("rewind-{}", uuid::Uuid::new_v4()), "rewind_conversation", params) {
+                Ok(r) => {
+                    app.rewind_modal = None;
+                    app.open_rewind_draft(&r);
+                    v2_sync_checkpoint(client, app);
+                    v2_refresh_history(client, app);
+                }
+                Err(e) => {
+                    if let Some(modal) = app.rewind_modal.as_mut() {
+                        modal.fail(e);
+                    } else {
+                        app.command_failed(&e);
+                    }
+                }
+            }
+        }
+        V2Effect::RewindDraft => match client.call("rewind_points", json!({"draft": true})) {
+            Ok(r) => app.open_rewind_draft(&r),
             Err(e) => app.command_failed(&e),
         },
-        V2Effect::RewindPreview{key}=>match client.call("rewind_points",json!({"envelope":key})){
-            Ok(p)=>{app.command_note(format!("Conversation only. Keep the prefix before {} and reopen its prompt. Files, work and external effects are unchanged. Old history stays readable. Confirm with /rewind apply. Prompt: {}",key,p["draft"]["text"]));app.rewind_preview=Some(p);},Err(e)=>app.command_failed(&e),
-        },
-        V2Effect::RewindApply{preview}=>{
-            let mut params=json!({"mode":preview["mode"],"envelope":preview["envelope"],"epoch":preview["epoch"],"revision":preview["revision"],"head":preview["head"]});
-            if let Some(digest)=preview.get("preview_digest") {params["preview_digest"]=digest.clone();}
-            match client.command(&format!("rewind-{}",uuid::Uuid::new_v4()),"rewind_conversation",params){
-            Ok(r)=>{app.open_rewind_draft(&r);v2_sync_checkpoint(client,app);v2_refresh_history(client,app);},Err(e)=>app.command_failed(&e),
-        }},
-        V2Effect::RewindDraft=>match client.call("rewind_points",json!({"draft":true})){Ok(r)=>app.open_rewind_draft(&r),Err(e)=>app.command_failed(&e)},
-        V2Effect::RewindSend{source,envelope,text}=>match client.command(&format!("input-{envelope}"),"send_rewind_draft",json!({"source":source,"envelope_id":envelope,"text":text})) {
-            Ok(r)=>{app.attachments.accepted();app.input_receipt(&envelope,&r);},Err(e)=>{app.composer.set_text(&text);app.submit_failed(&e);},
+        V2Effect::RewindSend { source, envelope, text } => match client.command(
+            &format!("input-{envelope}"),
+            "send_rewind_draft",
+            json!({"source": source, "envelope_id": envelope, "text": text}),
+        ) {
+            Ok(r) => {
+                app.attachments.accepted();
+                app.input_receipt(&envelope, &r);
+            }
+            Err(e) => {
+                app.composer.set_text(&text);
+                app.submit_failed(&e);
+            }
         },
         V2Effect::McpStatus => match client.call("checkpoint", json!({})) {
             Ok(reply) => {
                 let s = &reply["snapshot"];
-                app.command_note(format!(
-                    "Configured MCP bindings: {}\nDesired session policy: {}\nLast observed by driver: {}",
-                    s["mcp"], s["mcp_policy"], s["mcp_drivers"]
-                ));
+                app.mcp_snapshot = s["mcp"].clone();
+                app.mcp_policy = s["mcp_policy"].clone();
+                app.mcp_drivers = s["mcp_drivers"].clone();
+                if let Some(modal) = app.mcp_modal.as_mut() {
+                    modal.refresh_from(&app.mcp_snapshot, &app.mcp_policy, &app.mcp_drivers);
+                } else if std::mem::take(&mut app.pending_mcp_modal) {
+                    app.open_mcp_modal();
+                } else {
+                    app.command_note(format!(
+                        "Configured MCP bindings: {}\nDesired session policy: {}\nLast observed by driver: {}",
+                        s["mcp"], s["mcp_policy"], s["mcp_drivers"]
+                    ));
+                }
             }
-            Err(e) => app.command_failed(&e),
+            Err(e) => {
+                app.pending_mcp_modal = false;
+                app.command_failed(&e);
+            }
         },
         V2Effect::McpChange { action, service } => match client.command(
             &format!("mcp-{}", uuid::Uuid::new_v4()),
             "set_mcp_service",
-            json!({"action":action,"service":service}),
+            json!({"action": action, "service": service}),
         ) {
             Ok(reply) => {
-                app.command_note(format!("MCP desired state: {reply}. Use /mcp status to check driver observations."))
+                if app.mcp_modal.is_some() {
+                    if let Some(modal) = app.mcp_modal.as_mut() {
+                        modal.note = Some(format!("Requested {action} on {service}: {reply}"));
+                    }
+                    v2_sync_checkpoint(client, app);
+                } else {
+                    app.command_note(format!(
+                        "MCP desired state: {reply}. Use /mcp status to check driver observations."
+                    ))
+                }
             }
-            Err(e) => app.command_failed(&e),
+            Err(e) => {
+                if let Some(modal) = app.mcp_modal.as_mut() {
+                    modal.note = Some(format!("MCP action failed: {e}"));
+                } else {
+                    app.command_failed(&e);
+                }
+            }
         },
         V2Effect::Compact { instance, focus } => {
             match client.command(
@@ -420,8 +593,18 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
             }
         }
         V2Effect::SearchTree => match client.call("search_tree", json!({})) {
-            Ok(reply) => app.command_note(reply["text"].as_str().unwrap_or("Session search tree is unavailable")),
-            Err(error) => app.command_failed(&error),
+            Ok(reply) => {
+                app.team.apply_tree(&reply);
+                if app.team.view != teamagents_tui::team::View::Tree {
+                    app.command_note(reply["text"].as_str().unwrap_or("Session search tree is unavailable"));
+                }
+            }
+            Err(error) => {
+                app.team.fail_tree(error.clone());
+                if app.team.view != teamagents_tui::team::View::Tree {
+                    app.command_failed(&error);
+                }
+            }
         },
         V2Effect::SetRoleProfile { role, model, effort, follow } => {
             let mut params = json!({"role": match role {
@@ -477,8 +660,11 @@ fn edit_in_editor(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, ap
 
 fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client: DaemonClient, mut app: V2App) -> i32 {
     let mut sessions = SessionClient::new(&app.session_root);
+    let live_monitor = teamagents_tui::live_sessions::LiveMonitor::new();
     let mut images = teamagents_tui::graphics::KittyOutput::default();
     v2_sync_checkpoint(&mut client, &mut app);
+    let mut last_siblings = app.sibling_sessions.clone();
+    live_monitor.set_targets(&last_siblings);
     v2_refresh_history(&mut client, &mut app);
     v2_refresh_approvals(&mut client, &mut app);
     let mut last_event_poll = Instant::now();
@@ -492,6 +678,11 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
     let mut last_disconnected = app.disconnected;
     loop {
         dirty |= sessions.poll(&mut client, &mut app);
+        if app.sibling_sessions != last_siblings {
+            last_siblings = app.sibling_sessions.clone();
+            live_monitor.set_targets(&last_siblings);
+        }
+        dirty |= live_monitor.poll(&mut app);
         dirty |= app.graphics.poll();
         if dirty {
             let _ = images.clear(&mut std::io::stdout());
@@ -569,7 +760,32 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                     app.graphics.resize();
                     dirty = true;
                 }
-                Ok(Event::Paste(_)) if app.help_open => {}
+                Ok(Event::Paste(_))
+                    if app.help_open
+                        || app.confirm.is_some()
+                        || app.approval_detail.is_some()
+                        || app.rewind_modal.is_some()
+                        || app.mcp_modal.is_some() => {}
+                Ok(Event::Paste(text)) if app.palette.is_some() => {
+                    if let Some(palette) = &mut app.palette {
+                        palette.paste(&text);
+                    }
+                    dirty = true;
+                }
+                Ok(Event::Paste(text))
+                    if app.team.view == teamagents_tui::team::View::Conversation
+                        && app.chat_search.as_ref().is_some_and(|s| s.editing) =>
+                {
+                    if let Some(search) = &mut app.chat_search {
+                        for c in text.chars() {
+                            if !c.is_control() {
+                                search.query.push(c);
+                            }
+                        }
+                    }
+                    app.update_chat_search();
+                    dirty = true;
+                }
                 Ok(Event::Paste(text)) if app.profile.is_some() => {
                     app.paste_model_search(&text);
                     dirty = true;
@@ -648,7 +864,7 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
             last_animation = Instant::now();
             // Activity animation is repaint-only and never manufactures a runtime fact.
             // Idle Ready sessions keep the previous low-frequency event/redraw schedule.
-            if app.disconnected || !app.activity_line().starts_with("Ready") {
+            if app.disconnected || !app.runtime_status_line().starts_with("Ready") || app.team.has_busy_member() {
                 dirty = true;
             }
         }

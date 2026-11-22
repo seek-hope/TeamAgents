@@ -581,7 +581,7 @@ def main():
     # recovered text is input, not a local command; Esc may discard without sending.
     before_rewind = len(daemon.frames)
     shell_step(b"/rewind preview pty-point\r", "Conversation only.", "preview rewind boundary")
-    shell_step(b"/rewind apply\r", "Rewind draft opened, not sent", "reopen prompt")
+    shell_step(b"/rewind apply\r", "Rewind draft reopened", "reopen prompt")
     shell_step(b"\x1b", "Local rewind draft discarded", "dismiss unsent draft")
     if [f["method"] for f in daemon.frames[before_rewind:] if "command_id" in f] != ["rewind_conversation"]:
         failures.append("preview, apply or discard submitted an unreviewed prompt")
@@ -594,7 +594,7 @@ def main():
         failures.append("reviewed rewind draft did not send exactly once as edited text")
 
     shell_step(b"/rewind files pty-point\r", "snapshot_difference", "preview tracked file changes")
-    shell_step(b"/rewind apply\r", "Rewind draft opened, not sent", "restore tracked files and prompt")
+    shell_step(b"/rewind apply\r", "Rewind draft reopened", "restore tracked files and prompt")
     if [f["params"].get("preview_digest") for f in daemon.frames if f["method"] == "rewind_conversation"] != [None, "pty-token"]:
         failures.append("combined rewind did not confirm the displayed file preview")
 

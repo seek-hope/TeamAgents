@@ -657,11 +657,18 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
         .and_then(|payload| serde_json::from_str::<Json>(&payload).ok())
         .and_then(|payload| payload["completion"]["summary"].as_str().map(str::to_string))
         .filter(|text| !text.trim().is_empty());
-    let work_scope = work_scope.map(|(_, status, usage, unknown, limits, deadline)| {
+    let mut costs = if work_scope.is_some() {
+        teamagents_core::v2::pricing::work_costs(conn)?
+    } else {
+        std::collections::HashMap::new()
+    };
+    let work_scope = work_scope.map(|(id, status, usage, unknown, limits, deadline)| {
+        let cost = costs.remove(&id).unwrap_or(Json::Null);
         json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
                "summary": summary,
                "unknown_usage": unknown,
                "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null),
+               "cost": cost,
                // the absolute deadline (D-64): a client that shows limits must be able
                // to say when the work stops accepting new requests
                "deadline": deadline})
@@ -1048,25 +1055,40 @@ fn read_method(
         "approvals" => {
             let mut stmt = conn
                 .prepare(
-                    "SELECT a.id, a.operation_id, o.intent_json FROM approvals a
+                    "SELECT a.id, a.operation_id, o.intent_json, COALESCE(r.instance_id, '') FROM approvals a
                      JOIN operations o ON a.operation_id = o.operation_id
+                     LEFT JOIN decisions d ON o.decision_id = d.decision_id
+                     LEFT JOIN model_requests r ON d.request_id = r.request_id
                      WHERE a.status = 'PENDING' ORDER BY a.rowid",
                 )
                 .map_err(|e| format!("approvals prepare: {e}"))?;
             let rows = stmt
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
                 .map_err(|e| format!("approvals query: {e}"))?;
             let mut approvals = Vec::new();
             for row in rows {
-                let (id, operation_id, intent_json) = row.map_err(|e| format!("approvals row: {e}"))?;
+                let (id, operation_id, intent_json, instance_id) = row.map_err(|e| format!("approvals row: {e}"))?;
                 let intent: Json = serde_json::from_str(&intent_json).unwrap_or(Json::Null);
                 let args = intent["args"].clone();
                 let preview = args["command"]
                     .as_str()
                     .map(str::to_string)
                     .unwrap_or_else(|| args.to_string().chars().take(120).collect());
-                approvals.push(json!({"id": id, "operation_id": operation_id,
-                                      "tool": intent["name"].as_str().unwrap_or(""), "preview": preview}));
+                let pretty_args: String = serde_json::to_string_pretty(&args)
+                    .unwrap_or_else(|_| args.to_string())
+                    .chars()
+                    .take(8192)
+                    .collect();
+                approvals.push(json!({"id": id, "operation_id": operation_id, "instance_id": instance_id,
+                                      "tool": intent["name"].as_str().unwrap_or(""), "preview": preview,
+                                      "args": pretty_args}));
             }
             Ok(json!({"approvals": approvals}))
         }

@@ -90,4 +90,15 @@ impl Completion {
         }
         true
     }
+
+    /// Select and fill one completion candidate into the draft without executing it.
+    pub fn apply_at(&mut self, composer: &mut Composer, index: usize) -> bool {
+        let candidates = self.candidates(composer);
+        let Some((name, _)) = candidates.get(index) else {
+            return false;
+        };
+        self.selected = index;
+        composer.set_text(name);
+        true
+    }
 }
