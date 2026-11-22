@@ -69,9 +69,9 @@ def stream(*deltas: dict) -> bytes:
     return HEAD + body
 
 
-def tool_call(name: str, arguments: dict) -> bytes:
+def tool_call(name: str, arguments: dict, call_id: str | None = None) -> bytes:
     return stream(
-        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": f"call-{name}", "type": "function",
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": call_id or f"call-{name}", "type": "function",
                                                 "function": {"name": name,
                                                              "arguments": json.dumps(arguments)}}]}}]},
         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}],
@@ -96,11 +96,18 @@ class FakeChat(BaseHTTPRequestHandler):
             conversation = json.loads(body.decode("utf-8", "replace")).get("messages", [])
         except json.JSONDecodeError:
             conversation = []
-        if any(message.get("role") == "tool" for message in conversation):
+        asked = " ".join(str(message.get("content") or "") for message in conversation if message.get("role") == "user")
+        results = [message for message in conversation if message.get("role") == "tool"]
+        if "replace the running executable" in asked:
+            if not results:
+                reply = tool_call("shell", {"command": "mv replacement teamagents && printf 'installed\\n' >> trace"}, "install")
+            elif len(results) == 1:
+                reply = tool_call("shell", {"command": "printf 'continued\\n' >> trace"})
+            else:
+                reply = FINISH_TURN
+        elif results:
             reply = FINISH_TURN
         else:
-            asked = " ".join(str(message.get("content") or "") for message in conversation
-                             if message.get("role") == "user")
             first = SERVICE_COMMAND if "leave a server" in asked else COMMAND
             reply = tool_call("shell", {"command": first, "timeout": 60})
         self.wfile.write(reply)
@@ -289,6 +296,25 @@ def main() -> int:
     print(f"11. cleaned up: daemons/runners left = {left}")
     if left != (0, 0):
         failures.append(f"the probe left processes behind: {left}")
+    # A shell action installs a different executable. The same session must launch the next shell runner.
+    upgrade_ws = root / "upgrade-ws"
+    upgrade_ws.mkdir()
+    executable = upgrade_ws / "teamagents"
+    shutil.copy2(BIN, executable)
+    shutil.copy2("/bin/false", upgrade_ws / "replacement")
+    upgrade_state = root / "upgrade-state"
+    try:
+        done = subprocess.run([str(executable), "exec", "--full-auto", "--json", "--state-root", str(upgrade_state),
+                               "--cwd", str(upgrade_ws), "--timeout", "20", "replace the running executable"],
+                              capture_output=True, text=True, env=env, timeout=30)
+        trace = upgrade_ws / "trace"
+        if done.returncode or not trace.exists() or trace.read_text().splitlines() != ["installed", "continued"]:
+            failures.append(f"shell did not continue after installation (exec exit {done.returncode})")
+        else:
+            print("12. the same work launched its next shell command after replacing the CLI")
+    finally:
+        leak_guard.stop_daemons(upgrade_state)
+        leak_guard.stop_runners(upgrade_state)
     for failure in failures:
         print("FAIL:", failure)
     return 1 if failures else 0

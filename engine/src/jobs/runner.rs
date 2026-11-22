@@ -469,11 +469,12 @@ pub fn spawn(root: &Path, spec: &JobSpec) -> Result<(), String> {
     // TEAMAGENTS_RUNNER_BIN overrides the runner image for integration tests
     // (their own executable is the test harness); production uses the same
     // teamagents binary the daemon runs as (§6.2: same Rust binary).
-    let executable = std::env::var_os("TEAMAGENTS_RUNNER_BIN")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::env::current_exe().expect("current exe"));
+    // Exec the daemon's mapped image directly. Resolving the link to a pathname
+    // would lose that image when an installation replaces the directory entry.
+    let executable = std::env::var_os("TEAMAGENTS_RUNNER_BIN").unwrap_or_else(|| "/proc/self/exe".into());
     let mut command = Command::new(executable);
     command
+        .arg0("teamagents")
         .arg("jobs-runner")
         .arg(root)
         .env_remove("RUST_LOG")

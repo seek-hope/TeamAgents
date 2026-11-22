@@ -94,7 +94,10 @@ Use the verified new archive's extracted CLI to run the transition with the same
 Keep the archive's original release filename and adjacent `SHA256SUMS`. `--rollback` switches to the previous
 binary set; if a newly started daemon fails health checks, the transaction attempts to restore the preceding set.
 If that restoration also fails, the error and journal retain both failures. `--no-restart` switches the binaries
-while preserving the running daemon. The configuration and session history remain in their existing paths.
+while preserving the running daemon. On Linux the daemon starts each new Shell runner from its own mapped
+executable (`/proc/self/exe`), so replacing the installation path does not strand a running session. If an older
+daemon reports `spawn runner: No such file or directory`, stop it at a quiet boundary and reopen the same session
+with the fixed CLI. The configuration and session history remain in their existing paths.
 The database-schema limitation above still
 applies, and old installed updater code does not gain new compatibility from downloading an archive alone.
 
