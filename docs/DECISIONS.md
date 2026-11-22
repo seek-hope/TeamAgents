@@ -59,6 +59,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Session model roles | User selects one Leader model and one shared Worker policy | D-529 |
 | Selected workflows | Manual Leader compaction and after-work input; scoped native graph reads and authenticated search caching | D-530 |
 | Leak-guard ownership | Only processes that inherited this run's marker are this run's leaks | D-528 |
+| Interface feedback | Command answers are transient feedback or a dismissible overlay; the conversation holds only the model exchange and input receipts | D-531 |
 
 ## Authority and runtime
 

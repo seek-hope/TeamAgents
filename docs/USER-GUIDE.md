@@ -231,7 +231,9 @@ In the composer:
   or `/shell draft COMMAND` to review stdout in the composer and explicitly send it later. These modes run
   `/bin/sh -c`; stderr stays on the terminal. At most 16 KiB of stdout is retained. Check for secrets before
   sending; exiting the foreground shell does not undo effects or stop background jobs.
-- `/help` shows current controls, environment and diagnostics. `?` on an empty draft opens the shortcut overlay.
+- `/help` opens a scrollable help panel: controls, environment, diagnostics and the command list; `Esc` closes it
+  and the next key you press still reaches the draft. `?` on an empty draft opens the same controls as a
+  cheat-sheet. Neither adds a message to the conversation.
 - Slash completion edits only the draft. An explicit second Enter executes the completed command.
 - `/attach PATH` stages a workspace file; `/detach INDEX` removes one. `@PATH` followed by Tab offers workspace
   path completion. Attachments are sent only with your message, and symlinks are refused.

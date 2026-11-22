@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::{json, Value as Json};
-use teamagents_tui::v2app::{ChatKind, Focus, V2App, V2Effect};
+use teamagents_tui::v2app::{ChatEntry, ChatKind, Focus, V2App, V2Effect};
 use teamagents_tui::v2ui;
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -110,18 +110,19 @@ fn word_wise_editing_is_wired() {
     assert_eq!(app.composer.col, 5, "Ctrl+→ lands after the word to the right");
 }
 
-/// D-433: a command's answer survives a checkpoint refresh, a runtime note does not. The pty smoke found this the
-/// hard way: `/mcp`, `/sessions` and `/work_scopes` printed into entries that `apply_checkpoint` wipes within one poll,
-/// so the commands looked like they did nothing. The distinction is the *kind*: a note is chatter, an answer is
-/// what the user asked for.
+/// D-433/D-531: a command's answer survives a checkpoint refresh, a runtime note does not. The pty smoke found
+/// the original defect the hard way: `/mcp`, `/sessions` and `/work_scopes` printed into entries that
+/// `apply_checkpoint` wipes within one poll, so the commands looked like they did nothing. The answer now lives
+/// in its own channel (the notice or the read overlay), so a refresh cannot take it away.
 #[test]
 fn a_command_answer_survives_a_checkpoint_and_a_note_does_not() {
     let mut app = V2App::new("s-test");
-    app.command_note("work_scopes in this session: turn-2 ACTIVE");
+    app.flash("work_scopes in this session: turn-2 ACTIVE");
     app.apply_events(&[json!({"kind":"instance_created","scope":"transient-worker","sequence":5,"payload":{}})]);
     app.apply_checkpoint(checkpoint(), 6);
     let text: String = app.entries.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("work_scopes in this session: turn-2 ACTIVE"), "the answer must stay: {text}");
+    let answer = app.notice.as_ref().map(|notice| notice.text.clone()).unwrap_or_default();
+    assert!(answer.contains("work_scopes in this session: turn-2 ACTIVE"), "the answer must stay: {answer}");
     assert!(!text.contains("transient-worker"), "a note is superseded by a checkpoint: {text}");
 }
 
@@ -392,13 +393,13 @@ fn disconnect_marks_once_and_reconnect_notes_once() {
     app.mark_disconnected("timeout");
     app.mark_disconnected("timeout");
     assert!(app.disconnected);
-    let errors: Vec<_> = app.entries.iter().filter(|e| e.kind == ChatKind::Error).collect();
-    assert_eq!(errors.len(), 1);
+    let notice = app.notice.as_ref().expect("disconnecting reports itself");
+    assert!(notice.error && notice.text.contains("Disconnected"), "{}", notice.text);
     assert!(app.status_line().contains("Disconnected"), "{}", app.status_line());
     app.mark_connected();
     assert!(!app.disconnected);
     let notes: Vec<_> = app.entries.iter().filter(|e| e.kind == ChatKind::System).collect();
-    assert_eq!(notes.len(), 1);
+    assert_eq!(notes.len(), 1, "reconnecting leaves one durable note, not a stack of them");
     assert!(notes[0].text.contains("reconnected"));
 }
 
@@ -572,8 +573,11 @@ fn composer_inserts_newlines_and_submits_the_whole_text() {
     assert!(app.composer.text().is_empty(), "the composer clears after sending");
     app.composer.set_text("/help");
     app.handle_key(key(KeyCode::Enter));
-    assert!(app.entries.last().unwrap().text.contains("Shift+Enter"));
-    assert!(!app.entries.last().unwrap().text.contains("Ctrl+J"));
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+    let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(shown.contains("Shift+Enter"), "{shown}");
+    assert!(!shown.contains("Ctrl+J"));
 }
 
 #[test]
@@ -642,13 +646,29 @@ fn composer_wrap_and_caret_survive_resize_and_long_multiline_drafts() {
 #[test]
 fn appended_output_does_not_pull_a_reader_away_from_history() {
     let mut app = app();
-    app.command_note((0..70).map(|i| format!("history-{i:02}\n")).collect::<String>());
+    for index in 0..70 {
+        app.entries.push(ChatEntry {
+            kind: ChatKind::Assistant,
+            who: "leader".into(),
+            text: format!("history-{index:02}"),
+            tool: None,
+            workspace: String::new(),
+            media: vec![],
+        });
+    }
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     app.scroll_chat(20);
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let before = frame_lines(&terminal)[2].clone();
-    app.command_note("new output\nand another line");
+    app.entries.push(ChatEntry {
+        kind: ChatKind::Assistant,
+        who: "leader".into(),
+        text: "new output\nand another line".into(),
+        tool: None,
+        workspace: String::new(),
+        media: vec![],
+    });
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let after = frame_lines(&terminal)[2].clone();
     // Ignore the scrollbar cell; the content at the top must stay anchored.

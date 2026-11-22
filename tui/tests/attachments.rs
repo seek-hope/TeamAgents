@@ -92,7 +92,7 @@ fn mention_completion_preserves_multiline_drafts_and_stages_the_selected_file() 
     assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "accepting a reference never submits it");
     assert_eq!(app.composer.text(), "Inspect @src/mod.rs \nand keep this line");
     assert_eq!(app.attachments.paths, ["src/mod.rs"]);
-    assert!(app.entries.last().unwrap().text.contains("staged from @reference"));
+    assert!(app.activity_line().contains("staged from @reference"), "{}", app.activity_line());
     let Some(V2Effect::SubmitInput { text, attachments, .. }) = app.handle_key(key(KeyCode::Enter)) else {
         panic!("the completed prompt did not submit")
     };
@@ -131,7 +131,7 @@ fn mention_completion_enforces_the_attachment_cap_without_changing_the_draft() {
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.composer.text(), "@src");
     assert_eq!(app.attachments.paths.len(), 8);
-    assert!(app.entries.last().unwrap().text.contains("At most eight"));
+    assert!(app.activity_line().contains("At most eight"), "{}", app.activity_line());
 }
 
 #[test]

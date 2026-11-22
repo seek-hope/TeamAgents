@@ -299,6 +299,68 @@ pub struct Refresh {
 /// authoritative history; the cap keeps a long session bounded.
 const NOTE_CAP: usize = 200;
 
+/// The reference both `?` and `/help` show. One list, so the cheat-sheet and the help text cannot drift apart.
+pub const HELP_SECTIONS: &[(&str, &[&str])] = &[
+    (
+        "Input editing",
+        &[
+            "Enter send · Shift+Enter newline",
+            "Ctrl+Left/Right / Alt+Left/Right move by word",
+            "Ctrl+B/F move by character · Home/End line edges",
+            "Ctrl+W / Alt+Backspace delete previous word",
+            "Ctrl+U/K delete to line start/end · Ctrl+Y restore deletion",
+            "Ctrl+E external editor · Up/Down input history",
+        ],
+    ),
+    (
+        "Conversation",
+        &[
+            "PgUp/PgDn / wheel read history · Ctrl+O tool details",
+            "Ctrl+G graphics/source · / commands · Tab complete",
+            "Ctrl+C interrupt model request; tools may continue",
+            "Ctrl+Q detach; the session keeps running",
+        ],
+    ),
+    (
+        "Team workspace",
+        &[
+            "F6 cycles team, inspection and composer focus",
+            "Alt+1 chat · Alt+2 tasks · Alt+3 activity · Alt+4 inspect",
+            "Team: Up/Down member · Enter inspect · h history",
+            "Inspect: d details · h member history · Esc compose",
+            "Browsing is read-only; messages and Ctrl+C target Leader",
+        ],
+    ),
+    (
+        "Sessions and models",
+        &[
+            "Ctrl+S sessions · /sessions full stored output",
+            "Ctrl+P pending inputs · Ctrl+M model and effort",
+            "/attach PATH or @PATH + Tab · /detach INDEX",
+        ],
+    ),
+    ("Approvals", &["Ctrl+A focus approvals · Up/Down select", "a approve once · d deny · Esc return to draft"]),
+    ("More", &["/help session, environment and command list", "Esc close · Up/Down scroll · PgUp/PgDn page"]),
+];
+
+/// One line of feedback about an action the user just took. It replaces the previous notice and takes no room
+/// from the conversation, because it is status, not content.
+#[derive(Clone, Debug, Default)]
+pub struct Notice {
+    pub text: String,
+    pub error: bool,
+}
+
+/// Text a command produced for the user to read (`/tree`, `/mcp status`, a file preview). It opens in a
+/// dismissible scrollable overlay rather than the transcript, so reading it never costs the model's output its
+/// space (D-531).
+#[derive(Clone, Debug, Default)]
+pub struct Report {
+    pub title: String,
+    pub text: String,
+    pub scroll: usize,
+}
+
 pub struct V2App {
     pub session_root: String,
     pub session_name: String,
@@ -311,8 +373,13 @@ pub struct V2App {
     pub worker_catalog_key: String,
     pub efforts: Vec<String>,
     pub profile: Option<ProfileMenu>,
+    /// The reference overlay `?` and `/help` open: shortcuts plus live session detail.
     pub help_open: bool,
     pub help_scroll: usize,
+    /// A command's readable output, shown in its own dismissible overlay.
+    pub report: Option<Report>,
+    /// One line of feedback about an action. Replaced by the next notice and cleared by typing.
+    pub notice: Option<Notice>,
     pub session_id: String,
     pub instances: Vec<InstanceInfo>,
     pub team: crate::team::Team,
@@ -364,6 +431,8 @@ impl V2App {
             profile: None,
             help_open: false,
             help_scroll: 0,
+            report: None,
+            notice: None,
             session_id: session_id.to_string(),
             instances: vec![],
             team: crate::team::Team::default(),
@@ -419,13 +488,80 @@ impl V2App {
         self.previews.iter().find(|(instance, _)| instance == id).map(|(_, text)| text.as_str())
     }
 
-    /// A command's output: it survives a checkpoint refresh, unlike a `System` note, because the user asked a
-    /// question and the answer must stay on screen until they scroll away from it (D-433).
+    /// A command's answer, routed by shape rather than dumped in one place. One line is feedback about the
+    /// action and becomes the transient notice; several lines are output the user asked to read and open the
+    /// scrollable overlay. Neither takes space from the conversation, so asking for help cannot push the model's
+    /// answer off screen (D-531). Input receipts are the exception: they use `receipt_note` because they
+    /// annotate a message the user sent.
     pub fn command_note(&mut self, text: impl Into<String>) {
         self.team.show(crate::team::View::Conversation);
         if matches!(self.focus, Focus::Team | Focus::Panel) {
             self.focus = Focus::Composer;
         }
+        let text = text.into();
+        if text.lines().count() <= 1 && unicode_width::UnicodeWidthStr::width(text.as_str()) <= 120 {
+            self.flash(text);
+        } else {
+            self.open_report("Output", text);
+        }
+    }
+
+    /// What the reference overlay prints below the shortcuts: this session's environment, diagnostics and the
+    /// command list. `/help` and `?` share it, so both destinations answer the same question.
+    pub fn help_detail(&self) -> String {
+        let mut out = vec![format!(
+            "Session {} · model {}",
+            self.session_id,
+            self.active_instance()
+                .map(|i| self.member_model_label(&i.id, &i.model))
+                .unwrap_or_else(|| "unavailable".into())
+        )];
+        for (title, hints) in HELP_SECTIONS {
+            out.push(String::new());
+            out.push((*title).to_string());
+            out.extend(hints.iter().map(|hint| format!("  {hint}")));
+        }
+        out.push(String::new());
+        out.push(self.environment_details());
+        out.push(self.diagnostic_details());
+        out.push(String::new());
+        out.push(
+            "To stop running commands: teamagents instances terminate --id INSTANCE --yes. \
+             Reconnect with the same --state-root/--session."
+                .into(),
+        );
+        out.push("Commands:".into());
+        out.extend(crate::completion::COMMANDS.iter().map(|(name, help)| format!("  {name}: {help}")));
+        out.join("\n")
+    }
+
+    /// One line of feedback about the last action. The next notice replaces it and editing the draft clears it.
+    pub fn flash(&mut self, text: impl Into<String>) {
+        self.notice = Some(Notice { text: text.into(), error: false });
+    }
+
+    fn flash_error(&mut self, text: impl Into<String>) {
+        self.notice = Some(Notice { text: text.into(), error: true });
+    }
+
+    /// Read text in a dismissible scrollable overlay instead of the conversation (D-531).
+    pub fn open_report(&mut self, title: impl Into<String>, text: impl Into<String>) {
+        self.report = Some(Report { title: title.into(), text: text.into(), scroll: 0 });
+        self.help_open = false;
+        self.pictures.clear();
+    }
+
+    /// `?` and `/help` share one reference overlay: shortcuts plus this session's live detail.
+    fn open_help(&mut self) {
+        self.help_open = true;
+        self.help_scroll = 0;
+        self.report = None;
+        self.pictures.clear();
+    }
+
+    /// A receipt for a sent input. It stays in the transcript because it annotates a message the user sent, and
+    /// it is updated in place rather than appended.
+    fn receipt_note(&mut self, text: impl Into<String>) {
         self.entries.push(ChatEntry {
             kind: ChatKind::Command,
             who: "note".into(),
@@ -453,17 +589,6 @@ impl V2App {
             let drop = self.entries.len() - NOTE_CAP * 4;
             self.entries.drain(..drop);
         }
-    }
-
-    fn note_error(&mut self, text: impl Into<String>) {
-        self.entries.push(ChatEntry {
-            kind: ChatKind::Error,
-            who: "error".into(),
-            text: text.into(),
-            tool: None,
-            workspace: String::new(),
-            media: vec![],
-        });
     }
 
     // ---- daemon → app application points --------------------------------
@@ -808,7 +933,7 @@ impl V2App {
     }
 
     pub fn command_failed(&mut self, error: &str) {
-        self.note_error(format!("command failed: {error}"));
+        self.flash_error(format!("command failed: {error}"));
     }
 
     /// Settle an external-editor attempt. The `/edit TEXT` path takes the
@@ -833,14 +958,17 @@ impl V2App {
         self.attachments.accepted();
         self.attachments.rewind_source = Some(source.to_owned());
         self.composer.set_text(text);
-        self.command_note(format!("Rewind draft opened, not sent. Enter sends edited text with the original snapshots and checks; Esc discards the local draft. Attachments: {}; checks: {}", reply["draft"]["attachments"],reply["draft"]["checks"]));
+        self.flash(format!(
+            "Rewind draft reopened ({} attachment(s), {} check(s)) · Enter sends · Esc discards",
+            reply["draft"]["attachments"], reply["draft"]["checks"]
+        ));
     }
 
     pub fn mark_disconnected(&mut self, error: &str) {
         self.history_dirty = true;
         if !self.disconnected {
             self.disconnected = true;
-            self.note_error(format!("disconnected from the daemon ({error}), reconnecting..."));
+            self.flash_error(format!("Disconnected ({error}) · reconnecting"));
         }
     }
 
@@ -853,7 +981,7 @@ impl V2App {
 
     /// A submitted input the daemon refused (write-surface error).
     pub fn submit_failed(&mut self, error: &str) {
-        self.note_error(format!("send failed: {error}"));
+        self.flash_error(format!("send failed: {error}"));
     }
 
     /// D-479: retain the acknowledged envelope through refresh/reconnect. History or a checkpoint,
@@ -879,7 +1007,7 @@ impl V2App {
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.kind == ChatKind::Command && entry.who == who) {
             entry.text = text;
         } else if create {
-            self.command_note(text);
+            self.receipt_note(text);
             if let Some(entry) = self.entries.last_mut() {
                 entry.who = who;
             }
@@ -893,7 +1021,7 @@ impl V2App {
     }
 
     pub fn decide_failed(&mut self, error: &str) {
-        self.note_error(format!("the approval decision failed: {error}"));
+        self.flash_error(format!("the approval decision failed: {error}"));
     }
 
     // ---- keys ------------------------------------------------------------
@@ -911,6 +1039,40 @@ impl V2App {
         }
         if key.code == KeyCode::Esc && !key.modifiers.is_empty() {
             return None;
+        }
+        if self.report.is_some() {
+            let step: Option<isize> = match key.code {
+                KeyCode::Esc => {
+                    self.report = None;
+                    return None;
+                }
+                KeyCode::Up => Some(-1),
+                KeyCode::Down => Some(1),
+                KeyCode::PageUp => Some(-8),
+                KeyCode::PageDown => Some(8),
+                _ => None,
+            };
+            if let (Some(step), Some(report)) = (step, self.report.as_mut()) {
+                report.scroll = if step < 0 {
+                    report.scroll.saturating_sub(step.unsigned_abs())
+                } else {
+                    report.scroll.saturating_add(step as usize)
+                };
+            }
+            match (key.code, key.modifiers) {
+                (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
+                    self.quit = true;
+                    return Some(V2Effect::Quit);
+                }
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => return self.interrupt(),
+                _ => {}
+            }
+            if step.is_some() || key.code == KeyCode::Esc {
+                return None;
+            }
+            // Light dismissal (D-531): anything else closes the overlay and then acts, so reading output never
+            // costs the next keystroke.
+            self.report = None;
         }
         if self.help_open {
             if key.kind == crossterm::event::KeyEventKind::Repeat && key.code == KeyCode::Char('?') {
@@ -1249,10 +1411,7 @@ impl V2App {
     /// Client commands never become model input, including retired management commands.
     fn slash_command(&mut self, text: &str) -> Option<V2Effect> {
         let Some((command, argument)) = crate::completion::Command::parse(text) else {
-            let commands = crate::completion::COMMANDS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(" · ");
-            self.command_note(format!(
-                "Unknown command {text:?}. commands: {commands}. Management: teamagents --help."
-            ));
+            self.flash(format!("Unknown command {text:?} · / lists commands · management: teamagents --help"));
             return None;
         };
         self.dispatch_command(command, argument)
@@ -1303,40 +1462,10 @@ impl V2App {
             return None;
         }
         match command {
-            Command::Help => self.command_note(format!(
-                "Session {} · model {}
-Enter sends to the Leader; Shift+Enter adds a newline.
-Up/Down recalls input; PageUp/PageDown or the wheel reads history.
-? on an empty draft opens shortcuts; Esc closes them.
-Ctrl+Left/Right or Alt+Left/Right moves by word; Ctrl+B/F moves by character.
-Ctrl+W or Alt+Backspace deletes a word; Ctrl+U/K deletes to line start/end; Ctrl+Y restores the last deletion.
-Home/End moves to line start/end; Ctrl+E opens the external editor.
-A slash prefix shows commands: Up/Down selects, Tab/Enter fills, Esc cancels; Enter submits the filled command.
-Ctrl+C or /interrupt cancels the Leader's model request; running tools and delegated work continue.
-Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
-Ctrl+Q or /quit quits the TUI; the session keeps running.
-Cancelling a task does not stop its command. To stop executing work, use teamagents instances terminate --id INSTANCE --yes.
-Keep the same --state-root/--session; SSH remote processes may need separate cleanup.
-Ctrl+S or /sessions opens session history, switching and confirmed deletion; / searches stored messages.
-Ctrl+P or /queue shows pending Leader inputs; Enter edits, Delete asks to cancel, Esc returns to the draft.
-Ctrl+M or /model selects the Leader model and effort or the shared Worker model policy.
-/attach PATH stages a workspace file; @PATH then Tab offers Grok-style file references. Enter accepts.
-/detach INDEX removes a staged attachment.
-Attachments: eight files, 1 MiB UTF-8 text or 5 MiB PNG/JPEG/GIF/WebP, 16 MiB total; symlinks are refused.
-Ctrl+O expands or folds tool previews; /sessions shows full stored results.
-Ctrl+G switches graphics previews and source; image files stay unchanged.
-/tree shows the session exploration tree; ask the Leader to reorganize or focus it.
-Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.
-Commands:
-{}
-{}
-{}",
-                self.session_id,
-                self.active_instance().map(|i| self.member_model_label(&i.id, &i.model)).unwrap_or_else(|| "unavailable".into()),
-                crate::completion::COMMANDS.iter().map(|(name, help)| format!("{name}: {help}")).collect::<Vec<_>>().join("\n"),
-                self.environment_details(),
-                self.diagnostic_details()
-            )),
+            Command::Help => {
+                let detail = self.help_detail();
+                self.open_report("Help", detail);
+            }
             Command::Attach => self.command_note(format!(
                 "Staged attachments: {:?}. Use /attach PATH or @PATH then Tab to complete.",
                 self.attachments.paths
@@ -1344,27 +1473,53 @@ Commands:
             Command::Detach => self.command_note("Use /detach INDEX with a staged attachment's one-based index."),
             Command::Edit => return Some(V2Effect::EditDraft { initial: argument.unwrap_or("").to_string() }),
             Command::Rewind => {
-                if self.disconnected {self.command_note("Reconnect before inspecting or changing the conversation.");return None}
-                let arg=argument.unwrap_or("").trim();
-                if !self.attachments.paths.is_empty(){self.command_note("Remove staged files before opening a rewind draft.");return None}
-                if arg.is_empty(){return Some(V2Effect::RewindList{before:None})}
-                if arg=="draft" {return Some(V2Effect::RewindDraft)}
-                if let Some(before)=arg.strip_prefix("before ").and_then(|v|v.parse().ok()){return Some(V2Effect::RewindList{before:Some(before)})}
+                if self.disconnected {
+                    self.command_note("Reconnect before inspecting or changing the conversation.");
+                    return None;
+                }
+                let arg = argument.unwrap_or("").trim();
+                if !self.attachments.paths.is_empty() {
+                    self.command_note("Remove staged files before opening a rewind draft.");
+                    return None;
+                }
+                if arg.is_empty() {
+                    return Some(V2Effect::RewindList { before: None });
+                }
+                if arg == "draft" {
+                    return Some(V2Effect::RewindDraft);
+                }
+                if let Some(before) = arg.strip_prefix("before ").and_then(|v| v.parse().ok()) {
+                    return Some(V2Effect::RewindList { before: Some(before) });
+                }
                 if let Some(key) = arg.strip_prefix("files ").map(str::trim).filter(|s| !s.is_empty()) {
                     self.rewind_preview = None;
-                    return Some(V2Effect::RewindFiles {key:key.into()});
+                    return Some(V2Effect::RewindFiles { key: key.into() });
                 }
-                if let Some(key)=arg.strip_prefix("preview ").filter(|s|!s.is_empty()){self.rewind_preview=None;return Some(V2Effect::RewindPreview{key:key.into()})}
-                if arg=="apply" {if let Some(preview)=self.rewind_preview.take(){return Some(V2Effect::RewindApply{preview})}}
+                if let Some(key) = arg.strip_prefix("preview ").filter(|s| !s.is_empty()) {
+                    self.rewind_preview = None;
+                    return Some(V2Effect::RewindPreview { key: key.into() });
+                }
+                if arg == "apply" {
+                    if let Some(preview) = self.rewind_preview.take() {
+                        return Some(V2Effect::RewindApply { preview });
+                    }
+                }
                 self.command_note("Use /rewind preview KEY for conversation only or /rewind files KEY to include tracked files. Confirm with /rewind apply. /rewind draft reopens the unsent prompt.");
             }
             Command::Mcp => {
-                if self.disconnected {self.command_note("Disconnected: no MCP request sent.");return None}
-                let arg=argument.unwrap_or("").trim();
-                if arg.is_empty() || arg=="status" {return Some(V2Effect::McpStatus)}
-                if let Some((action,key))=arg.split_once(char::is_whitespace){
-                    let key=key.trim();
-                    if !key.is_empty() && matches!(action,"start"|"stop"|"hide"|"expose"|"reconnect"){return Some(V2Effect::McpChange{action:action.into(),service:key.into()})}
+                if self.disconnected {
+                    self.command_note("Disconnected: no MCP request sent.");
+                    return None;
+                }
+                let arg = argument.unwrap_or("").trim();
+                if arg.is_empty() || arg == "status" {
+                    return Some(V2Effect::McpStatus);
+                }
+                if let Some((action, key)) = arg.split_once(char::is_whitespace) {
+                    let key = key.trim();
+                    if !key.is_empty() && matches!(action, "start" | "stop" | "hide" | "expose" | "reconnect") {
+                        return Some(V2Effect::McpChange { action: action.into(), service: key.into() });
+                    }
                 }
                 self.command_note("Use /mcp status, or /mcp start|stop|hide|expose|reconnect KEY.");
             }
@@ -1373,46 +1528,88 @@ Commands:
                     "" | "status" => "status",
                     "sync" => "sync",
                     "init" => "init",
-                    _ => { self.command_note("Use /codegraph status, init or sync."); return None; }
+                    _ => {
+                        self.command_note("Use /codegraph status, init or sync.");
+                        return None;
+                    }
                 };
-                let Some(workspace) = self.workspace().filter(|w| std::path::Path::new(w).is_absolute() && !self.disconnected) else {
+                let Some(workspace) =
+                    self.workspace().filter(|w| std::path::Path::new(w).is_absolute() && !self.disconnected)
+                else {
                     self.command_note("Reconnect to select the workspace for CodeGraph.");
                     return None;
                 };
                 return Some(V2Effect::CodeGraph { workspace: workspace.to_owned(), action });
             }
             Command::Shell => {
-                let Some(workspace) = self.workspace().filter(|w| std::path::Path::new(w).is_absolute() && !self.disconnected) else {
+                let Some(workspace) =
+                    self.workspace().filter(|w| std::path::Path::new(w).is_absolute() && !self.disconnected)
+                else {
                     self.command_note("Local shell not started: reconnect to a session with a known workspace.");
                     return None;
                 };
                 let (command, draft) = match argument.map(str::trim_start).filter(|s| !s.is_empty()) {
                     None => (None, false),
                     Some(s) => match s.split_once(char::is_whitespace) {
-                        Some((mode @ ("view" | "draft"), cmd)) if !cmd.trim().is_empty() => (Some(cmd.to_owned()), mode == "draft"),
-                        _ => { self.command_note("Use /shell, /shell view COMMAND, or /shell draft COMMAND. Nothing is sent automatically."); return None; }
-                    }
+                        Some((mode @ ("view" | "draft"), cmd)) if !cmd.trim().is_empty() => {
+                            (Some(cmd.to_owned()), mode == "draft")
+                        }
+                        _ => {
+                            self.command_note("Use /shell, /shell view COMMAND, or /shell draft COMMAND. Nothing is sent automatically.");
+                            return None;
+                        }
+                    },
                 };
-                return Some(V2Effect::OperatorShell {workspace:workspace.to_owned(),command,draft});
+                return Some(V2Effect::OperatorShell { workspace: workspace.to_owned(), command, draft });
             }
-            Command::Team => { self.focus = Focus::Team; }
+            Command::Team => {
+                self.focus = Focus::Team;
+            }
             Command::Chat => self.team.show(crate::team::View::Conversation),
-            Command::Tasks => { self.team.show(crate::team::View::Tasks); self.focus = Focus::Panel; }
-            Command::Activity => { self.team.show(crate::team::View::Activity); self.focus = Focus::Panel; }
-            Command::Inspect => { self.team.show(crate::team::View::Inspect); self.focus = Focus::Panel; }
+            Command::Tasks => {
+                self.team.show(crate::team::View::Tasks);
+                self.focus = Focus::Panel;
+            }
+            Command::Activity => {
+                self.team.show(crate::team::View::Activity);
+                self.focus = Focus::Panel;
+            }
+            Command::Inspect => {
+                self.team.show(crate::team::View::Inspect);
+                self.focus = Focus::Panel;
+            }
             Command::Sessions => return self.open_sessions(),
             Command::Queue => return self.open_queue(),
             Command::Tree => return Some(V2Effect::SearchTree),
             Command::Later => {
-                let Some(text) = argument.filter(|s| !s.trim().is_empty()) else { self.command_note("Use /later TEXT."); return None; };
+                let Some(text) = argument.filter(|s| !s.trim().is_empty()) else {
+                    self.command_note("Use /later TEXT.");
+                    return None;
+                };
                 let draft = format!("/later {text}");
-                if self.disconnected || self.active_instance().is_none() { self.composer.set_text(&draft); self.command_note("Message kept in the draft: waiting for the Leader connection."); return None; }
+                if self.disconnected || self.active_instance().is_none() {
+                    self.composer.set_text(&draft);
+                    self.command_note("Message kept in the draft: waiting for the Leader connection.");
+                    return None;
+                }
                 self.composer.record_submission(&draft);
-                return Some(V2Effect::SubmitInput { instance:self.active_instance()?.id.clone(), envelope:self.attachments.envelope(&draft), text:text.into(), attachments:self.attachments.paths.clone(), after_work:true });
+                return Some(V2Effect::SubmitInput {
+                    instance: self.active_instance()?.id.clone(),
+                    envelope: self.attachments.envelope(&draft),
+                    text: text.into(),
+                    attachments: self.attachments.paths.clone(),
+                    after_work: true,
+                });
             }
             Command::Compact => {
-                if self.disconnected { self.command_note("Disconnected: compaction not requested."); }
-                else { return Some(V2Effect::Compact { instance:self.active_instance()?.id.clone(), focus:argument.unwrap_or("").to_string() }); }
+                if self.disconnected {
+                    self.command_note("Disconnected: compaction not requested.");
+                } else {
+                    return Some(V2Effect::Compact {
+                        instance: self.active_instance()?.id.clone(),
+                        focus: argument.unwrap_or("").to_string(),
+                    });
+                }
             }
             Command::Interrupt => return self.interrupt(),
             Command::Model => return self.open_profile(),
@@ -1426,6 +1623,11 @@ Commands:
 
     fn composer_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
+        if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete)
+            && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            self.notice = None;
+        }
         if key.code == KeyCode::Enter && key.kind == crossterm::event::KeyEventKind::Repeat {
             return None;
         }
@@ -1434,8 +1636,7 @@ Commands:
             && self.composer.text().is_empty()
             && key.kind == crossterm::event::KeyEventKind::Press
         {
-            self.help_open = true;
-            self.help_scroll = 0;
+            self.open_help();
             return None;
         }
         if self.attachments.rewind_source.is_some() && key.code == KeyCode::Esc {
@@ -1471,6 +1672,7 @@ Commands:
                 None
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
+                self.notice = None;
                 let raw = self.composer.text();
                 if self.attachments.rewind_source.is_none() && raw.starts_with('/') {
                     self.composer.clear();
@@ -1538,9 +1740,9 @@ Commands:
         self.chat_scroll = self.chat_scroll.saturating_sub(lines);
     }
 
-    fn environment_details(&self) -> String {
+    pub fn environment_details(&self) -> String {
         if !self.environment.is_object() {
-            return "Execution environment: not reported by this daemon; use teamagents doctor.".into();
+            return "Execution environment: run teamagents doctor.".into();
         }
         let mut lines = vec![format!(
             "Workspace: {}\nExecution: {} ({})",
@@ -1554,14 +1756,9 @@ Commands:
             );
         }
         if self.environment["configuration"]["comparison_available"] == false {
-            lines.push(
-                "Configuration comparison unavailable; inspect teamagents status --json for affected paths.".into(),
-            );
+            lines.push("Configuration comparison unavailable; teamagents status --json lists affected paths.".into());
         }
-        lines.push(
-            "Boot-selected sources (contents read per turn; skills on demand, not proof of script availability):"
-                .into(),
-        );
+        lines.push("Boot-selected sources (contents read per turn; skills loaded on demand):".into());
         for key in ["instruction_files", "skills_paths"] {
             let rows = self.environment["sources"][key].as_array();
             for row in rows.into_iter().flatten().take(20) {
@@ -1574,7 +1771,7 @@ Commands:
         let loaded = &self.environment["leader_instruction_load"];
         if loaded.is_object() {
             lines.push(format!(
-                "Last Leader prompt assembly: epoch {}, observed at {} (not a provider receipt).",
+                "Last Leader prompt assembly: epoch {}, observed at {}.",
                 loaded["epoch"], loaded["observed_at"]
             ));
             for file in loaded["files"].as_array().into_iter().flatten().take(20) {
@@ -1586,15 +1783,17 @@ Commands:
                 ));
             }
         } else {
-            lines.push("No instruction load observed in the current Leader driver lifetime.".into());
+            lines.push("No instruction load observed yet.".into());
         }
-        lines.push("teamagents doctor shows current source readability/refusals; doctor environment explicitly probes host and configured tools, without repairs.".into());
+        lines.push(
+            "teamagents doctor reports source readability; doctor environment probes the host and configured tools."
+                .into(),
+        );
         lines.join("\n")
     }
 
-    fn diagnostic_details(&self) -> String {
-        let mut lines =
-            vec!["Snapshot diagnostics (read only; use the same --state-root/--session in CLI commands):".to_string()];
+    pub fn diagnostic_details(&self) -> String {
+        let mut lines = vec!["Diagnostics (read-only):".to_string()];
         for (id, diagnostic) in self.work_diagnostics.iter().take(20) {
             lines.push(format!("{id}: {}", diagnostic["summary"].as_str().unwrap_or("unknown")));
             if let Some(reason) = diagnostic["reason"].as_str() {
@@ -1617,7 +1816,7 @@ Commands:
                 self.work_diagnostics.len() - 20
             ));
         }
-        lines.push("INSTANCE/TASK mean the row ids. Full diagnostics: teamagents instances; teamagents tasks; teamagents status --json. No automatic retry or cancellation.".into());
+        lines.push("INSTANCE/TASK are row ids. Full diagnostics: teamagents instances · teamagents tasks · teamagents status --json.".into());
         lines.join("\n")
     }
 
@@ -1713,18 +1912,43 @@ Commands:
 
     /// Concise state for the session header and activity row. Detailed diagnostics stay
     /// in `status_line`; ordinary busy/ready states do not repeat the work usage shown in the header.
+    /// The one line above the composer: a decision that needs the user outranks feedback, because feedback is
+    /// transient and a pending approval is not.
     pub fn activity_line(&self) -> String {
-        let status = self.status_line();
-        if !self.approvals.is_empty() {
-            return format!("Approval needed ({})", self.approvals.len());
+        if let Some(status) = self.attention_line() {
+            return status;
         }
+        if let Some(notice) = &self.notice {
+            return notice.text.clone();
+        }
+        let status = self.status_line();
         if ["Ready", "Working", "Thinking", "Checking"].iter().any(|state| status.starts_with(state)) {
             return status.split(" · ").next().unwrap_or(&status).to_string();
         }
         status
     }
 
+    /// The notice the activity row is currently showing, when it is showing one.
+    pub fn shown_notice(&self) -> Option<&Notice> {
+        self.attention_line().is_none().then_some(())?;
+        self.notice.as_ref()
+    }
+
+    fn attention_line(&self) -> Option<String> {
+        if !self.approvals.is_empty() {
+            return Some(format!("Approval needed ({})", self.approvals.len()));
+        }
+        let status = self.status_line();
+        [":Needs", ":Approval", ":Stopped", ":Work blocked", ":Disconnected", ":PARKED", ":TERMINATED"]
+            .iter()
+            .any(|prefix| status.starts_with(&prefix[1..]))
+            .then_some(status)
+    }
+
     pub fn footer_hint(&self) -> String {
+        if self.report.is_some() {
+            return "Esc close · Up/Down scroll · PgUp/PgDn page".into();
+        }
         if self.help_open {
             return "Esc close · Up/Down scroll · PgUp/PgDn page".into();
         }

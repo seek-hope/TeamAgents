@@ -73,7 +73,9 @@ fn help_reports_live_environment_without_changing_drafts_or_permissions() {
     );
     app.composer.set_text("/help");
     assert!(app.handle_key(key(KeyCode::Enter)).is_none());
-    let text = app.entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>().join("\n");
+    assert!(app.entries.is_empty(), "/help must not write into the conversation");
+    let text = app.report.as_ref().map(|report| report.text.clone()).unwrap_or_default();
+    assert!(app.report.is_some(), "/help opens read output");
     for needle in [
         "Workspace: /project",
         "host (full_auto)",
@@ -82,7 +84,7 @@ fn help_reports_live_environment_without_changing_drafts_or_permissions() {
         "/missing.md: unreadable (No such file)",
         "/project/AGENTS.md",
         "/skills",
-        "Cancelling a task does not stop",
+        "To stop running commands",
         "doctor environment",
     ] {
         assert!(text.contains(needle), "{needle}: {text}");
@@ -317,7 +319,12 @@ fn retired_commands_are_local_and_approval_arrival_does_not_steal_typing() {
     ] {
         app.composer.set_text(command);
         assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "{command}");
-        assert!(app.entries.last().unwrap().text.contains("teamagents --help"));
+        let notice = app.notice.as_ref().map(|notice| notice.text.clone()).unwrap_or_default();
+        let entry = app.entries.last().map(|entry| entry.text.clone()).unwrap_or_default();
+        assert!(
+            notice.contains("teamagents --help") || entry.contains("teamagents --help"),
+            "{command}: {notice} / {entry}"
+        );
     }
     app.composer.set_text("/mcp");
     assert_eq!(app.handle_key(key(KeyCode::Enter)), Some(V2Effect::McpStatus));
@@ -408,7 +415,7 @@ fn diagnostics_are_local_visible_and_replaced_on_reconnect() {
     assert!(frame.contains("idle unsettled") && frame.contains("/help"), "{frame}");
     app.composer.set_text("/help");
     assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "help never dispatches recovery");
-    let help = &app.entries.last().unwrap().text;
+    let help = &app.report.as_ref().unwrap().text;
     assert!(help.contains("instances send") && help.contains("tasks cancel") && help.contains("same --state-root"));
     app.mark_disconnected("test");
     assert!(app.status_line().contains("Disconnected"));
@@ -434,7 +441,8 @@ fn diagnostics_are_local_visible_and_replaced_on_reconnect() {
             assert!(app.status_line().contains("Which API version?"));
             app.composer.set_text("/help");
             app.handle_key(key(KeyCode::Enter));
-            assert!(app.entries.last().unwrap().text.contains("Which API version?"));
+            let help = app.report.as_ref().map(|report| report.text.clone()).unwrap_or_default();
+            assert!(help.contains("Which API version?"), "{help}");
         }
         assert_eq!(app.focus, Focus::Composer);
     }
@@ -452,8 +460,9 @@ fn blocked_task_and_wait_diagnostics_refresh_without_stealing_approvals() {
     assert!(app.status_line().contains("blocked-task"));
     app.composer.set_text("/help");
     assert!(app.handle_key(key(KeyCode::Enter)).is_none());
-    assert!(app.entries.last().unwrap().text.contains("outcome_unknown"));
-    assert!(app.entries.last().unwrap().text.contains("timer_at=null"));
+    let help = app.report.as_ref().map(|report| report.text.clone()).unwrap_or_default();
+    assert!(help.contains("outcome_unknown"), "{help}");
+    assert!(help.contains("timer_at=null"), "{help}");
     app.apply_approvals(json!({"approvals": [{"id": "approval"}]}));
     assert!(app.status_line().contains("Approval needed"));
     assert_eq!(app.focus, Focus::Composer);

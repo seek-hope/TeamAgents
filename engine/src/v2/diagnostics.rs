@@ -83,24 +83,24 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
             ("PAUSED" | "PARKED", _) => diagnosis("inactive", "Instance paused or parked; inspect its lifecycle reason.", true,
                 "Fix the cause, then instances resume --id INSTANCE. In-flight tools may still run; inspect operations. Unknown effects must be verified before retrying."),
             ("ACTIVE", "WAITING_CAPABILITY") => diagnosis("waiting_capability", "Waiting for capability approval.", true,
-                "Use authority requests, then authority approve or authority deny --id REQUEST. No capability is granted by this diagnosis."),
+                "Use authority requests, then authority approve or authority deny --id REQUEST. Approving it is the separate step."),
             ("ACTIVE", _) if approval => diagnosis("waiting_approval", "Waiting for operation approval.", true,
-                "Use approvals, then approvals approve or approvals deny --id APPROVAL. This approves one operation, not a capability."),
-            ("ACTIVE", "MODEL_PENDING") => diagnosis("model_pending", "Model request in flight; duration alone does not imply a stall.", false,
+                "Use approvals, then approvals approve or approvals deny --id APPROVAL. This approves one operation."),
+            ("ACTIVE", "MODEL_PENDING") => diagnosis("model_pending", "Waiting for the model to respond.", false,
                 "Wait, or instances interrupt --id INSTANCE to interrupt only the model request."),
-            ("ACTIVE", "TOOLS_PENDING") => diagnosis("tools_pending", "Processing tool operations; duration alone does not imply a stall.", false,
+            ("ACTIVE", "TOOLS_PENDING") => diagnosis("tools_pending", "Running tool operations.", false,
                 "Inspect operations and history. To stop running work use instances terminate --id INSTANCE --yes; tasks cancel and model interrupt do not stop tools."),
             ("ACTIVE", "COMPLETION_PENDING") => diagnosis("checking", "Processing completion checks or settlement.", false,
-                "Inspect history for check results; do not infer success from this phase."),
+                "Inspect history for the check results."),
             ("ACTIVE", "WAITING") if waits.is_empty() => diagnosis("wait_missing", "WAITING phase has no pending wait in the current epoch.", true,
-                "Inspect status and history; this is an inconsistent snapshot, not permission to replay work."),
+                "Inspect status and history; do not replay the work until the wait is explained."),
             ("ACTIVE", "WAITING") => {
                 let timed = waits.iter().any(|wait| !wait["timer_at"].is_null());
                 diagnosis("waiting", if timed {
                     "Waiting on registered conditions; a timer is recorded."
                 } else {
-                    "Waiting on registered conditions; no timer is recorded (not proof of deadlock)."
-                }, false, "Inspect waits and tasks. BLOCKED and idle assignees do not satisfy task waits. Cancel a task only if its result is no longer needed; no automatic wakeup is added.")
+                    "Waiting on registered conditions; no timer is set."
+                }, false, "Inspect waits and tasks; BLOCKED and idle assignees do not satisfy a task wait.")
             }
             ("ACTIVE", "READY") if work["state"] == "NEEDS_INPUT" && !incoming => diagnosis("needs_input", "Needs your decision.", true,
                 "Answer the recorded question; the existing work, decisions and budget are preserved."),
@@ -109,11 +109,11 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
             ("ACTIVE", "READY") if work["state"] == "STOPPED" && !incoming => diagnosis("stopped", "Work stopped by user intervention or an enforced limit.", true,
                 "Inspect running operations; resume explicitly when appropriate. Interrupting the model does not stop tools."),
             ("ACTIVE", "READY") if runnable => diagnosis("ready", "Unaddressed input or a pending task is ready for processing.", false,
-                "Allow the coordinator to process it; this snapshot does not prove a model request has started."),
+                "The coordinator will process it."),
             ("ACTIVE", "READY") if running > 0 => diagnosis("idle_unsettled", "Assignee idle with RUNNING task(s) not settled.", true,
-                "Send an explicit instruction with instances send --id INSTANCE --prompt TEXT, or tasks cancel --id TASK if the result is no longer needed. Cancelling a task does not stop its running command; instances terminate --id INSTANCE --yes stops its process group. No automatic retry occurs."),
+                "Send an explicit instruction with instances send --id INSTANCE --prompt TEXT, or tasks cancel --id TASK if the result is no longer needed. Cancelling a task does not stop its running command; instances terminate --id INSTANCE --yes stops its process group."),
             ("ACTIVE", "READY") => diagnosis("idle", "No unaddressed work is visible at this snapshot.", false, "Send a new instruction when needed."),
-            _ => diagnosis("unknown", "Unrecognized lifecycle or phase; no progress inference made.", true, "Inspect status and history."),
+            _ => diagnosis("unknown", "Unrecognized lifecycle or phase.", true, "Inspect status and history."),
         };
         if matches!(lifecycle.as_str(), "PAUSED" | "PARKED") {
             let reason: Option<String> = conn

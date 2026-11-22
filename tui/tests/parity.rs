@@ -105,9 +105,13 @@ fn completion_edits_only_until_an_explicit_submit_and_keeps_input_ownership() {
 
     app.composer.set_text("/unknown-command");
     assert!(app.handle_key(key(KeyCode::Enter)).is_none());
-    for command in &commands {
-        assert!(app.entries.last().unwrap().text.contains(command), "unknown-command help must include {command}");
-    }
+    // One line names the way out; reciting 21 commands above the composer is what buried the model's answer.
+    let notice = app.notice.as_ref().map(|notice| notice.text.clone()).unwrap_or_default();
+    assert!(notice.contains("unknown-command") && notice.contains("teamagents --help"), "{notice}");
+    assert!(
+        app.entries.is_empty() || app.entries.len() < commands.len(),
+        "an unknown command stays out of the transcript"
+    );
     let mut app = V2App::new("model-menu");
     app.apply_checkpoint(json!({"instances":[{"id":"i-leader", "model":"leader_main", "effort":"high"}]}), 0);
     app.composer.set_text("/m");

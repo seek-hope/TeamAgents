@@ -45,7 +45,7 @@ commands! {
     ("instances", "interrupt", "--cwd DIR --json --id ID", "--id", "Interrupt its running model turn."),
     ("instances", "terminate", "--cwd DIR --json --id ID --yes", "--id --yes", "Terminate an instance and handle its workspace and open work."),
     ("instances", "merge", "--cwd DIR --json --id ID", "--id", "Merge a git_worktree member's branch."),
-    ("tasks", "list", "--cwd DIR --json", "", "List task outcomes; an outcome does not prove a process stopped."),
+    ("tasks", "list", "--cwd DIR --json", "", "List task outcomes. Stopping a command needs instances terminate --id INSTANCE --yes."),
     ("tasks", "cancel", "--cwd DIR --json --id ID", "--id", "Cancel a task and release result waiters; this does not stop its command."),
     ("inputs", "paths", "--query PREFIX --json", "", "Complete workspace attachment paths."),
     ("inputs", "list", "--recipient ID --after N --limit N --json", "", "List pending inputs with revisions; recipient defaults to Leader."),

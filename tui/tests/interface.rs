@@ -98,7 +98,8 @@ fn editor_grammar_does_not_intercept_paths_or_ordinary_messages() {
     );
     app.composer.set_text("/detach");
     app.handle_key(key(KeyCode::Enter));
-    assert!(app.entries.iter().any(|e| e.text.contains("Use /detach INDEX")));
+    let notice = app.notice.as_ref().map(|notice| notice.text.clone()).unwrap_or_default();
+    assert!(notice.contains("Use /detach INDEX"), "{notice}");
 }
 
 #[test]

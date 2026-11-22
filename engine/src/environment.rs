@@ -177,7 +177,7 @@ fn inspect(workspace: &Path) -> Json {
                         .then(|| json!({"name": name, "path": path, "available": path != "missing"}))
                 })
                 .collect();
-            json!({"ok": true, "tools": tools, "note": "Missing tools must be installed explicitly in this environment; a PATH entry is not proof of a working toolchain."})
+            json!({"ok": true, "tools": tools, "note": "Missing tools must be installed explicitly in this environment; teamagents doctor environment runs each tool by its absolute path."})
         }
         Err(error) => json!({"ok": false, "hint": recovery_hint(&error), "error": error}),
     }

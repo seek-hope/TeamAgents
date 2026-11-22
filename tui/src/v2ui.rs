@@ -150,6 +150,14 @@ impl ModelDialog {
 /// Pointer routing uses the rendered rectangles; selecting an approval never decides it.
 pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseEvent) -> Option<V2Effect> {
     use crossterm::event::{MouseButton, MouseEventKind};
+    if let Some(report) = app.report.as_mut() {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => report.scroll = report.scroll.saturating_sub(3),
+            MouseEventKind::ScrollDown => report.scroll = report.scroll.saturating_add(3),
+            _ => {}
+        }
+        return None;
+    }
     if app.help_open {
         match mouse.kind {
             MouseEventKind::ScrollUp => app.help_scroll = app.help_scroll.saturating_sub(3),
@@ -307,6 +315,7 @@ fn render_content(frame: &mut Frame, app: &mut V2App) {
     if app.help_open {
         render_help(frame, app, area);
     }
+    render_report(frame, app, area);
 }
 
 /// Both roles use the same local catalogue; only confirmation submits a selection.
@@ -485,10 +494,11 @@ fn render_activity(frame: &mut Frame, app: &V2App, area: Rect) {
         ""
     };
     let right_width = if area.width >= 48 { right.len() + 2 } else { 0 };
+    let failed = app.shown_notice().is_some_and(|notice| notice.error);
     let left_width = (area.width as usize).saturating_sub(right_width + 3);
     let line = Line::from(vec![
         Span::styled(format!(" {icon} "), Style::default().fg(color).add_modifier(Modifier::BOLD)),
-        Span::styled(fit(&status, left_width), Style::default().fg(if stopped { ERROR } else { NOTICE })),
+        Span::styled(fit(&status, left_width), Style::default().fg(if stopped || failed { ERROR } else { NOTICE })),
     ]);
     frame.render_widget(
         Paragraph::new(line),
@@ -839,59 +849,9 @@ fn render_help(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let block = panel("Shortcuts").border_style(Style::default().fg(ACCENT));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let sections = [
-        (
-            "Input editing",
-            &[
-                "Enter send · Shift+Enter newline",
-                "Ctrl+Left/Right / Alt+Left/Right move by word",
-                "Ctrl+B/F move by character · Home/End line edges",
-                "Ctrl+W / Alt+Backspace delete previous word",
-                "Ctrl+U/K delete to line start/end · Ctrl+Y restore deletion",
-                "Ctrl+E external editor · Up/Down input history",
-            ][..],
-        ),
-        (
-            "Conversation",
-            &[
-                "PgUp/PgDn / wheel read history · Ctrl+O tool details",
-                "Ctrl+G graphics/source · / commands · Tab complete",
-                "Ctrl+C interrupt model request; tools may continue",
-                "Ctrl+Q detach; the session keeps running",
-            ][..],
-        ),
-        (
-            "Team workspace",
-            &[
-                "F6 cycles team, inspection and composer focus",
-                "Alt+1 chat · Alt+2 tasks · Alt+3 activity · Alt+4 inspect",
-                "Team: Up/Down member · Enter inspect · h history",
-                "Inspect: d details · h member history · Esc compose",
-                "Browsing is read-only; messages and Ctrl+C target Leader",
-            ][..],
-        ),
-        (
-            "Sessions and models",
-            &[
-                "Ctrl+S sessions · /sessions full stored output",
-                "Ctrl+P pending inputs · Ctrl+M model and effort",
-                "/attach PATH or @PATH + Tab · /detach INDEX",
-            ][..],
-        ),
-        (
-            "Approvals",
-            &["Ctrl+A focus approvals · Up/Down select", "a approve once · d deny · Esc return to draft"][..],
-        ),
-        (
-            "More",
-            &[
-                "/help environment, delivery and recovery details",
-                "Esc close shortcuts · Up/Down scroll · PgUp/PgDn page",
-            ][..],
-        ),
-    ];
+    let sections = crate::v2app::HELP_SECTIONS;
     let mut lines = Vec::new();
-    for (title, hints) in sections {
+    for &(title, hints) in sections {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
@@ -906,6 +866,22 @@ fn render_help(frame: &mut Frame, app: &mut V2App, area: Rect) {
         inner,
     );
     // Overlays own the caret as well as key, mouse and paste input.
+    app.pictures.clear();
+}
+
+/// A command's readable output in its own dismissible overlay, so reading it never costs the transcript.
+fn render_report(frame: &mut Frame, app: &mut V2App, area: Rect) {
+    let Some(mut report) = app.report.take() else { return };
+    let popup = dialog_area(area, 92, 32);
+    frame.render_widget(Clear, popup);
+    let block = panel(report.title.clone()).border_style(Style::default().fg(ACCENT));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let lines = crate::markdown::plain(&report.text, inner.width as usize, Style::default().fg(FG));
+    report.scroll = report.scroll.min(lines.len().saturating_sub(inner.height as usize));
+    let shown: Vec<_> = lines.into_iter().skip(report.scroll).take(inner.height as usize).collect();
+    frame.render_widget(Paragraph::new(shown), inner);
+    app.report = Some(report);
     app.pictures.clear();
 }
 
