@@ -3,7 +3,7 @@
 Baseline: [DESIGN.md](DESIGN.md) §1/§12 and the current decisions in [DECISIONS.md](DECISIONS.md).
 The tables below map each requirement to implementation checks and their limits. Run the checks against the source or package under evaluation.
 
-Current source inventory: core 210 / engine 563 / tui 133 test targets.
+Current source inventory: core 210 / engine 561 / tui 136 test targets.
 
 ## Requirements (Q1–Q19) and their evidence
 
@@ -25,7 +25,7 @@ Current source inventory: core 210 / engine 563 / tui 133 test targets.
 | Q14 | Workspace is shared by default, with isolated/worktree options | A29: `engine/src/workspace.rs` and `driver::prepare_spawn_workspace`; shared files do not share private conversations |
 | Q15 | Authorized work resumes after restart; unknown effects are never blindly replayed | A08, A09, A11, A24: persisted-phase recovery, `OUTCOME_UNKNOWN`, durable operation and runner journals |
 | Q16 | Single-instance behavior must not regress and collaboration should show reproducible gain | A01: local scripted collaboration evidence exists; a general matched held-out outcome/cost comparison remains open |
-| Q17 | Estimate cost before committing a full multi-round budget | A18, `docs/PRODUCT-COMPARISON.md`: usage is recorded per request/work with known and unknown accounting; a current priced comparison is not claimed |
+| Q17 | Estimate usage before committing a full multi-round budget | A18, `docs/PRODUCT-COMPARISON.md`: token usage is recorded per request/work with known and unknown accounting; billing is removed, so no priced comparison is claimed |
 | Q18 | Old config/session compatibility is not inherently required; migration and cleanup are deliberate | A34, A36: migrations through schema 13 and explicit cleanup are implemented; older writers cannot reopen the migrated store |
 | Q19 | Cleanup follows an explicit ownership decision while Git history remains | A36, `tools/README.md`: current tree contains only current source and tools; `tools/` holds executable development and verification utilities |
 
@@ -101,8 +101,9 @@ not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-l
 ## Current open obligations
 
 - Matched held-out single-instance/team/alternative-harness comparisons must measure artifact correctness,
-  completed work, false-success claims, interventions, usage and priced cost separately. Unknown usage/prices
-  are not zero. The prioritized queue is [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md).
+  completed work, false-success claims, interventions and token usage separately. Unknown usage is not zero.
+  Billing is removed, so no priced comparison is possible. The prioritized queue is
+  [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md).
 - Independent multi-model Reviewer/adversarial evaluation, semantic tree/summary completeness, navigation
   usability, reduced user lostness and general long-horizon success remain empirical obligations.
 - Current real-provider protocol/cooperation/image coverage, external OAuth, public SSH/graphical terminals,

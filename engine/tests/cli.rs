@@ -3142,26 +3142,13 @@ fn a_work_that_cannot_accept_work_is_not_presented_as_in_force() {
         keys.sort();
         // `summary` is the model's own account of the work when it settled that work (D-431): null for a work
         // that never settled, and the completion summary once it has — per work, because a session can carry
-        // several (D-266).
+        // several (D-266). No `cost` key: billing was removed, and `known_usage` carries the token counts
+        // (including the cache split a client needs for a hit rate).
         assert_eq!(
             keys,
-            [
-                "attached_instances",
-                "cost",
-                "deadline",
-                "id",
-                "known_usage",
-                "limits",
-                "status",
-                "summary",
-                "unknown_usage"
-            ],
-            "the work row includes its summary and explicit monetary estimate: {row}"
+            ["attached_instances", "deadline", "id", "known_usage", "limits", "status", "summary", "unknown_usage"],
+            "the work row includes its summary and token usage without a monetary estimate: {row}"
         );
-        assert_eq!(row["cost"]["currency"], "USD");
-        if row["known_usage"]["total"].as_u64().unwrap_or(0) > 0 {
-            assert_eq!(row["cost"]["complete"], false, "seeded usage has no tariff receipt: {row}");
-        }
     }
 }
 

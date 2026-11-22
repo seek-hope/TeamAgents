@@ -2759,32 +2759,6 @@ async fn invalid_tree_patch_does_not_block_compaction_or_the_turn() {
     handle.shutdown().await.expect("shutdown");
 }
 
-#[tokio::test]
-async fn tariffs_do_not_confuse_wire_names_with_catalog_keys() {
-    let root = root("tariff-alias");
-    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    let mut config = root.config(ScriptedProvider { script: Mutex::new(vec![Step::Message(reply("done"))].into()) });
-    config.profile.model = "shared".into();
-    for (key, price) in [("cheap", 2.0), ("shared", 99.0)] {
-        config.catalog.models.insert(
-            key.into(),
-            serde_json::from_value(json!({
-            "provider":"fixture","model":"shared","price":{"input_usd_per_million":price,
-            "output_usd_per_million":price,"source":"fixture tariff"}}))
-            .unwrap(),
-        );
-    }
-    let handle = start(config).await.unwrap();
-    handle.input("read the source").await.unwrap();
-    let event = wait_event(&handle, "attempt_recorded", 5_000).await;
-    assert_eq!(event["payload"]["cost"]["status"], "missing_rates", "{}", event);
-    assert!(
-        event["payload"]["cost"]["rates"].is_null(),
-        "a resolved wire name cannot select a same-named catalogue key"
-    );
-    handle.shutdown().await.unwrap();
-}
-
 /// R22/A20: a failed summary is a lost optimization, never a failed turn —
 /// the turn proceeds uncompressed, the reservation is released, and three
 /// consecutive failures stop the attempts (D-28 breaker).

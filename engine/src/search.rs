@@ -354,8 +354,10 @@ fn retry_delay(attempt: usize, retry_after: Option<Duration>) -> Duration {
 fn post_search(provider: SearchProvider, endpoint: &str, credential: &str, body: &Json) -> Result<Json, SearchError> {
     let payload = body.to_string();
     let mut last_error = None;
+    // One agent for every attempt: ureq pools connections per agent, so rebuilding it inside the
+    // loop redid the TLS handshake on each retry — exactly when the peer is already struggling.
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
     for attempt in 0..=SEARCH_RETRIES {
-        let agent = ureq::AgentBuilder::new().redirects(0).build();
         let request = agent.post(endpoint).timeout(SEARCH_TIMEOUT).set("content-type", "application/json");
         let request = match provider {
             SearchProvider::DeepSeek => request.set("authorization", &format!("Bearer {credential}")),

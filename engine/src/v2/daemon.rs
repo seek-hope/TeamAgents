@@ -293,6 +293,8 @@ async fn accept_loop(
         #[cfg(target_os = "linux")]
         {
             match stream.peer_cred() {
+                // SAFETY: `geteuid` takes no arguments and cannot fail; it only reads the process's own
+                // effective uid, which is what the peer credential is compared against.
                 Ok(cred) if cred.uid() == unsafe { libc::geteuid() } => {}
                 Ok(cred) => {
                     eprintln!(
@@ -657,18 +659,12 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
         .and_then(|payload| serde_json::from_str::<Json>(&payload).ok())
         .and_then(|payload| payload["completion"]["summary"].as_str().map(str::to_string))
         .filter(|text| !text.trim().is_empty());
-    let mut costs = if work_scope.is_some() {
-        teamagents_core::v2::pricing::work_costs(conn)?
-    } else {
-        std::collections::HashMap::new()
-    };
     let work_scope = work_scope.map(|(id, status, usage, unknown, limits, deadline)| {
-        let cost = costs.remove(&id).unwrap_or(Json::Null);
+        let _ = id;
         json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
                "summary": summary,
                "unknown_usage": unknown,
                "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null),
-               "cost": cost,
                // the absolute deadline (D-64): a client that shows limits must be able
                // to say when the work stops accepting new requests
                "deadline": deadline})
@@ -1135,13 +1131,8 @@ fn read_method(
                     }))
                 })
                 .map_err(|e| format!("work_scopes query: {e}"))?;
-            let mut work_scopes: Vec<Json> =
+            let work_scopes: Vec<Json> =
                 rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("work_scopes rows: {e}"))?;
-            let mut costs = teamagents_core::v2::pricing::work_costs(conn)?;
-            for work in &mut work_scopes {
-                work["cost"] =
-                    costs.remove(work["id"].as_str().unwrap_or("")).ok_or("work cost missing from snapshot")?;
-            }
             Ok(json!({"work_scopes": work_scopes}))
         }
         // The grant view is what the user's authority surface reads and the

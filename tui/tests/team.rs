@@ -111,7 +111,7 @@ fn team_diagnostics_expose_actual_blockers_waits_unknown_effects_and_missing_fie
         "HTTP 400:",
         "invalid model name",
         "OUTCOME_UNKNOWN",
-        "1200 tokens + unknown",
+        "1200/5000 tokens + ?",
         "task-1",
     ] {
         assert!(wide.contains(label), "missing {label}:\n{wide}");
@@ -125,7 +125,7 @@ fn team_diagnostics_expose_actual_blockers_waits_unknown_effects_and_missing_fie
     assert!(waits.contains("wait-1") && waits.contains("timer null") && waits.contains("task-1"));
     app.apply_checkpoint(json!({"instances":[{"id":"i-leader"}]}), 3);
     let missing = render(&mut app, 100, 40);
-    assert!(missing.contains("Open tasks unreported") && missing.contains("No diagnosis reported"));
+    assert!(missing.contains("No open-task snapshot reported") && missing.contains("No diagnosis reported"));
     assert!(!missing.contains("HTTP 400") && !missing.contains("1200 tokens"));
 }
 
@@ -152,7 +152,7 @@ fn task_outcomes_and_activity_are_read_only_bounded_and_survive_checkpoint_refre
     app.apply_checkpoint(snapshot(), 230);
     assert_eq!(app.team.activity.front(), Some(&newest));
     assert_eq!(app.team.activity.len(), 200);
-    assert!(render(&mut app, 100, 30).contains("observed since attachment"));
+    assert!(render(&mut app, 100, 30).contains("Newest 200 observed events"));
 }
 
 #[test]
@@ -407,7 +407,7 @@ fn sidebar_toggle_zoom_and_border_drag_keep_disjoint_geometry() {
     assert!(app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT)).is_none());
     assert!(app.zoomed);
     let zoomed_screen = render(&mut app, area.width, area.height);
-    assert!(zoomed_screen.contains("[ZOOM]"));
+    assert!(zoomed_screen.contains("[Unzoom]"));
     assert_eq!(v2ui::geometry(&app, area).chat.width, area.width);
     assert!(v2ui::geometry(&app, area).inspector.is_empty());
 

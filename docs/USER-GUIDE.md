@@ -171,34 +171,38 @@ ceiling, work continues until the user stops it.
 `pre_tool` can veto a native tool call and `notify` can report lifecycle/tool events. Hooks run with the user's
 authority; project configuration cannot silently install permissions, checks, retention or update policy.
 
-### 2.4 Optional model cost estimates
+### 2.4 Token usage and the cache hit rate
 
-Set `[models.<name>.price]` with `input_usd_per_million`, `output_usd_per_million` and a `source`
-(provider tariff URL or label plus date). Optional `cache_read_usd_per_million` and
-`cache_write_usd_per_million` price cached input separately. Input totals include cache reads/writes; these
-categories are subtracted before charging uncached input, so tokens are never charged twice.
+Billing was removed from this build. There is no `[models.<name>.price]` table, no priced estimate in the TUI,
+no cost line from `exec`, and no `usage.cost` object in headless or exported reports. A store written by an
+older build has its `pricing_json` and `cost_json` columns dropped by the schema-14 migration rather than
+carried along unread, so nothing can imply a priced figure still exists.
 
-Prices use USD only, are user supplied, and are frozen at request registration for turns, compression and
-Reviewer calls. They are estimates, not provider invoices: discounts, taxes, image-specific charges and
-variable cache-duration tariffs require an appropriate tariff and are not inferred. Ambiguous raw model IDs
-shared by several profiles are left unpriced. Missing prices, required cache rates or usage stay unknown.
-Historical rows are never retroactively priced after a configuration change. Token limits remain independent;
-there is no monetary spending cap.
+What remains recorded is what the provider itself reports per attempt:
 
-`exec` prints the known estimate and any unpriced attempt count. Its `usage.cost` has `currency`,
-`known_estimated_usd`, `unpriced_attempts` and `complete`. Request registration positions select Leader and
-compression calls between this input and its outcome. New member calls in the same billing work during that
-interval also count; Reviewer calls follow their originating operation. Earlier requests and other works do
-not enter the subtotal merely because their receipts arrive during the run. Batched inputs and overlapping
-follow-ups can share calls, so summing overlapping exec reports is not a unique session bill. Open calls,
-unreceipted closed calls and uncertain cancellation prevent a complete-cost claim. The client caps accounting
-at 10,000 registrations and a 16 MiB bookkeeping budget. Exceeding either bound returns an explicit error
-with incomplete outcome/usage; session export retains the authoritative records for audit.
-The older `usage.unpriced_attempts` counts missing **token usage**, independently of missing monetary prices.
-The daemon `work_scopes` read exposes each work's `cost`, including later-attributed admission calls,
-`pending_requests` and `usage_without_receipt` (for example, inherited usage without local tariff receipts).
-A partial known subtotal is never labelled a complete cost. Session exports preserve request tariffs and
-attempt estimates for audit.
+- `prompt`, `completion` and `total` tokens, summed per work.
+- The prefix-cache split — `cache_hit`, `cache_miss` and `cache_write` — from `prompt_cache_hit_tokens`,
+  `cache_read_input_tokens` and similar provider fields. A provider that reports only the hit half gets
+  `cache_miss` derived as `prompt - cache_hit`.
+
+The TUI shows the work's recorded token usage and, next to it, the cache hit rate:
+
+```
+12.3k/128k tokens · cache 72%
+```
+
+That percentage is `cache_hit / (cache_hit + cache_miss)` over the tokens the provider reported a split for —
+the same ratio `exec` reports as `usage.cache_hit_rate`, so the two surfaces cannot disagree. When a provider
+reports no split at all, the rate is omitted rather than shown as `0%`: zero means "not reported", not "every
+request missed" (`Usage` documents this), and a bare `0%` would claim a measurement the runtime does not have.
+
+`unpriced_attempts` in the headless report counts attempts that reported **no usage object**, independently of
+any price. It stays because a run whose token total is partly unknown must say so instead of reading as
+complete. The client caps accounting at 10,000 registrations and a 16 MiB bookkeeping budget; exceeding either
+bound returns an explicit error with incomplete outcome/usage. Session export retains the authoritative
+records for audit.
+
+Token budgets (`[limits] max_total_tokens`) and deadlines are unaffected: they were never monetary limits.
 
 ## 3. Team workspace, conversation and editing
 
@@ -220,9 +224,11 @@ Narrow terminals use one content pane. The composer always names its Leader reci
 - Ctrl+K opens a fuzzy command/member/task/tree/session palette. Ctrl+F searches the Leader conversation (`n`/`N` jump
   between matches, Esc clears). Clicking a code block copies it via OSC 52; clicking a tool entry toggles its
   expanded output; `Enter` on a focused approval row opens its full-argument detail drawer.
-- Top status shows runtime state (with elapsed busy seconds), token/context progress bar and known USD cost estimate;
-  transient command/copy notices appear solely above the composer. A background read-only monitor probes sibling daemon
-  sockets under the same registry for quick session switching from the sidebar.
+- Top status shows session/workspace identity, recorded token usage, provider-reported cache hit rate (`cache 72%`,
+  omitted when unreported) and active deadline. Live runtime phase (with elapsed busy seconds), pending-approval alerts
+  and transient notices appear solely in the activity row above the composer, while keyboard shortcuts live in the
+  bottom footer. Billing is gone: no priced estimate and no usage-percentage gauge are shown or computed. A background
+  read-only monitor probes sibling daemon sockets under the same registry for quick session switching from the sidebar.
 - Inspect shows saved reasons, work state, next steps, waits and operations. Member history has its own scrolling,
   streamed preview and media. Its newest 400 entries are loaded only while visible; `/sessions` offers older
   history. Read failures keep refresh debt and a visible stale warning until a valid reply arrives.

@@ -314,6 +314,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     expires_at REAL,
     status TEXT NOT NULL
 );
+-- Every driver asks "is anything pending?" on each poll (100 ms), so this read must not walk the table.
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, session_id);
 
 CREATE TABLE IF NOT EXISTS waits (
     id TEXT PRIMARY KEY,
@@ -324,6 +326,9 @@ CREATE TABLE IF NOT EXISTS waits (
     timer_at REAL,
     status TEXT NOT NULL
 );
+-- `fire_timer` and `blocked_report` both scan pending waits per session; without this the scan was a
+-- full table walk on every timer pass (measured: `EXPLAIN QUERY PLAN` reported `SCAN w`).
+CREATE INDEX IF NOT EXISTS idx_waits_status ON waits(status, instance_id);
 
 CREATE TABLE IF NOT EXISTS artifacts (
     id TEXT PRIMARY KEY,
@@ -575,14 +580,9 @@ fn column_present(conn: &Connection, table: &str, column: &str) -> Result<bool, 
 /// schema-version change. A34's rule is about *interpreting* state, and a nullable column reinterprets nothing;
 /// rows written before it keep their inline result and are compacted by the retention sweep.
 fn ensure_columns(conn: &Connection) -> Result<(), String> {
-    // Nullable pricing receipts are additive: old rows are explicitly unpriced, never retroactively valued.
-    for (table, column) in [
-        ("commands", "result_digest"),
-        ("operations", "quiescence_json"),
-        ("operations", "dispatch_wait_json"),
-        ("model_requests", "pricing_json"),
-        ("attempts", "cost_json"),
-    ] {
+    for (table, column) in
+        [("commands", "result_digest"), ("operations", "quiescence_json"), ("operations", "dispatch_wait_json")]
+    {
         if !column_present(conn, table, column)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))
                 .map_err(|e| format!("add {table}.{column}: {e}"))?;
@@ -746,6 +746,19 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
             }
             // File baselines exist only for deliveries captured by a snapshot-aware writer.
             12 => tx.execute_batch(SCHEMA).map_err(|e| format!("migrate 12 -> 13 workspace rewind: {e}"))?,
+            // 13 -> 14: the billing readout and its backend were removed. The two columns it wrote are
+            // dropped rather than left behind unread, so an exported store cannot imply a priced estimate
+            // still exists. Guarded because a store may already lack them (one written by this build).
+            13 => {
+                if column_present(&tx, "model_requests", "pricing_json")? {
+                    tx.execute_batch("ALTER TABLE model_requests DROP COLUMN pricing_json")
+                        .map_err(|e| format!("migrate 13 -> 14 tariff column: {e}"))?;
+                }
+                if column_present(&tx, "attempts", "cost_json")? {
+                    tx.execute_batch("ALTER TABLE attempts DROP COLUMN cost_json")
+                        .map_err(|e| format!("migrate 13 -> 14 cost column: {e}"))?;
+                }
+            }
             other => return Err(format!("no migration step from v2 schema version {other}")),
         }
         version += 1;

@@ -674,7 +674,7 @@ fn appended_output_does_not_pull_a_reader_away_from_history() {
     // Ignore the scrollbar cell; the content at the top must stay anchored.
     assert_eq!(before.chars().take(78).collect::<String>(), after.chars().take(78).collect::<String>());
     assert!(app.chat_scroll > 20);
-    assert!(frame_lines(&terminal).join("\n").contains("lines above latest"));
+    assert!(frame_lines(&terminal).join("\n").contains("below · latest"));
     for _ in 0..4 {
         app.handle_key(ctrl('n'));
     }

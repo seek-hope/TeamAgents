@@ -729,7 +729,7 @@ fn task_glyph(status: &str) -> &'static str {
 }
 
 fn live_sessions_height(app: &V2App, inner_h: u16) -> u16 {
-    if app.live_sessions.is_empty() || inner_h < 18 {
+    if app.live_sessions.is_empty() || inner_h < 10 {
         0
     } else {
         1 + app.live_sessions.len().min(3) as u16
@@ -742,8 +742,7 @@ pub fn live_sessions_window(app: &V2App, area: Rect) -> Option<Rect> {
     if sessions_h == 0 {
         return None;
     }
-    let work_h = u16::from(inner.height >= 15) * 7;
-    let y = inner.bottom().saturating_sub(work_h + sessions_h);
+    let y = inner.bottom().saturating_sub(sessions_h);
     Some(Rect::new(inner.x, y, inner.width, sessions_h))
 }
 
@@ -751,13 +750,7 @@ pub fn live_sessions_window(app: &V2App, area: Rect) -> Option<Rect> {
 pub fn member_window(app: &V2App, area: Rect) -> (Rect, usize, usize) {
     let inner = panel("").inner(area);
     let sessions_h = live_sessions_height(app, inner.height);
-    let reserve = if inner.height >= 15 { 7 + sessions_h } else { sessions_h };
-    let list = Rect::new(
-        inner.x,
-        inner.y.saturating_add(1).min(inner.bottom()),
-        inner.width,
-        inner.height.saturating_sub(reserve + 1),
-    );
+    let list = Rect::new(inner.x, inner.y, inner.width, inner.height.saturating_sub(sessions_h));
     let (start, count) = window(app.team.rows.len(), app.team.selected_index(), list.height as usize / 2);
     (list, start, count)
 }
@@ -766,20 +759,9 @@ pub fn render_sidebar(frame: &mut Frame, app: &V2App, area: Rect) {
     if area.is_empty() {
         return;
     }
-    let alerts = app.team.attention_count();
-    let title = if alerts > 0 {
-        format!("Team · {} · !{alerts}", app.team.rows.len())
-    } else {
-        format!("Team · {}", app.team.rows.len())
-    };
+    let title = format!("Team · {}", app.team.rows.len());
     let block = panel(title).border_style(border(app.focus == Focus::Team));
-    let inner = block.inner(area);
     frame.render_widget(block, area);
-    let hint = if alerts > 0 { " F6 focus · ! next alert" } else { " F6 focus · Enter inspect" };
-    frame.render_widget(
-        Paragraph::new(fit(hint, inner.width as usize)).style(secondary()),
-        Rect::new(inner.x, inner.y, inner.width, inner.height.min(1)),
-    );
     let (list, start, count) = member_window(app, area);
     let w = list.width as usize;
     let mut lines = vec![];
@@ -886,47 +868,6 @@ pub fn render_sidebar(frame: &mut Frame, app: &V2App, area: Rect) {
             s_lines.push(Line::from(spans));
         }
         frame.render_widget(Paragraph::new(s_lines), sess_rect);
-    }
-    if inner.height >= 15 {
-        let approvals_style = if app.approvals.is_empty() {
-            secondary()
-        } else {
-            Style::default().fg(WARNING).add_modifier(Modifier::BOLD)
-        };
-        let mut summary = vec![
-            Line::styled("WORK", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            Line::raw(if app.team.tasks_known {
-                format!("{} open tasks", app.team.tasks.len())
-            } else {
-                "Open tasks unreported".into()
-            }),
-            Line::styled(format!("{} approvals", app.approvals.len()), approvals_style),
-        ];
-        if let Some(work) = &app.work {
-            let cost_label = work
-                .cost_usd
-                .map(|usd| format!(" · ${usd:.2}{}", if work.cost_complete { "" } else { "+?" }))
-                .unwrap_or_default();
-            summary.push(Line::styled(format!("{}{cost_label}", work.status), state_style(&work.status)));
-            summary.push(Line::raw(format!(
-                "{} tokens{}",
-                work.known_total,
-                if work.unknown { " + unknown" } else { "" }
-            )));
-            if let Some(limit) = work.limit_total {
-                summary.push(Line::raw(format!("Token limit {limit}")));
-            }
-            if let Some(deadline) = work.deadline {
-                summary.push(Line::raw(format!(
-                    "Deadline in {}m",
-                    ((deadline - crate::now_epoch()) / 60.0).ceil() as i64
-                )));
-            }
-        }
-        frame.render_widget(
-            Paragraph::new(summary).style(secondary()),
-            Rect::new(inner.x, inner.bottom() - 7, inner.width, 7),
-        );
     }
 }
 
@@ -1080,14 +1021,12 @@ fn detail_styled_lines(app: &V2App, target_id: &str) -> Vec<Line<'static>> {
     let (glyph, glyph_style) = state_badge(row, &app.team.tasks);
     let is_alert = Team::member_attention(row, &app.team.tasks);
     let elapsed = app.team.phase_elapsed(target_id).map(|s| format!(" · {s}s")).unwrap_or_default();
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(format!("{glyph} "), glyph_style),
-            Span::styled(target_id.to_string(), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
-            Span::styled(" · ", secondary()),
-            Span::styled(format!("{st}{elapsed}"), state_style(st)),
-        ]),
-        Line::from(vec![
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("{glyph} "), glyph_style),
+        Span::styled(format!("{st}{elapsed}"), state_style(st)),
+    ])];
+    if target_id != app.team.leader_id {
+        lines.push(Line::from(vec![
             Span::styled("Model: ", secondary()),
             Span::styled(
                 format!(
@@ -1097,13 +1036,13 @@ fn detail_styled_lines(app: &V2App, target_id: &str) -> Vec<Line<'static>> {
                 ),
                 Style::default().fg(FG),
             ),
-        ]),
-        Line::default(),
-        Line::styled(
-            diagnostic["summary"].as_str().unwrap_or("No diagnosis reported by this daemon.").to_string(),
-            Style::default().fg(FG),
-        ),
-    ];
+        ]));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled(
+        diagnostic["summary"].as_str().unwrap_or("No diagnosis reported by this daemon.").to_string(),
+        Style::default().fg(FG),
+    ));
     if let Some(lifetime) = row["lifetime"].as_str() {
         lines.push(Line::from(vec![
             Span::styled("Worker lifetime: ", secondary()),
@@ -1201,10 +1140,7 @@ fn detail_styled_lines(app: &V2App, target_id: &str) -> Vec<Line<'static>> {
 
 fn task_styled_lines(app: &mut V2App, has_area: bool) -> Vec<Line<'static>> {
     app.team.tasks_visible = has_area;
-    let mut lines = vec![Line::styled(
-        "Task outcome is not process-stop evidence. Up/Down select · Enter inspect · x cancel.",
-        secondary(),
-    )];
+    let mut lines = vec![Line::styled("Task outcome is not process-stop evidence.", secondary())];
     if let Some(error) = &app.team.tasks_error {
         lines.push(Line::styled(format!("Refresh failed; rows may be stale: {error}"), Style::default().fg(ERROR)));
     }
@@ -1502,7 +1438,7 @@ fn render_tree(frame: &mut Frame, app: &mut V2App, area: Rect) {
     };
     let rev = tree["revision"].as_i64().unwrap_or(0);
     let stale = if tree["stale"] == true { " · stale" } else { " · current" };
-    let header = format!("Revision {rev}{stale} · Space fold/unfold · Enter focus in draft");
+    let header = format!("Revision {rev}{stale}");
     frame.render_widget(
         Paragraph::new(fit(&header, inner.width as usize)).style(secondary()),
         Rect::new(inner.x, inner.y, inner.width, 1),
@@ -1595,15 +1531,15 @@ pub fn render_panel(frame: &mut Frame, app: &mut V2App, area: Rect, inspect: boo
     let target_id = app.team.inspected_id(right_inspector).to_string();
     let pin_tag = if right_inspector && app.team.pinned.is_some() { " [Pinned]" } else { "" };
     let title = if inspect {
-        format!("{target_id}{pin_tag} · d details / h history")
+        format!("{target_id}{pin_tag}")
     } else if app.team.view == View::Tasks {
-        "Tasks · recorded outcomes".into()
+        "Tasks".into()
     } else if app.team.view == View::Tree {
-        "Exploration tree · session navigation".into()
+        "Exploration tree".into()
     } else if app.team.view == View::Wall {
-        "Team wall · live member monitor".into()
+        "Team wall".into()
     } else {
-        "Activity · observed since attachment".into()
+        "Activity".into()
     };
     let block = panel(title).border_style(border(app.focus == Focus::Panel));
     let mut inner = block.inner(area);
@@ -1681,24 +1617,28 @@ fn render_history(frame: &mut Frame, app: &mut V2App, area: Rect, target_id: &st
     }
     app.team.member_visible = true;
     let note = if let Some(error) = &member.error {
-        format!("Stale history · retrying: {error}")
+        Some(format!("Stale history · retrying: {error}"))
     } else if member.dirty && member.entries.is_empty() {
-        "Loading member history…".into()
+        Some("Loading member history…".into())
     } else if member.older {
-        "Newest 400 entries · older history in /sessions".into()
+        Some("Newest 400 entries · older history in /sessions".into())
     } else {
-        "Read-only member history · composer targets Leader".into()
+        None
     };
-    frame.render_widget(
-        Paragraph::new(fit(&note, area.width as usize)).style(secondary()),
-        Rect::new(area.x, area.y, area.width, area.height.min(1)),
-    );
-    let area = Rect::new(
-        area.x,
-        area.y.saturating_add(1).min(area.bottom()),
-        area.width.saturating_sub(1),
-        area.height.saturating_sub(1),
-    );
+    let area = if let Some(note) = note {
+        frame.render_widget(
+            Paragraph::new(fit(&note, area.width as usize)).style(secondary()),
+            Rect::new(area.x, area.y, area.width, area.height.min(1)),
+        );
+        Rect::new(
+            area.x,
+            area.y.saturating_add(1).min(area.bottom()),
+            area.width.saturating_sub(1),
+            area.height.saturating_sub(1),
+        )
+    } else {
+        Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height)
+    };
     let base = member.transcript.document(
         &member.entries,
         area.width as usize,

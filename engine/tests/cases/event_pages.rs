@@ -171,7 +171,6 @@ async fn headless_timeout_never_claims_complete_cost_for_a_pending_call() {
     handle.shutdown().await.unwrap();
     assert_eq!(run.end, End::Timeout);
     assert_eq!(run.report["usage"]["requests"], 0);
-    assert_eq!(run.report["usage"]["cost"]["complete"], false, "{}", run.report);
 }
 
 #[tokio::test]
@@ -190,8 +189,7 @@ async fn headless_usage_excludes_queued_turns_and_unrelated_members() {
     cfg.supervisor.catalog.models.insert(
         "scripted".into(),
         serde_json::from_value(json!({
-        "provider":"fixture","model":"scripted","price":{"input_usd_per_million":2.0,
-        "output_usd_per_million":8.0,"source":"fixture tariff"}}))
+        "provider":"fixture","model":"scripted"}))
         .unwrap(),
     );
     let handle = serve(cfg).await.unwrap();
@@ -246,8 +244,6 @@ async fn headless_usage_excludes_queued_turns_and_unrelated_members() {
     assert_eq!(run.report["reply"], "this run's answer");
     assert_eq!(run.report["usage"]["requests"], 1, "{}", run.report);
     assert_eq!(run.report["usage"]["total_tokens"], 5, "{}", run.report);
-    assert_eq!(run.report["usage"]["cost"]["complete"], true, "{}", run.report);
-    assert!((run.report["usage"]["cost"]["known_estimated_usd"].as_f64().unwrap() - 0.000022).abs() < 1e-12);
 }
 
 #[tokio::test]
@@ -271,8 +267,7 @@ async fn headless_usage_retains_related_member_requests() {
     cfg.supervisor.catalog.models.insert(
         "scripted".into(),
         serde_json::from_value(json!({
-        "provider":"fixture","model":"scripted","price":{"input_usd_per_million":2.0,
-        "output_usd_per_million":8.0,"source":"fixture tariff"}}))
+        "provider":"fixture","model":"scripted"}))
         .unwrap(),
     );
     let handle = serve(cfg).await.unwrap();
@@ -284,8 +279,6 @@ async fn headless_usage_retains_related_member_requests() {
     assert_eq!(run.end, End::Completed, "{}", run.report);
     assert_eq!(run.report["usage"]["requests"], 4, "{}", run.report);
     assert_eq!(run.report["usage"]["total_tokens"], 20, "{}", run.report);
-    assert_eq!(run.report["usage"]["cost"]["complete"], true, "{}", run.report);
-    assert!((run.report["usage"]["cost"]["known_estimated_usd"].as_f64().unwrap() - 0.000088).abs() < 1e-12);
 }
 
 #[tokio::test]
@@ -369,8 +362,7 @@ async fn headless_stream_drains_many_pages_and_skips_preexisting_history() {
     cfg.supervisor.catalog.models.insert(
         "scripted".into(),
         serde_json::from_value(json!({
-        "provider":"fixture","model":"scripted","price":{"input_usd_per_million":2.0,
-        "output_usd_per_million":8.0,"source":"fixture tariff"}}))
+        "provider":"fixture","model":"scripted"}))
         .unwrap(),
     );
     let handle = serve(cfg).await.unwrap();
@@ -412,11 +404,8 @@ async fn headless_stream_drains_many_pages_and_skips_preexisting_history() {
         .all(|pair| pair[1]["sequence"].as_i64().unwrap() == pair[0]["sequence"].as_i64().unwrap() + 1));
     assert!(events.iter().any(|e| e["kind"] == "work_completed"));
     assert_eq!(report.report["usage"]["requests"], 1);
-    assert_eq!(report.report["usage"]["cost"]["complete"], true);
-    assert!((report.report["usage"]["cost"]["known_estimated_usd"].as_f64().unwrap() - 0.000022).abs() < 1e-12);
-    let scopes = client.call("work_scopes", json!({})).await;
-    assert_eq!(scopes["result"]["work_scopes"][0]["cost"]["complete"], true);
-    assert_eq!(scopes["result"]["work_scopes"][0]["cost"]["attempts"], 1);
+    // The work view is still readable; its billing keys are gone, so no cost assertion remains.
+    client.call("work_scopes", json!({})).await;
     assert_eq!(report.report["watermark"], events.last().unwrap()["sequence"]);
     handle.shutdown().await.unwrap();
 }

@@ -44,7 +44,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Search tree | One revisioned session tree; atomic ordered patches and supplied source-entry IDs | D-504, D-506, D-517 |
 | Repository contents | Keep current implementation, documentation and runnable tools; Git retains history | D-508 |
 | Daemon pagination | Bounded pages preserve delivery cursors and explicit resync | D-509 |
-| Tariffs | Frozen optional prices report unknown usage/cost explicitly | D-510 |
+| Billing | Priced estimates, tariffs and cost receipts are removed from the runtime and its reports | D-537 |
 | Request construction | Borrowed estimation preserves wire content and token-count semantics | D-511 |
 | Tool arguments | Malformed calls fail before approval/dispatch; valid sentinel-key data remains valid | D-518 |
 | Source inventory | Cargo lists determine current counts, not passing-gate claims | D-519 |
@@ -61,6 +61,10 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Leak-guard ownership | Only processes that inherited this run's marker are this run's leaks | D-528 |
 | Interface feedback | Command answers are transient feedback or a dismissible overlay; the conversation holds only the model exchange and input receipts | D-531 |
 | Interactive workspace UX | TUI modals (`Ctrl+K` palette, `/rewind`, `/mcp`, approval drawer), interactive tree/wall/pinning, confirmed member/task interventions, single-shot direct message, search/OSC 52 copy, and multi-session monitor | D-532 |
+| Command identity | Replay dedup hashes canonical JSON; legacy receipts still match | D-533 |
+| Damaged state | Unreadable stored wait conditions never satisfy a wait and are reported | D-534 |
+| Idle polls | A poll that changed nothing keeps no receipt, for every poll command | D-535 |
+| Driver failure | A driver that ends in error is parked with its reason, never silently respawned | D-536 |
 
 ## Authority and runtime
 
@@ -104,15 +108,19 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 - The user may read/address any instance. An instance reads only its own private history; shared projections
   must not leak another member's context. Shared, isolated and Git-worktree policies are supported. Retirement
   refuses uncommitted/unmerged work; shared-workspace takeover requires independent stop evidence.
-- Request registration freezes optional USD-per-million input/output/cache tariffs with source/date. Attempt
-  costs use provider-reported categories. Missing usage/prices/receipts and ambiguous profile lookup never mean
-  zero. Known usage from failed review and invalid compaction is retained; failed summaries remain failed.
-  Work/headless reports expose known subtotals and incompleteness, and exports retain tariffs/receipts. These
-  are estimates, not invoices or monetary admission limits.
-- Input/request attribution uses control-assigned epoch, head, billing work and Reviewer-parent positions.
+- D-537: billing is removed. There is no `[models.<name>.price]` table, no `PriceRates`, no
+  `model_requests.pricing_json` or `attempts.cost_json` (schema 14 drops both), no work-cost view and no
+  `usage.cost` object in headless or exported reports. Earlier builds' priced estimates are not migrated,
+  reinterpreted or shown: the columns are gone rather than left unread, so no surface can imply a priced
+  estimate still exists. Token usage — prompt, completion, total and the provider-reported cache split — is
+  still recorded per work and remains the accounting evidence; a missing usage report is counted
+  (`unpriced_attempts`) so a partial token total never reads as complete. Token budgets and deadlines are
+  unaffected: they never were monetary limits.
+- Input/request attribution uses control-assigned epoch, head, work and Reviewer-parent positions.
   Headless accounting includes calls between application and the applicable outcome, newly registered member
-  calls in that work and their reviews. Prior/unrelated calls are excluded. Overlapping inputs may share costs;
-  these are not exclusive causal allocations. Pending/missing evidence and uncertain cancellation stay incomplete.
+  calls in that work and their reviews. Prior/unrelated calls are excluded. Overlapping inputs may share
+  requests; these are not exclusive causal allocations. Pending/missing evidence and uncertain cancellation
+  stay incomplete.
 - Accounting retains compact receipts, capped at 10,000 registrations and 16 MiB. Overflow reports incomplete
   outcome/usage rather than silently dropping evidence. Outcome events trigger attribution even when a later
   input is active. Older-history cursors strictly decrease; read errors are infrastructure errors, not timeouts.
@@ -185,7 +193,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   windows are for scripted regressions only.
 - Persisted profiles reload after the post-drain snapshot, before preparation, compaction and reservation.
   Catalogue keys resolve to wire names, defaults and normalized effort; revision checks reject stale preparation.
-  Explicit selection binds the adapter and tariff by catalogue key, not a possibly shared wire name. Cached
+  Explicit selection binds the adapter by catalogue key, not a possibly shared wire name. Cached
   retries retain their prepared request. Recovery checks both route and serialized provider-neutral request
   (including the tool surface and expanded images); a missing or mismatched digest parks without a resend.
   Automatic routing, model-account login and live-service acceptance are separate obligations.
@@ -295,8 +303,10 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   automatically resetting to Leader after submit or on `Esc`); (2) fuzzy `Ctrl+K` command/goto palette and interactive
   `/rewind` / `/mcp` / approval-detail modals alongside direct CLI/subcommand fallbacks; (3) foldable session exploration
   tree (`View::Tree`), multi-member live wall (`View::Wall`), and inspector pinning (`P`); (4) per-tool click toggle,
-  `edit_file` diff counts, `Ctrl+F` in-chat search, and OSC 52 code-block copy; (5) de-duplicated top bar (keeping flash
-  notices in the composer activity line), known USD cost, budget/context progress, and busy phase elapsed seconds; and
+  `edit_file` diff counts, `Ctrl+F` in-chat search, and OSC 52 code-block copy; (5) single-source-of-truth status
+  layout: top bar carries only session/workspace and recorded token/cache/deadline usage, the composer activity row
+  carries live runtime state (with elapsed busy seconds) and transient notices, redundant sidebar work summaries and
+  duplicated panel/border hints are removed while key hints live in the footer; and
   (6) a bounded read-only background `LiveMonitor` probing sibling daemon sockets for the sidebar live-session strip.
   All lifecycle/task actions require explicit non-repeat confirmation, never alter capability grants or ownership, and
   keep Leader fallback intact.
@@ -323,7 +333,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 906 Rust tests: core 210, engine 563 and TUI 133.
+- Current source contains 907 Rust tests: core 210, engine 561 and TUI 136.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified
@@ -340,3 +350,19 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   signalling. Ownership coverage is checked with `python3 tools/leak_guard.py --audit-ownership`.
 - Full Rust/SQLite refinement, whole-system composition, wide exhaustive completion, Policy B source-bound
   bidirectional fair-trace equivalence and arbitrary-input/live-model quality claims remain unestablished.
+- D-533: a command's replay identity is the canonical form of its method, arguments and actor, not
+  `serde_json`'s rendering of them. Both crates build `serde_json` with `preserve_order`, so object keys keep the
+  wire's order; hashing `to_string()` made two encodings of the same arguments differ and refused a retry as
+  "already used with a different payload". Object keys are ordered recursively, array order is preserved as data,
+  and the pre-canonicalization hash is still accepted on read so receipts written earlier replay.
+- D-534: a stored wait whose `conditions_json` cannot be read, or holds no conditions, never satisfies that wait.
+  Registration already refuses an empty list, so such a row is damaged or foreign state, not evidence: `fire_timer`
+  leaves it PENDING and `blocked_report` names it with its parse error. `evaluate_wait` initializes an ALL wait's
+  accumulator to true, so parsing the row as an empty list used to wake the instance.
+- D-535: every command the driver polls with is a read when it changes nothing, and a read keeps no receipt.
+  `drain_inbox` was exempted first; `fire_timer` was not, so a WAITING instance wrote one receipt per 100 ms poll
+  indefinitely. The exemption is keyed on the command and on its result showing no applied, sealed, woken or
+  satisfied fact.
+- D-536: a driver that ends in error while its row still says ACTIVE is parked with that error, exactly as a driver
+  that cannot boot is. Dropping the finished task's `Result` and respawning on the next pass was a silent hot loop
+  that reopened storage every poll. Storage backpressure is retryable in the driver rather than fatal.

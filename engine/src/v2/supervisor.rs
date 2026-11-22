@@ -584,7 +584,7 @@ where
                     }
                 }
                 let mut unusable: Vec<(String, String)> = vec![];
-                let no_drivers = {
+                let (no_drivers, finished) = {
                     let mut drivers = self.drivers.lock().unwrap();
                     // Shutdown can drain the handles while discovery awaits its SQLite snapshot.
                     // Never recreate them from that older ACTIVE row. Likewise a newly finished
@@ -593,15 +593,25 @@ where
                         break;
                     }
                     let mut just_finished = std::collections::HashSet::new();
-                    drivers.retain(|id, driver| {
-                        let alive =
-                            instances.iter().any(|(iid, lifecycle, _, _)| iid == id && lifecycle != "TERMINATED");
-                        if driver.task.is_finished() {
+                    // A finished driver's `Result` used to be dropped on the floor. An `Err` (disk full,
+                    // SQLite failure, backpressure) therefore left the row ACTIVE with nothing driving
+                    // it, and the very next pass respawned the driver 100 ms later — a silent hot loop
+                    // that reopened storage each round and never told the user. Take the handle out here
+                    // and judge its outcome after this lock is released.
+                    let mut finished: Vec<(String, tokio::task::JoinHandle<Result<(), String>>)> = Vec::new();
+                    let ended: Vec<String> = drivers
+                        .iter()
+                        .filter(|(_, driver)| driver.task.is_finished())
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    for id in ended {
+                        if let Some(driver) = drivers.remove(&id) {
                             just_finished.insert(id.clone());
-                            false
-                        } else {
-                            alive
+                            finished.push((id, driver.task));
                         }
+                    }
+                    drivers.retain(|id, _| {
+                        instances.iter().any(|(iid, lifecycle, _, _)| iid == id && lifecycle != "TERMINATED")
                     });
                     for (id, lifecycle, workspace_ref, profile_json) in &instances {
                         if lifecycle != "ACTIVE" || drivers.contains_key(id) || just_finished.contains(id) {
@@ -683,8 +693,27 @@ where
                         };
                         drivers.insert(id.clone(), InstanceDriver { shared, task });
                     }
-                    drivers.is_empty()
+                    (drivers.is_empty(), finished)
                 };
+                // Judge the drivers that ended, now that the map lock is released. A driver that
+                // returned `Err` stopped while its row still said ACTIVE, so respawning it next poll
+                // is a hot loop that reports nothing; parking it is the runtime's only self-action
+                // (§5.4) and `instances resume` is the user's lever, exactly as for a boot failure.
+                for (id, task) in finished {
+                    let reason = match task.await {
+                        Ok(Ok(())) => continue, // a normal stop: terminated, parked or shutdown
+                        Ok(Err(error)) => format!("driver stopped: {error}"),
+                        Err(join) if join.is_cancelled() => continue,
+                        Err(join) => format!("driver stopped: its task failed: {join}"),
+                    };
+                    // Only a row that still claims ACTIVE is stranded. A lifecycle change that
+                    // raced this pass is the user's own decision and is left alone.
+                    if !instances.iter().any(|(iid, lifecycle, _, _)| iid == &id && lifecycle == "ACTIVE") {
+                        continue;
+                    }
+                    eprintln!("instance {id} {reason}; parking it");
+                    unusable.push((id, reason));
+                }
                 for (id, reason) in unusable {
                     park_unusable(&self.storage, &id, &reason).await;
                 }

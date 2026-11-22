@@ -1008,6 +1008,14 @@ impl<P: Provider> Driver<P> {
                     self.storage_full = true;
                     eprintln!("driver: {} hit storage full, parking: {error}", self.config.instance_id);
                 }
+                // A full queue is backpressure, not a stopped driver. The supervisor already treats it as
+                // retryable for its own reads; here it used to escape as a fatal error, so a busy session
+                // killed a driver that had done nothing wrong and left an ACTIVE row with no driver.
+                // Wait out the normal cadence and try again: the work that queued ahead of us is the
+                // reason the queue is full.
+                Err(error) if error == super::storage::BACKPRESSURE => {
+                    self.wait().await;
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -1145,19 +1153,6 @@ impl<P: Provider> Driver<P> {
 
     async fn submit(&self, cmd: Command, identity: Identity) -> Result<Json, String> {
         self.storage.call(move |control| control.submit(cmd, identity)).await?
-    }
-
-    fn pricing(&self, model: &str, catalog_key: bool) -> Json {
-        let direct = if catalog_key {
-            self.config.catalog.models.get(model)
-        } else {
-            self.selected_key.as_ref().and_then(|k| self.config.catalog.models.get(k)).filter(|p| p.model == model)
-        };
-        let mut matches = self.config.catalog.models.values().filter(|entry| entry.model == model);
-        let first = matches.next();
-        // A raw model id shared by multiple endpoints has no unique tariff. Never guess a price.
-        let entry = direct.or_else(|| if matches.next().is_none() { first } else { None });
-        json!({"model": model, "rates": entry.and_then(|entry| entry.price.as_ref())})
     }
 
     async fn snapshot(&self) -> Result<Snapshot, String> {
@@ -1505,8 +1500,7 @@ impl<P: Provider> Driver<P> {
                     "begin_compression",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
                            "request_ref": format!("compression:{}", self.config.instance_id),
-                           "revision": revision, "manual":manual.is_some(), "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
-                           "pricing": self.pricing(&self.config.profile.model, false)}),
+                           "revision": revision, "manual":manual.is_some(), "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens}),
                 ),
                 Identity::System,
             )
@@ -2059,8 +2053,7 @@ that delegated it learns the outcome only from a settlement.";
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
                            "revision": revision, "mcp_revision":self.mcp_revision,"prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
                            "request_ref":self.prepared_binding(&request)?,
-                           "offered_tools": offered_tools, "surface_authorized": surface_authorized,
-                           "pricing": self.pricing(&self.config.profile.model, false)}),
+                           "offered_tools": offered_tools, "surface_authorized": surface_authorized}),
                 ),
                 Identity::Instance(self.config.instance_id.clone()),
             )
@@ -2623,8 +2616,7 @@ that delegated it learns the outcome only from a settlement.";
                             format!("review-begin-{request_id}"),
                             "begin_review",
                             json!({"request_id": request_id, "operation_id": operation_id,
-                                   "est_prompt_tokens": request.est_prompt_tokens,
-                                   "pricing": self.pricing(self.config.reviewer_model.as_deref().unwrap_or(&self.config.profile.model), self.config.reviewer_model.is_some())}),
+                                   "est_prompt_tokens": request.est_prompt_tokens}),
                         ),
                         Identity::System,
                     )

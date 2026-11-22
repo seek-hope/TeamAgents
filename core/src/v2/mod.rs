@@ -6,7 +6,6 @@ pub mod attachments;
 pub mod capability;
 pub mod control;
 pub mod models;
-pub mod pricing;
 pub mod store;
 pub mod wire;
 

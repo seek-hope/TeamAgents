@@ -126,7 +126,6 @@ fn ctrl_m_opens_the_model_menu_and_enter_changes_the_profile() {
         model: "test".into(),
         provider: "compatible".into(),
         efforts: vec![],
-        context_window: None,
     }];
     app.efforts = vec!["low".into(), "high".into()];
     app.apply_checkpoint(
@@ -236,7 +235,6 @@ fn a_missing_effort_falls_back_to_the_nearest_lower_level() {
         model: "test".into(),
         provider: "compatible".into(),
         efforts: vec!["high".into(), "max".into()],
-        context_window: None,
     }];
     app.apply_checkpoint(
         json!({"instances": [{"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY",
@@ -262,14 +260,12 @@ fn switching_models_rebuilds_efforts_and_applies_the_same_fallback() {
             model: "wide".into(),
             provider: "compatible".into(),
             efforts: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into(), "max".into()],
-            context_window: None,
         },
         ModelInfo {
             key: "narrow".into(),
             model: "narrow".into(),
             provider: "compatible".into(),
             efforts: vec!["high".into(), "max".into()],
-            context_window: None,
         },
     ];
     app.apply_checkpoint(
@@ -525,10 +521,9 @@ fn responsive_status_and_hints_prioritize_current_actions() {
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
         terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
         let row = |y| (0..width).map(|x| terminal.backend().buffer()[(x, y)].symbol()).collect::<String>();
-        assert!(row(0).contains("Ready") && row(0).contains("42 tokens"));
+        assert!(row(0).contains("42 tokens") && !row(0).contains("Ready"));
         let welcome: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
         assert!(welcome.contains("What does this project do?"), "width {width}: {welcome}");
-        assert!(welcome.contains("/model  Choose a model"));
         if width == 100 {
             assert!(row(0).contains("project"));
             let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();

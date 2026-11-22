@@ -948,9 +948,6 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         std::thread::sleep(Duration::from_millis(250));
     }
     let mut usage = accounting.finish(&instance);
-    if end == End::Timeout {
-        usage["cost"]["complete"] = json!(false);
-    }
     // The user's acceptance commands run on the host in this workspace after a finished turn.
     // Nothing runs when the turn is not finished — an approval no headless caller can give, the caller's own
     // deadline passing, or a request the runtime *refused before it began* (a budget ceiling, a passed work
@@ -1017,21 +1014,12 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     Ok(ExecRun { report, end, checks_ok })
 }
 
-/// D-427: fold one recorded attempt into the run's usage. The provider's own numbers are summed; an attempt it
-/// never priced is **counted** (`unpriced_attempts`), because a run whose cost is partly unknown must say so
-/// rather than read as free.
+/// Fold one recorded attempt into the run's usage. The provider's own numbers are summed; an attempt that
+/// reported no usage object at all is **counted** (`unpriced_attempts`), because a run whose token total is
+/// partly unknown must say so rather than read as complete. That counter is about token completeness, not
+/// money: billing was removed from the runtime.
 fn add_attempt_usage(usage: &mut Json, payload: &Json) {
     usage["requests"] = json!(usage["requests"].as_u64().unwrap_or(0) + 1);
-    if !usage["cost"].is_object() {
-        usage["cost"] = json!({"currency":"USD","known_estimated_usd":0.0,"unpriced_attempts":0,"complete":true});
-    }
-    if let Some(amount) = payload["cost"]["estimated_usd"].as_f64() {
-        usage["cost"]["known_estimated_usd"] =
-            json!(usage["cost"]["known_estimated_usd"].as_f64().unwrap_or(0.0) + amount);
-    } else {
-        usage["cost"]["unpriced_attempts"] = json!(usage["cost"]["unpriced_attempts"].as_u64().unwrap_or(0) + 1);
-        usage["cost"]["complete"] = json!(false);
-    }
     let reported = &payload["usage"];
     if reported.is_object() {
         for key in [
@@ -1221,9 +1209,9 @@ fn print_human(report: &Json, options: &ExecOptions) {
     print_usage(report);
 }
 
-/// D-427: what the run cost, as the provider reported it. A user paying per prompt token has no other way to see
-/// this from the CLI, and the two context limits (D-425/D-426) are the levers for it — so the line states the
-/// number, the request count and, when any attempt went unpriced, that the total is incomplete.
+/// The run's token usage, as the provider reported it. The priced estimate this line used to accompany is no
+/// longer displayed (the billing readout was removed); `unpriced_attempts` stays in the report's JSON, and the
+/// two context limits (D-425/D-426) remain the levers a user actually adjusts.
 fn print_usage(report: &Json) {
     let usage = &report["usage"];
     let Some(requests) = usage["requests"].as_u64() else { return };
@@ -1234,9 +1222,12 @@ fn print_usage(report: &Json) {
     let completion = usage["completion_tokens"].as_u64().unwrap_or(0);
     let hit = usage["cache_hit_tokens"].as_u64().unwrap_or(0);
     let miss = usage["cache_miss_tokens"].as_u64().unwrap_or(0);
-    let unpriced = usage["unpriced_attempts"].as_u64().unwrap_or(0);
-    let note = if unpriced > 0 {
-        format!(" ({unpriced} attempt(s) the provider did not price are not counted)")
+    // This counter is about the *token* totals, not about pricing: `add_attempt_usage` increments it when the
+    // provider reported no usage object at all, so the sums above are a lower bound. Removing the priced
+    // estimate must not remove this warning with it.
+    let unreported = usage["unpriced_attempts"].as_u64().unwrap_or(0);
+    let note = if unreported > 0 {
+        format!(" ({unreported} attempt(s) reported no token usage and are not counted)")
     } else {
         String::new()
     };
@@ -1248,14 +1239,9 @@ fn print_usage(report: &Json) {
         String::new()
     };
     println!("tokens: {prompt} prompt + {completion} completion over {requests} request(s){cache}{note}");
-    let cost = &usage["cost"];
-    let known = cost["known_estimated_usd"].as_f64().unwrap_or(0.0);
-    if cost["complete"] == json!(true) {
-        println!("estimated cost: USD {known:.6}");
-    } else {
-        let missing = cost["unpriced_attempts"].as_u64().unwrap_or(requests);
-        println!("estimated cost: incomplete (USD {known:.6} known; {missing} unpriced attempt(s))");
-    }
+    // No cost line: the priced estimate is no longer displayed anywhere (the user removed the billing
+    // readout). The accounting itself stays in the report's JSON so `--json`, exports and the budget
+    // ceiling keep their recorded evidence.
 }
 
 /// Human-readable check verdicts on stdout (the verdict is product output); a

@@ -87,8 +87,6 @@ pub struct ModelInfo {
     pub provider: String,
     /// The ordered effort levels this model declares (D-476), or empty for the built-in list.
     pub efforts: Vec<String>,
-    /// Native context window reported by the daemon catalog (`[models.<key>] context_window`).
-    pub context_window: Option<i64>,
 }
 
 /// Active Ctrl+F transcript search state (Conversation view).
@@ -221,8 +219,10 @@ pub struct WorkInfo {
     pub known_total: i64,
     pub unknown: bool,
     pub limit_total: Option<i64>,
-    pub cost_usd: Option<f64>,
-    pub cost_complete: bool,
+    /// Provider-reported prefix-cache reads and misses. Both zero means the provider reported no cache
+    /// split at all, which is "not reported" — not a 0% hit rate (`Usage` documents this).
+    pub cache_hit: i64,
+    pub cache_miss: i64,
     /// The work's absolute deadline in epoch seconds (`[limits] deadline_minutes`,
     /// D-64): shown as the time left, so a configured ceiling is visible.
     pub deadline: Option<f64>,
@@ -567,8 +567,9 @@ impl V2App {
     }
 
     /// Replace the transient streaming previews from the daemon's `previews` read (§9). Empty text is not stored,
-    /// so a finished turn leaves no preview behind.
-    pub fn apply_previews(&mut self, rows: &Json) {
+    /// so a finished turn leaves no preview behind. Returns whether anything changed, so the caller can repaint
+    /// without cloning the whole preview set every poll to compare it afterwards.
+    pub fn apply_previews(&mut self, rows: &Json) -> bool {
         let mut previews = Vec::new();
         for row in rows.as_array().cloned().unwrap_or_default() {
             let id = row["instance_id"].as_str().unwrap_or("").to_string();
@@ -577,7 +578,9 @@ impl V2App {
                 previews.push((id, text));
             }
         }
+        let changed = previews != self.previews;
         self.previews = previews;
+        changed
     }
 
     /// The active instance's streaming text, if it has an attempt in flight.
@@ -750,17 +753,13 @@ impl V2App {
                 return None;
             }
             let known = &g["known_usage"];
-            let cost = &g["cost"];
-            let has_cost = cost.is_object()
-                && (cost["attempts"].as_i64().unwrap_or(0) > 0
-                    || cost["known_estimated_usd"].as_f64().unwrap_or(0.0) > 0.0);
             Some(WorkInfo {
                 status: g["status"].as_str().unwrap_or("").to_string(),
                 known_total: known["total"].as_i64().unwrap_or(0),
                 unknown: g["unknown_usage"].as_i64().unwrap_or(0) != 0,
                 limit_total: g["limits"]["max_total_tokens"].as_i64(),
-                cost_usd: has_cost.then(|| cost["known_estimated_usd"].as_f64()).flatten(),
-                cost_complete: has_cost && cost["complete"].as_bool().unwrap_or(false),
+                cache_hit: known["cache_hit"].as_i64().unwrap_or(0),
+                cache_miss: known["cache_miss"].as_i64().unwrap_or(0),
                 deadline: g["deadline"].as_f64(),
                 summary: g["summary"]
                     .as_str()
@@ -786,7 +785,6 @@ impl V2App {
                         provider: row["provider"].as_str().unwrap_or("").to_string(),
                         key,
                         efforts,
-                        context_window: row["context_window"].as_i64(),
                     })
                 })
                 .collect();
@@ -1569,15 +1567,6 @@ impl V2App {
             Focus::Approvals => self.approval_key(key),
             Focus::Composer => self.composer_key(key),
         }
-    }
-
-    pub fn active_context_window(&self) -> Option<i64> {
-        let key = if !self.leader_catalog_key.is_empty() {
-            self.leader_catalog_key.as_str()
-        } else {
-            self.active_instance().map(|i| i.model.as_str()).unwrap_or("")
-        };
-        self.models.iter().find(|m| m.key == key || m.model == key).and_then(|m| m.context_window)
     }
 
     pub fn open_mcp_modal(&mut self) {
@@ -2634,7 +2623,7 @@ impl V2App {
             return "Ctrl+A review · Enter send · Ctrl+Q quit".into();
         }
         if self.chat_scroll > 0 {
-            return format!("PgDn newer · {} lines above latest · PgUp older · Enter send", self.chat_scroll);
+            return "PgDn newer · PgUp older · Enter send".into();
         }
         if self.direct_target.is_some() {
             return "Enter send direct · Esc back to Leader · Ctrl+Q quit".into();

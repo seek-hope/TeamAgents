@@ -546,7 +546,7 @@ async fn explicit_profile_switch_routes_a_shared_wire_name_to_the_selected_endpo
     for (key, proto, base, temperature, images) in
         [("one", "chat/completions", &first.base, 0.1, true), ("two", "gemini", &second.base, 0.9, false)]
     {
-        catalog.models.insert(key.into(), serde_json::from_value(json!({"provider":key,"protocol":proto,"model":"shared-wire","base_url":base,"generation_options":{"temperature":temperature},"images":images,"max_retries":0,"price":{"input_usd_per_million":1,"output_usd_per_million":2,"source":key}})).unwrap());
+        catalog.models.insert(key.into(), serde_json::from_value(json!({"provider":key,"protocol":proto,"model":"shared-wire","base_url":base,"generation_options":{"temperature":temperature},"images":images,"max_retries":0})).unwrap());
     }
     let factory_catalog = catalog.clone();
     let mut cfg = config(&root, move |_, profile| {
@@ -575,8 +575,13 @@ async fn explicit_profile_switch_routes_a_shared_wire_name_to_the_selected_endpo
         }
         tokio::time::sleep(Duration::from_millis(15)).await;
     }
-    let rows:Vec<String>=c.connection().prepare("SELECT json_extract(pricing_json,'$.rates.source') FROM model_requests WHERE status='COMPLETE' ORDER BY rowid").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
-    assert_eq!(rows, ["one", "two"]);
+    // Routing is proved by the wire content below, not by a tariff receipt: billing was removed, so the
+    // `pricing_json` column this used to read no longer exists. Two completed requests must still exist.
+    let completed: i64 = c
+        .connection()
+        .query_row("SELECT count(*) FROM model_requests WHERE status='COMPLETE'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(completed, 2, "both turns reached a COMPLETE request");
     let one: Json = serde_json::from_str(&first.bodies()[0]).unwrap();
     let two: Json = serde_json::from_str(&second.bodies.lock().unwrap()[0]).unwrap();
     assert_eq!(one["model"], "shared-wire");
@@ -798,7 +803,6 @@ async fn heterogeneous_instances_run_different_protocols_in_one_session() {
             generation_options: Default::default(),
             efforts: Vec::new(),
             context_window: Some(1_000_000),
-            price: None,
             codex_profile: None,
         },
     );
@@ -816,7 +820,6 @@ async fn heterogeneous_instances_run_different_protocols_in_one_session() {
             generation_options: Default::default(),
             efforts: Vec::new(),
             context_window: Some(200_000),
-            price: None,
             codex_profile: None,
         },
     );

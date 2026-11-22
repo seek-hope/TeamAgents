@@ -241,7 +241,7 @@ def main():
             failures.append(f"{label}: {needle!r} not on screen\n{text[:2000]}")
 
     scr.feed(read_all(fd, 4.0).decode("utf-8", "replace"))
-    expect("Ready", "status phase")
+    expect("READY", "sidebar status phase")
     expect("10/1000", "status budget")
     expect("Message", "composer")
     expect("Enter", "footer")

@@ -184,7 +184,6 @@ fn apply(cfg: &mut UserConfig, ns: &str, rows: Rows) {
                 context_window: Some(row.window),
                 efforts: Vec::new(),
                 generation_options: HashMap::new(),
-                price: None,
                 ..seed.clone()
             },
         );

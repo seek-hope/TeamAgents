@@ -24,7 +24,7 @@ obligations are in [ACCEPTANCE.md](ACCEPTANCE.md).
 | Q14 | The workspace is shared by default; isolated directories and Git worktrees are optional | Shared project access is explicit; private conversations are not shared with it |
 | Q15 | Authorized work resumes after restart; unknown effects are verified first and never blindly replayed | Persisted location drives recovery; unknown outcomes park with a notification |
 | Q16 | Single-instance behavior must not regress and collaboration should show reproducible gain | Controlled, matched comparisons are required; a scripted gain is not a real-model outcome claim |
-| Q17 | Estimate usage cost before committing a full multi-round budget | Record usage and uncertainty honestly; do not infer priced cost from estimates alone |
+| Q17 | Estimate usage before committing a full multi-round budget | Record token usage and its uncertainty honestly; billing is removed, so no monetary estimate is produced or implied |
 | Q18 | Old config/session compatibility is not inherently required; deliberate migration and cleanup are allowed | Current migration is explicit and refuses foreign or unexpected state |
 | Q19 | Cleanup follows an explicit ownership decision while Git history remains | Current source and tools are kept in the tree; old state is not silently adopted |
 
@@ -261,13 +261,13 @@ JSON export are read-only projections, not second business stores.
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current source has 906 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
+The current source has 907 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
 configurations, 323 controls and one separate wide configuration, evaluated in 60 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 
 ## 11. Current acceptance boundaries
 
-Local scripted tests do not establish real-model quality, priced cost, external-provider/OAuth acceptance,
+Local scripted tests do not establish real-model quality, token-cost efficiency, external-provider/OAuth acceptance,
 clean-host installation, a complete graphical-terminal matrix or general long-horizon reliability. Finite models
 do not establish full Rust/SQLite refinement, whole-system composition, wide exhaustive completion or Policy B
 source-bound equivalence.

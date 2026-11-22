@@ -830,10 +830,10 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
         if last_event_poll.elapsed() >= Duration::from_millis(150) {
             last_event_poll = Instant::now();
             // §9: the model's streaming preview is a transient read, not an event. Repaint only when it changes.
-            let before = app.previews.clone();
+            // The comparison happens inside `apply_previews`: cloning the whole preview set here copied every
+            // streamed character four times a second just to decide whether to repaint.
             if let Ok(result) = client.call("previews", serde_json::json!({})) {
-                app.apply_previews(&result["previews"]);
-                if app.previews != before {
+                if app.apply_previews(&result["previews"]) {
                     dirty = true;
                 }
             }

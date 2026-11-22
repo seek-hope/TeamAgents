@@ -33,7 +33,7 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 
 ## Current evidence totals
 
-- Rust tests: **906** (core 210, engine 563, TUI 133).
+- Rust tests: **907** (core 210, engine 561, TUI 136).
 - Positive TLA inputs: **63 configurations in 60 traversals**.
 - Negative controls: **323**, each required to refute its named claim.
 - Normal-path witnesses: **79**, which demonstrate reachability rather than safety.
@@ -47,7 +47,7 @@ Package and PTY checks have separate targets. See [ACCEPTANCE.md](ACCEPTANCE.md#
 
 ## Current open obligations
 
-- Matched held-out task success, false-success, completion, intervention and priced-cost comparisons.
+- Matched held-out task success, false-success, completion, intervention and token-usage comparisons.
 - General exploration-tree usefulness, semantic completeness and reduced user lostness.
 - Wider provider/OAuth/public-host/graphical-terminal acceptance, physical hosts and more distributions/architectures.
 - Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound

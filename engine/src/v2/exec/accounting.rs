@@ -133,7 +133,7 @@ impl Accounting {
             // No registration in this drain means the request predates this run.
             if let Some(request) = self.requests.get(scope) {
                 let id = payload["attempt_id"].as_str().ok_or("accounting attempt id missing")?;
-                let receipt = json!({"usage":payload["usage"],"cost":payload["cost"]});
+                let receipt = json!({"usage":payload["usage"]});
                 if let Some(old) = request.attempts.get(id) {
                     if old != &receipt {
                         return Err("attempt accounting receipt changed".into());
@@ -163,9 +163,10 @@ impl Accounting {
     }
 
     pub(super) fn finish(&self, leader: &str) -> Json {
+        // `unpriced_attempts` counts attempts that reported no usage object, so the token totals above are a
+        // lower bound. It is not a money field: billing was removed from the runtime.
         let mut usage = json!({"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,
-            "cache_hit_tokens":0,"cache_miss_tokens":0,"cache_write_tokens":0,"requests":0,"unpriced_attempts":0,
-            "cost":{"currency":"USD","known_estimated_usd":0.0,"unpriced_attempts":0,"complete":true}});
+            "cache_hit_tokens":0,"cache_miss_tokens":0,"cache_write_tokens":0,"requests":0,"unpriced_attempts":0});
         let Some(input) = self.input else { return usage };
         let mut owned = BTreeSet::new();
         let mut works = self.admitted.clone();
@@ -194,12 +195,9 @@ impl Accounting {
                 self.decisions.get(decision).copied()
             }
         });
-        // Members are charged by frozen billing work, bounded by this input's application and outcome.
-        // If an unusual closing note lacks an event identity, keep the subtotal conservative and incomplete.
+        // Members are charged by frozen work, bounded by this input's application and outcome. If an unusual
+        // closing note lacks an event identity the subtotal stays conservative, which the token counters show.
         let bounded = self.applied_at.is_some() && (self.end.is_none() || end_sequence.is_some());
-        if !bounded {
-            usage["cost"]["complete"] = json!(false);
-        }
         for (id, request) in &self.requests {
             if bounded
                 && request.parent.is_none()
@@ -220,9 +218,6 @@ impl Accounting {
             let request = &self.requests[id];
             for receipt in request.attempts.values() {
                 add_attempt_usage(&mut usage, receipt);
-            }
-            if !request.closed || request.uncertain || request.attempts.is_empty() {
-                usage["cost"]["complete"] = json!(false);
             }
         }
         usage
@@ -256,11 +251,7 @@ mod tests {
             self.event(kind, instance, json!({"request_id":id,"work_id":work,"epoch":epoch,"context_head":head}));
         }
         fn receipt(&mut self, id: &str, amount: u64) {
-            self.event(
-                "attempt_recorded",
-                id,
-                json!({"attempt_id":format!("{id}/1"),"usage":{"total_tokens":amount},"cost":{"estimated_usd":amount}}),
-            );
+            self.event("attempt_recorded", id, json!({"attempt_id":format!("{id}/1"),"usage":{"total_tokens":amount}}));
         }
         fn close(&mut self, id: &str, instance: &str, kind: &str) {
             self.event(kind, instance, json!({"request_id":id,"decision_id":format!("decision-{id}")}));
@@ -308,8 +299,6 @@ mod tests {
         let usage = f.accounting.finish("leader");
         assert_eq!(usage["requests"], 4, "{usage}");
         assert_eq!(usage["total_tokens"], 17, "{usage}");
-        assert_eq!(usage["cost"]["known_estimated_usd"], 17.0, "{usage}");
-        assert_eq!(usage["cost"]["complete"], true, "{usage}");
     }
 
     #[test]
@@ -333,8 +322,8 @@ mod tests {
     }
 
     #[test]
-    fn open_cancelled_unreceipted_and_review_requests_prevent_complete_cost() {
-        for case in ["open", "cancelled", "unreceipted", "review", "member", "priced-failure", "retry"] {
+    fn open_cancelled_unreceipted_and_review_requests_stay_out_of_the_token_totals() {
+        for case in ["open", "cancelled", "unreceipted", "review", "member", "retry"] {
             let mut f = Fixture::default();
             f.input();
             f.begin("own", "leader", "W", 2, 20, "request_began");
@@ -342,7 +331,11 @@ mod tests {
                 f.receipt("own", 3);
             }
             if case == "retry" {
-                f.event("attempt_recorded", "own", json!({"attempt_id":"own/2","status":"COMPLETE","usage":{"total_tokens":5},"cost":{"estimated_usd":5}}));
+                f.event(
+                    "attempt_recorded",
+                    "own",
+                    json!({"attempt_id":"own/2","status":"COMPLETE","usage":{"total_tokens":5}}),
+                );
             }
             if case != "open" {
                 f.close("own", "leader", if case == "cancelled" { "request_cancelled" } else { "request_failed" });
@@ -354,7 +347,6 @@ mod tests {
                 f.begin("pending-member", "worker", "W", 8, 9, "request_began");
             }
             let usage = f.accounting.finish("leader");
-            assert_eq!(usage["cost"]["complete"], matches!(case, "priced-failure" | "retry"), "{case}: {usage}");
             assert_eq!(
                 usage["total_tokens"],
                 if case == "unreceipted" {

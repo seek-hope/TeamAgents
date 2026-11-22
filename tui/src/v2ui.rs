@@ -175,7 +175,7 @@ fn chat_latest_button(chat: Rect, scroll: usize) -> Option<Rect> {
     }
     let label = format!("↓ {scroll} below · latest");
     let w = unicode_width::UnicodeWidthStr::width(label.as_str()) as u16;
-    if chat.width < 25 + w {
+    if chat.width < w + 2 {
         return None;
     }
     Some(Rect::new(chat.right().saturating_sub(w + 1), chat.y, w, 1))
@@ -190,7 +190,7 @@ fn report_popup(area: Rect) -> Rect {
 }
 
 fn chat_body_rect(app: &V2App, area: Rect) -> Rect {
-    let header_rows = u16::from(area.height > 0);
+    let header_rows = u16::from(app.chat_scroll > 0 && area.height >= 2);
     let search_rows = u16::from(app.chat_search.is_some() && area.height >= 3);
     let top = header_rows + search_rows;
     let body = Rect::new(area.x, area.y + top, area.width, area.height.saturating_sub(top));
@@ -348,7 +348,7 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
                 && mouse.row < geo.inspector.bottom()
             {
                 app.drag = Some(DragTarget::Inspector);
-            } else if geo.status.contains(point) && !app.approvals.is_empty() {
+            } else if (geo.status.contains(point) || geo.activity.contains(point)) && !app.approvals.is_empty() {
                 app.focus = Focus::Approvals;
             } else if let Some(index) = approval_at(&geo, app, mouse.row, mouse.column) {
                 if app.focus == Focus::Approvals && app.approval_sel == index {
@@ -756,58 +756,46 @@ fn compact_tokens(value: i64) -> String {
     format!("{text}{suffix}")
 }
 
-fn budget_bar(used: i64, ceiling: i64) -> String {
-    let ceiling = ceiling.max(1);
-    let pct = ((used.max(0) as f64 / ceiling as f64) * 100.0).round().clamp(0.0, 999.0) as u64;
-    let filled = (((used.max(0) as f64 / ceiling as f64) * 4.0).round() as usize).clamp(0, 4);
-    format!("{}{} {}%", "▰".repeat(filled), "▱".repeat(4 - filled), pct)
+/// Prefix-cache hit rate over the tokens the provider reported a split for. The same ratio `exec` reports
+/// (`hit / (hit + miss)`), so the two surfaces cannot disagree.
+///
+/// `None` when the provider reported no split: `Usage` documents that zero means "not reported", not a
+/// request that missed, so a bare `0%` would claim something the runtime does not know.
+fn cache_rate(hit: i64, miss: i64) -> Option<u64> {
+    let total = hit.max(0) + miss.max(0);
+    if hit <= 0 && miss <= 0 {
+        return None;
+    }
+    Some(((hit.max(0) as f64 / total as f64) * 100.0).round() as u64)
 }
 
-/// Session identity and recorded work usage remain visible while browsing members.
-fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
-    let base_status = app.runtime_status_line();
-    let status = if let Some(leader) = app.active_instance() {
-        if leader.lifecycle == "ACTIVE"
-            && matches!(leader.phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING")
-        {
-            if let Some(secs) = app.team.phase_elapsed(&leader.id).filter(|&s| s >= 1) {
-                format!("{base_status} {secs}s")
-            } else {
-                base_status
-            }
+/// Recorded token usage for the session's work, plus reported cache hit rate and deadline when present.
+fn usage_line(app: &V2App) -> Option<String> {
+    let work = app.work.as_ref()?;
+    let unknown = if work.unknown { " + ?" } else { "" };
+    let used = compact_tokens(work.known_total);
+    let mut text = match work.limit_total.filter(|&n| n > 0) {
+        Some(limit) => format!("{used}/{} tokens{unknown}", compact_tokens(limit)),
+        None => format!("{used} tokens{unknown}"),
+    };
+    if let Some(rate) = cache_rate(work.cache_hit, work.cache_miss) {
+        text.push_str(&format!(" · cache {rate}%"));
+    }
+    if let Some(deadline) = work.deadline {
+        let mins = ((deadline - crate::now_epoch()) / 60.0).ceil() as i64;
+        if mins > 0 {
+            text.push_str(&format!(" · {mins}m left"));
         } else {
-            base_status
+            text.push_str(" · past deadline");
         }
-    } else {
-        base_status
-    };
-    let status_style = if app.disconnected {
-        Style::default().fg(ERROR)
-    } else if !app.approvals.is_empty() {
-        Style::default().fg(WARNING).add_modifier(Modifier::BOLD)
-    } else if status.starts_with("Ready") {
-        Style::default().fg(SUCCESS)
-    } else {
-        Style::default().fg(NOTICE)
-    };
+    }
+    Some(text)
+}
+
+/// Session identity, workspace and recorded work usage stay on row 0; live runtime state lives in `render_activity`.
+fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     let width = area.width as usize;
-    let usage = app.work.as_ref().map(|work| {
-        let limit = work.limit_total.map(|n| format!("/{}", compact_tokens(n))).unwrap_or_default();
-        let mut text =
-            format!("{}{limit} tokens{}", compact_tokens(work.known_total), if work.unknown { " + ?" } else { "" });
-        if let Some(usd) = work.cost_usd {
-            let approx = if work.cost_complete { "" } else { "~" };
-            let cost_str =
-                if usd > 0.0 && usd < 0.01 { format!("${usd:.4}{approx}") } else { format!("${usd:.2}{approx}") };
-            text.push_str(&format!(" · {cost_str}"));
-        }
-        if width >= 88 {
-            if let Some(ceiling) = work.limit_total.or_else(|| app.active_context_window()).filter(|&n| n > 0) {
-                text.push_str(&format!(" · {}", budget_bar(work.known_total, ceiling)));
-            }
-        }
-        text
-    });
+    let usage = usage_line(app);
     let right_cap = if width >= 88 { width / 2 } else { width / 3 };
     let right = fit(usage.as_deref().unwrap_or(""), right_cap);
     let right_cols = unicode_width::UnicodeWidthStr::width(right.as_str());
@@ -818,21 +806,14 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
         if left_width >= 20 { "◆ TeamAgents" } else { "TA" },
         Style::default().fg(CODEX).add_modifier(Modifier::BOLD),
     ));
-    if app.zoomed && left_width >= 28 {
-        left.spans.push(Span::styled(" [ZOOM]", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)));
-    }
-    if left_width >= 12 {
+    if left_width >= 26 && !app.session_name.is_empty() {
         left.spans.push(Span::styled(" · ", secondary()));
-        left.spans.push(Span::styled(fit(&status, 28), status_style));
+        left.spans.push(Span::styled(fit(&app.session_name, 18), Style::default().fg(FG)));
     }
-    if left_width >= 54 && !app.session_name.is_empty() {
-        left.spans.push(Span::styled(" · ", secondary()));
-        left.spans.push(Span::styled(fit(&app.session_name, 18), secondary()));
-    }
-    if left_width >= 76 {
+    if left_width >= 56 {
         if let Some(workspace) = app.workspace() {
             left.spans.push(Span::styled("  ", Style::default()));
-            left.spans.push(Span::styled(fit(workspace, 42), secondary()));
+            left.spans.push(Span::styled(fit(workspace, left_width.saturating_sub(34).min(48)), secondary()));
         }
     }
     frame.render_widget(
@@ -851,13 +832,32 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     }
 }
 
-/// One live status row between the transcript and composer. It intentionally reports
-/// persisted/runtime state only; no spinner or elapsed prose is treated as progress evidence.
+/// One live status row between the transcript and composer. It is the sole display of transient status,
+/// active phases (with elapsed seconds), and action notices.
 fn render_activity(frame: &mut Frame, app: &V2App, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let status = app.activity_line();
+    let base_status = app.activity_line();
+    let status = if app.shown_notice().is_none() {
+        if let Some(leader) = app.active_instance() {
+            if leader.lifecycle == "ACTIVE"
+                && matches!(leader.phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING")
+            {
+                if let Some(secs) = app.team.phase_elapsed(&leader.id) {
+                    format!("{base_status} {secs}s")
+                } else {
+                    base_status
+                }
+            } else {
+                base_status
+            }
+        } else {
+            base_status
+        }
+    } else {
+        base_status
+    };
     let warning = !app.approvals.is_empty() || status.starts_with("Needs") || status.starts_with("Approval");
     let stopped = app.disconnected
         || status.starts_with("Work blocked")
@@ -892,52 +892,25 @@ fn render_activity(frame: &mut Frame, app: &V2App, area: Rect) {
     } else {
         ACCENT
     };
-    let right = if !app.approvals.is_empty() {
-        "Ctrl+A review"
-    } else if app.active_instance().is_some_and(|instance| {
-        instance.lifecycle == "ACTIVE" && instance.phase != "READY" && instance.phase != "WAITING"
-    }) {
-        "Ctrl+C interrupt"
-    } else if app.chat_scroll > 0 {
-        "PgDn latest"
-    } else {
-        ""
-    };
-    let right_width = if area.width >= 48 { right.len() + 2 } else { 0 };
     let failed = app.shown_notice().is_some_and(|notice| notice.error);
-    let left_width = (area.width as usize).saturating_sub(right_width + 3);
+    let left_width = (area.width as usize).saturating_sub(3);
     let line = Line::from(vec![
         Span::styled(format!(" {icon} "), Style::default().fg(color).add_modifier(Modifier::BOLD)),
         Span::styled(fit(&status, left_width), Style::default().fg(if stopped || failed { ERROR } else { NOTICE })),
     ]);
-    frame.render_widget(
-        Paragraph::new(line),
-        Rect::new(area.x, area.y, area.width.saturating_sub(right_width as u16), 1),
-    );
-    if right_width > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(right, secondary()))).alignment(Alignment::Right),
-            Rect::new(area.right().saturating_sub(right.len() as u16 + 1), area.y, right.len() as u16, 1),
-        );
-    }
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
-    let header_style = if app.focus == Focus::Composer {
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-    } else {
-        secondary()
-    };
-    frame.render_widget(
-        Paragraph::new(" Leader · conversation").style(header_style),
-        Rect::new(area.x, area.y, area.width, area.height.min(1)),
-    );
-    if let Some(button) = chat_latest_button(area, app.chat_scroll) {
-        frame.render_widget(
-            Paragraph::new(format!("↓ {} below · latest", app.chat_scroll))
-                .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            button,
-        );
+    let header_rows = u16::from(app.chat_scroll > 0 && area.height >= 2);
+    if header_rows > 0 {
+        if let Some(button) = chat_latest_button(area, app.chat_scroll) {
+            frame.render_widget(
+                Paragraph::new(format!("↓ {} below · latest", app.chat_scroll))
+                    .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                button,
+            );
+        }
     }
     if let Some(search) = &app.chat_search {
         if area.height >= 3 && area.width > 2 {
@@ -955,7 +928,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             frame.render_widget(
                 Paragraph::new(fit(&bar, area.width as usize))
                     .style(Style::default().bg(PANEL_BG).fg(ACCENT).add_modifier(Modifier::BOLD)),
-                Rect::new(area.x, area.y + 1, area.width, 1),
+                Rect::new(area.x, area.y + header_rows, area.width, 1),
             );
         }
     }
@@ -977,11 +950,11 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
         lines.push(Line::styled("What would you like to do?", Style::default().fg(CODEX).add_modifier(Modifier::BOLD)));
         lines.extend(crate::markdown::plain("Type a question below and press Enter.", width, Style::default().fg(FG)));
         lines.extend(crate::markdown::plain("Try: What does this project do?", width, secondary()));
-        lines.push(Line::default());
-        lines.extend(crate::markdown::plain("/model  Choose a model     ?  Shortcuts", width, secondary()));
-        if let Some(workspace) = &workspace {
-            lines.push(Line::default());
-            lines.extend(crate::markdown::plain(&format!("Workspace  {workspace}"), width, secondary()));
+        if width < 56 {
+            if let Some(workspace) = &workspace {
+                lines.push(Line::default());
+                lines.extend(crate::markdown::plain(&format!("Workspace  {workspace}"), width, secondary()));
+            }
         }
     }
     if let Some(work) = &app.work {
@@ -1088,7 +1061,7 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
     let title = if focused { "Approval required · focused" } else { "Approval required" };
     let approval_border =
         if focused { Style::default().fg(WARNING).add_modifier(Modifier::BOLD) } else { border(false) };
-    let block = panel(title).title_bottom(" a approve once · d deny ").border_style(approval_border);
+    let block = panel(title).border_style(approval_border);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let (start, count) = window(app.approvals.len(), app.approval_sel, inner.height as usize);
@@ -1181,8 +1154,6 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
             format!("Direct to {} · Esc back to Leader", fit(target, 24)),
             if focused { Style::default().fg(CODEX).add_modifier(Modifier::BOLD) } else { border(false) },
         )
-    } else if app.team.selected != app.team.leader_id {
-        (format!("Message Leader · viewing {}", fit(&app.team.selected, 24)), border(focused))
     } else {
         ("Message Leader".to_string(), border(focused))
     };
@@ -1438,4 +1409,26 @@ pub(crate) fn hint_line(hint: &str) -> Line<'static> {
         }
     }
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cache_rate;
+
+    /// The rate is the same ratio `exec` reports, rounded to whole percent.
+    #[test]
+    fn cache_rate_reports_the_reported_split() {
+        assert_eq!(cache_rate(30_000, 20_000), Some(60));
+        assert_eq!(cache_rate(1, 0), Some(100));
+        assert_eq!(cache_rate(0, 5), Some(0));
+        assert_eq!(cache_rate(1, 2), Some(33));
+    }
+
+    /// Zero means "the provider reported no split", not "every request missed" (`Usage` documents this).
+    /// Showing `0%` would claim a measurement the runtime does not have.
+    #[test]
+    fn an_unreported_split_is_not_a_zero_percent_hit_rate() {
+        assert_eq!(cache_rate(0, 0), None);
+        assert_eq!(cache_rate(-1, -1), None);
+    }
 }

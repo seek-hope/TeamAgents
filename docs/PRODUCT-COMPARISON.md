@@ -5,8 +5,8 @@ This is the candidate-work queue, not a record of past experiments. Implemented 
 
 ## Implemented capabilities
 
-- Durable work, scoped delegation, bounded recovery, required checks, known/unknown usage and optional frozen
-  tariffs. Progress prose, passing artifacts and completed work remain distinct outcomes.
+- Durable work, scoped delegation, bounded recovery, required checks and known/unknown token usage (billing is
+  removed). Progress prose, passing artifacts and completed work remain distinct outcomes.
 - Protocol 2 with bounded event/history pages, explicit retention resync and separate snapshot/delivery cursors.
 - Host file/Shell tools, Web, Skills, MCP resources and restricted codemode. MCP revision `2025-06-18` is checked;
   resource-only bindings and bounded discovery/authentication retain normal authority checks.
@@ -19,7 +19,7 @@ This is the candidate-work queue, not a record of past experiments. Implemented 
   projections. The tree is navigation, not authority or proof of success.
 - The product reads repository-local configuration under explicit user trust; hooks, checks, permissions,
   limits, retention and update policy remain under user control.
-- **906 Rust tests**, 63 positive TLA configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani
+- **907 Rust tests**, 63 positive TLA configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani
   harnesses. The terminal matrix covers five PTY profiles and both graphics modes. The AArch64 target
   covers 26 tool regressions under GNU user emulation.
 
@@ -27,7 +27,7 @@ This is the candidate-work queue, not a record of past experiments. Implemented 
 
 | Priority | Open item | Required next evidence or decision |
 |---|---|---|
-| P0 | Matched Pi / alternative-harness comparison | Held-out tasks, native context windows, matched models/budgets/build environments and independent grading; report correctness, completion, false success, intervention, latency and priced cost separately |
+| P0 | Matched Pi / alternative-harness comparison | Held-out tasks, native context windows, matched models/budgets/build environments and independent grading; report correctness, completion, false success, intervention, latency and token usage separately (billing is removed) |
 | P1 | Reliable team completion | Multi-branch tasks with bounded delegation, verification and recovery; a correct patch at deadline is not completed work |
 | P1 | Reviewer judgement | Independent multi-model adversarial/benign cases, strict parsing and honest accounting of transport, quota and parser failures; reused development cases are not a holdout |
 | P1 | Tree and interface usefulness | Correct/complete summaries and tree references, navigation usability and reduced lostness across representative sessions |

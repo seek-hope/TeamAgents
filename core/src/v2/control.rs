@@ -124,15 +124,39 @@ fn decode_result(body: &[u8]) -> Result<Json, String> {
 /// A drain whose result says no envelope was applied or sealed and no wait woke changed nothing: it is a read
 /// of the inbox, not a state change, and it keeps no receipt (D-466 follow-up, recorded in D-463's boundary).
 /// A missing field counts as "changed", so an unforeseen result shape stays conservative.
-fn drain_changed_nothing(result: &Json) -> bool {
-    result["applied"].as_i64().unwrap_or(1) == 0
-        && result["sealed"].as_i64().unwrap_or(1) == 0
-        && result["woken"].as_array().is_some_and(|woken| woken.is_empty())
+fn poll_changed_nothing(method: &str, result: &Json) -> bool {
+    match method {
+        "drain_inbox" => {
+            result["applied"].as_i64().unwrap_or(1) == 0
+                && result["sealed"].as_i64().unwrap_or(1) == 0
+                && result["woken"].as_array().is_some_and(|woken| woken.is_empty())
+        }
+        // The driver's other idle poll: a timer pass with nothing due changed nothing either.
+        // It kept a receipt per poll while `drain_inbox` did not, so a WAITING instance wrote
+        // 10 rows/s (the 100 ms poll) for as long as it waited — measured by this crate's test
+        // `idle_polls_keep_no_receipts`.
+        "fire_timer" => result["satisfied"].as_array().is_some_and(|satisfied| satisfied.is_empty()),
+        _ => false,
+    }
+}
+
+/// A wait's stored conditions are the only record of what it was waiting for. Registration
+/// refuses an empty list (`import_response.wait.conditions must not be empty`), so an
+/// unreadable or empty stored list can only be a damaged or foreign row — never evidence
+/// that the conditions hold. `evaluate_wait` initializes `all` to `true`, so parsing such a
+/// row as `[]` used to *satisfy* every `ALL` wait on it (fail-open, measured).
+fn wait_conditions(raw: &str) -> Result<Vec<Json>, String> {
+    let conditions: Vec<Json> =
+        serde_json::from_str(raw).map_err(|e| format!("stored wait conditions are unreadable: {e}"))?;
+    if conditions.is_empty() {
+        return Err("stored wait has no conditions".into());
+    }
+    Ok(conditions)
 }
 
 /// D-463: the one receipt lookup, used both by the fast pre-check and by the authoritative check inside the
 /// write transaction. A row without `result_digest` predates D-464 and still holds its own copy.
-fn receipt_lookup(conn: &Connection, command_id: &str, hash: &str) -> Result<Option<Json>, String> {
+fn receipt_lookup(conn: &Connection, command_id: &str, hashes: &PayloadHashes) -> Result<Option<Json>, String> {
     let existing: Option<(String, Option<String>, String)> = conn
         .query_row(
             "SELECT payload_hash, result_digest, result_json FROM commands WHERE command_id = ?1",
@@ -141,26 +165,74 @@ fn receipt_lookup(conn: &Connection, command_id: &str, hash: &str) -> Result<Opt
         )
         .optional()
         .map_err(|e| format!("command dedup read: {e}"))?;
-    match existing {
-        Some((stored, Some(digest), _)) if stored == hash => {
+    let Some((stored, digest, result)) = existing else { return Ok(None) };
+    if !hashes.matches(&stored) {
+        return Err(format!("command_id {command_id} was already used with a different payload"));
+    }
+    match digest {
+        Some(digest) => {
             let body: Vec<u8> = conn
                 .query_row("SELECT body FROM command_results WHERE digest = ?1", [&digest], |row| row.get(0))
                 .map_err(|e| format!("stored receipt body {digest}: {e}"))?;
             decode_result(&body).map(Some)
         }
-        Some((stored, None, result)) if stored == hash => {
-            serde_json::from_str(&result).map(Some).map_err(|e| format!("stored receipt: {e}"))
-        }
-        Some(_) => Err(format!("command_id {command_id} was already used with a different payload")),
-        None => Ok(None),
+        None => serde_json::from_str(&result).map(Some).map_err(|e| format!("stored receipt: {e}")),
     }
 }
 
-fn payload_hash(method: &str, params: &Json, identity: &Identity) -> String {
+/// A command's identity for replay dedup, in both the current and the pre-canonicalization form.
+///
+/// `serde_json` is built with `preserve_order` in both crates, so a parsed object keeps the wire's key
+/// order and `to_string()` re-emits it. Hashing that directly made two encodings of the *same*
+/// arguments hash differently, so a retry that differed only in key order was refused as "already used
+/// with a different payload". Canonicalizing makes the key an identity instead of a serialization
+/// detail. `legacy` stays matched on read so receipts written before this change still replay.
+#[derive(Debug, Clone)]
+struct PayloadHashes {
+    canonical: String,
+    legacy: String,
+}
+
+impl PayloadHashes {
+    fn matches(&self, stored: &str) -> bool {
+        stored == self.canonical || stored == self.legacy
+    }
+}
+
+fn payload_hash(method: &str, params: &Json, identity: &Identity) -> PayloadHashes {
+    let legacy = hashed(&json!({"method": method, "params": params, "identity": identity.actor()}).to_string());
+    let canonical = hashed(&format!(
+        r#"{{"identity":{},"method":{},"params":{}}}"#,
+        json!(identity.actor()),
+        json!(method),
+        canonical_json(params)
+    ));
+    PayloadHashes { canonical, legacy }
+}
+
+fn hashed(text: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(json!({"method": method, "params": params, "identity": identity.actor()}).to_string().as_bytes());
+    hasher.update(text.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+/// Recursively order object keys. Arrays keep their order (it is data) and scalars keep `serde_json`'s
+/// rendering, so canonicalization changes nothing about the payload's meaning.
+fn canonical_json(value: &Json) -> String {
+    match value {
+        Json::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_unstable();
+            let body: Vec<String> = keys
+                .into_iter()
+                .map(|key| format!("{}:{}", Json::String(key.clone()), canonical_json(&map[key])))
+                .collect();
+            format!("{{{}}}", body.join(","))
+        }
+        Json::Array(items) => format!("[{}]", items.iter().map(canonical_json).collect::<Vec<_>>().join(",")),
+        scalar => scalar.to_string(),
+    }
 }
 
 impl Control {
@@ -274,7 +346,7 @@ impl Control {
         rewind::validate(&tx, &self.session_id, &command.params, true)?;
         tx.execute(
             "INSERT INTO rewind_attempts(command_id,payload_hash) VALUES(?1,?2)",
-            rusqlite::params![command.command_id, hash],
+            rusqlite::params![command.command_id, hash.canonical],
         )
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
@@ -349,7 +421,7 @@ impl Control {
         // session's 4.8M command rows (D-464 measured 4,562,833 `drain_inbox` receipts at 38.4/s). Replaying
         // such an id re-runs the drain, which applies nothing while nothing is pending; the narrowing is
         // recorded in D-463's boundary.
-        if method == "drain_inbox" && drain_changed_nothing(&result) {
+        if poll_changed_nothing(&method, &result) {
             tx.commit().map_err(|e| format!("commit: {e}"))?;
             return Ok(result);
         }
@@ -362,7 +434,7 @@ impl Control {
         tx.execute(
             "INSERT INTO commands (command_id, payload_hash, result_json, result_digest, created) \
              VALUES (?1, ?2, '', ?3, ?4)",
-            rusqlite::params![command.command_id, hash, digest, crate::models::now()],
+            rusqlite::params![command.command_id, hash.canonical, digest, crate::models::now()],
         )
         .map_err(|e| format!("command receipt: {e}"))?;
         tx.commit().map_err(|e| format!("commit: {e}"))?;
@@ -2993,7 +3065,6 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         ],
     )
     .map_err(|e| format!("begin_request {request_id}: {e}"))?;
-    super::pricing::freeze(tx, request_id, &params["pricing"])?;
     tx.execute(
         "UPDATE instances SET phase = 'MODEL_PENDING', active_request_id = ?1, revision = revision + 1 WHERE id = ?2",
         rusqlite::params![request_id, instance_id],
@@ -3160,10 +3231,9 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
     if request_status != "PENDING" {
         return Err(format!("request {request_id} is {request_status}; attempts for closed requests are refused"));
     }
-    let cost = super::pricing::attempt_cost(tx, request_id, &usage)?;
     tx.execute(
-        "INSERT INTO attempts (attempt_id, request_id, status, error_class, response_ref, usage_json, elapsed_ms, created, cost_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO attempts (attempt_id, request_id, status, error_class, response_ref, usage_json, elapsed_ms, created)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             attempt_id,
             request_id,
@@ -3172,8 +3242,7 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
             response_ref,
             usage.to_string(),
             elapsed,
-            crate::models::now(),
-            cost.to_string()
+            crate::models::now()
         ],
     )
     .map_err(|e| format!("record_attempt {attempt_id}: {e}"))?;
@@ -3217,7 +3286,7 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
         "attempt_recorded",
         request_id,
         &json!({"attempt_id": attempt_id, "status": status, "selected": selected, "stream": stream,
-                "cost": cost, "usage": if usage.is_null() { Json::Null } else { usage.clone() }}),
+                "usage": if usage.is_null() { Json::Null } else { usage.clone() }}),
     )?;
     Ok(json!({"attempt_id": attempt_id, "selected": selected}))
 }
@@ -3285,7 +3354,6 @@ fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity:
         rusqlite::params![request_id, instance_id, epoch, work_id, request_ref, est, REQUEST_KIND_COMPRESSION],
     )
     .map_err(|e| format!("begin_compression {request_id}: {e}"))?;
-    super::pricing::freeze(tx, request_id, &params["pricing"])?;
     let _ = identity;
     event(
         tx,
@@ -3824,7 +3892,12 @@ fn wake_satisfied_at(tx: &Connection, session_id: &str, now: f64) -> Result<Vec<
     };
     let mut woken = Vec::new();
     for (wait_id, instance_id, epoch, mode, conditions_json, timer_at) in pending {
-        let conditions: Vec<Json> = serde_json::from_str(&conditions_json).unwrap_or_default();
+        // A damaged row is never evidence that its conditions hold (see `wait_conditions`).
+        // Leaving it PENDING keeps it un-satisfiable on garbage, and `blocked_report` names it,
+        // so the park is visible instead of silently wedging the instance.
+        let Ok(conditions) = wait_conditions(&conditions_json) else {
+            continue;
+        };
         let spec = WaitSpec { mode: &mode, conditions: &conditions, timer_at };
         let (satisfied, _) = evaluate_wait(tx, session_id, &instance_id, epoch, &spec, now)?;
         if !satisfied {
@@ -3921,7 +3994,16 @@ fn blocked_report(tx: &Connection, session_id: &str, params: &Json, identity: &I
     let mut blocked = Vec::new();
     let mut waiting = 0usize;
     for (wait_id, instance_id, epoch, mode, conditions_json, timer_at) in pending {
-        let conditions: Vec<Json> = serde_json::from_str(&conditions_json).unwrap_or_default();
+        let conditions = match wait_conditions(&conditions_json) {
+            Ok(conditions) => conditions,
+            // Report the damaged row rather than counting it as an ordinary live wait: it can
+            // never be satisfied by the fact it recorded, and only an operator can resolve it.
+            Err(error) => {
+                blocked.push(json!({"wait_id": wait_id, "instance_id": instance_id, "mode": mode,
+                                    "conditions": Json::Null, "timer_at": timer_at, "reason": error}));
+                continue;
+            }
+        };
         let spec = WaitSpec { mode: &mode, conditions: &conditions, timer_at };
         let (_, is_blocked) = evaluate_wait(tx, session_id, &instance_id, epoch, &spec, crate::models::now())?;
         if is_blocked {
@@ -4720,7 +4802,6 @@ fn begin_review(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         rusqlite::params![request_id, instance_id, epoch, work_id, operation_id, est],
     )
     .map_err(|e| format!("begin_review {request_id}: {e}"))?;
-    super::pricing::freeze(tx, request_id, &params["pricing"])?;
     event(
         tx,
         session_id,
@@ -6884,6 +6965,106 @@ mod tests {
         cleanup(&path);
     }
 
+    /// The driver's idle WAITING poll submits `drain_inbox` *and* `fire_timer` every 100 ms
+    /// (`engine/src/v2/driver.rs`). Both are reads when nothing is pending or due; keeping a
+    /// receipt for every timer pass wrote 10 rows/s per waiting instance forever, and nothing
+    /// ever deletes `commands` rows.
+    #[test]
+    fn idle_polls_keep_no_receipts() {
+        let (mut ctl, path) = control("poll-receipts");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        let receipts = |ctl: &Control| -> i64 {
+            ctl.connection().query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0)).unwrap()
+        };
+        let baseline = receipts(&ctl);
+        for n in 0..5 {
+            let fired = ctl.submit(cmd(&format!("t{n}"), "fire_timer", json!({})), Identity::System).expect("timer");
+            assert_eq!(fired["satisfied"], json!([]), "{fired}");
+        }
+        assert_eq!(receipts(&ctl), baseline, "an idle timer pass changed nothing and keeps no receipt");
+
+        // A pass that actually closes a wait did change something and still records its receipt.
+        let future = crate::models::now() + 3600.0;
+        let wait_id = open_wait(
+            &mut ctl,
+            "due",
+            "i1",
+            0,
+            json!({"mode":"ANY","conditions":[{"kind":"message","from":"i2"}],"timer_at":future}),
+        );
+        let before = receipts(&ctl);
+        let fired =
+            ctl.submit(cmd("t-due", "fire_timer", json!({"now": future + 1.0})), Identity::System).expect("fire");
+        assert_eq!(fired["satisfied"], json!([wait_id]), "{fired}");
+        assert_eq!(receipts(&ctl), before + 1, "a firing timer keeps its receipt");
+        cleanup(&path);
+    }
+
+    /// `evaluate_wait` initializes `all` to `true`. Parsing a damaged `conditions_json` as `[]`
+    /// therefore *satisfied* every `ALL` wait on it — a stored row is never evidence that its
+    /// conditions hold. Registration already refuses an empty list, so such a row can only be
+    /// damaged or foreign.
+    #[test]
+    fn a_damaged_wait_row_never_satisfies_itself() {
+        let (mut ctl, path) = control("wait-corrupt");
+        create_instance(&mut ctl, "sender");
+        // A distinct instance per case: `open_wait` opens its request against an explicit
+        // revision, so reusing one instance would need a fragile hand-reset between cases.
+        for (tag, damaged, instance) in [("unreadable", "{not json", "w1"), ("empty", "[]", "w2")] {
+            create_instance(&mut ctl, instance);
+            let wait_id = open_wait(
+                &mut ctl,
+                tag,
+                instance,
+                0,
+                json!({"mode":"ALL","conditions":[{"kind":"message","from":"sender"}]}),
+            );
+            assert_eq!(phase_of(&ctl, instance), "WAITING");
+            ctl.connection()
+                .execute("UPDATE waits SET conditions_json=?1 WHERE id=?2", rusqlite::params![damaged, &wait_id])
+                .expect("damage the row");
+            let fired =
+                ctl.submit(cmd(&format!("fire-{tag}"), "fire_timer", json!({})), Identity::System).expect("fire");
+            assert_eq!(fired["satisfied"], json!([]), "{tag}: a damaged row must not satisfy itself");
+            assert_eq!(wait_state(&ctl, &wait_id), "PENDING", "{tag}: the wait stays open");
+            assert_eq!(phase_of(&ctl, instance), "WAITING", "{tag}: the instance is not woken");
+            // ...and it is named as blocked, so the park is visible instead of silent.
+            let report =
+                ctl.submit(cmd(&format!("br-{tag}"), "blocked_report", json!({})), Identity::User).expect("report");
+            let blocked = report["blocked"].as_array().expect("blocked");
+            let row = blocked
+                .iter()
+                .find(|row| row["wait_id"] == json!(wait_id))
+                .unwrap_or_else(|| panic!("{tag}: the damaged wait is not reported: {blocked:?}"));
+            assert!(row["reason"].as_str().is_some_and(|reason| !reason.is_empty()), "{tag}: {row}");
+        }
+        cleanup(&path);
+    }
+
+    /// D-533: `preserve_order` keeps the wire's key order, so hashing `to_string()` made two
+    /// encodings of the same arguments differ. A retry that only reordered keys was refused as
+    /// "already used with a different payload" instead of replaying its receipt.
+    #[test]
+    fn a_replayed_command_is_deduplicated_by_content_not_key_order() {
+        let (mut ctl, path) = control("hash-order");
+        create_instance(&mut ctl, "i1");
+        let ordered = json!({"instance_id": "i1", "text": "go", "recipient": "i1"});
+        let reordered: Json =
+            serde_json::from_str(r#"{"text":"go","recipient":"i1","instance_id":"i1"}"#).expect("reordered");
+        assert_ne!(ordered.to_string(), reordered.to_string(), "the encodings really differ");
+        let first = ctl.submit(cmd("m1", "send_message", ordered), Identity::User).expect("first");
+        // Same command id, same logical payload, different serialization: this is a retry.
+        let replay = ctl.submit(cmd("m1", "send_message", reordered), Identity::User).expect("replay");
+        assert_eq!(replay, first, "a reordered retry returns the stored receipt");
+        // A genuinely different payload under the same id is still refused.
+        let error = ctl
+            .submit(cmd("m1", "send_message", json!({"recipient":"i1","text":"different"})), Identity::User)
+            .unwrap_err();
+        assert!(error.contains("different payload"), "{error}");
+        cleanup(&path);
+    }
+
     #[test]
     fn command_results_are_stored_once_per_content_digest() {
         let (mut ctl, path) = control("results-dedup");
@@ -7923,10 +8104,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        let begin = |request: &str, estimate: i64| {
-            json!({"request_id": request, "operation_id": "d-x:0", "est_prompt_tokens": estimate,
-            "pricing":{"model":"review-fixture","rates":{"input_usd_per_million":2.0,"output_usd_per_million":8.0,"source":"review test tariff"}}})
-        };
+        let begin = |request: &str, estimate: i64| json!({"request_id": request, "operation_id": "d-x:0", "est_prompt_tokens": estimate});
         assert!(ctl.submit(cmd("review-user", "begin_review", begin("review-user", 1)), Identity::User).is_err());
         let first = ctl.submit(cmd("begin-review-1", "begin_review", begin("review-1", 10)), Identity::System).unwrap();
         assert_eq!(first["work_id"], json!("g1"));
@@ -7998,117 +8176,6 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM model_requests WHERE request_id='review-over'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(registered, 0, "a refused review never calls the model or registers a request");
-        let costs = crate::v2::pricing::work_costs(ctl.connection()).unwrap();
-        assert_eq!(costs["g1"]["complete"], false);
-        assert_eq!(costs["g1"]["usage_without_receipt"], false, "failed reviews retain their known receipt usage");
-        assert_eq!(costs["g1"]["unpriced_attempts"], 2, "the unpriced turn and lost review both remain visible");
-        assert!((costs["g1"]["known_estimated_usd"].as_f64().unwrap() - 0.000048).abs() < 1e-12);
-        cleanup(&path);
-    }
-
-    #[test]
-    fn closed_unreceipted_requests_never_look_free() {
-        let (mut ctl, path) = control("closed-cost");
-        for (n, method) in ["begin_request", "begin_compression"].into_iter().enumerate() {
-            let instance = format!("i{n}");
-            let work = format!("g{n}");
-            let request = format!("request-{n}");
-            create_instance(&mut ctl, &instance);
-            ctl.submit(
-                cmd(&format!("work-{n}"), "create_work", json!({"id":work,"instance_id":instance})),
-                Identity::User,
-            )
-            .unwrap();
-            let revision = revision_of(&ctl, &instance);
-            ctl.submit(
-                cmd(
-                    &format!("begin-{n}"),
-                    method,
-                    json!({"instance_id":instance,"request_id":request,
-                "revision":revision,"est_prompt_tokens":1}),
-                ),
-                Identity::System,
-            )
-            .unwrap();
-            ctl.submit(cmd(&format!("cancel-{n}"), "cancel_request", json!({"request_id":request})), Identity::User)
-                .unwrap();
-            let costs = crate::v2::pricing::work_costs(ctl.connection()).unwrap();
-            assert_eq!(costs[&work]["pending_requests"], 0);
-            assert_eq!(costs[&work]["attempts"], 0);
-            assert_eq!(costs[&work]["complete"], false, "{method} lost its receipt: {}", costs[&work]);
-            assert_eq!(costs[&work]["usage_without_receipt"], true);
-        }
-        drop(ctl);
-        cleanup(&path);
-    }
-
-    #[test]
-    fn pricing_receipts_freeze_tariffs_survive_reopen_and_count_unknown_calls() {
-        let (mut ctl, path) = control("frozen-pricing");
-        create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("cost-work", "create_work", json!({"id":"g1","instance_id":"i1"})), Identity::User).unwrap();
-        let pricing = json!({"model":"fixture","rates":{"input_usd_per_million":2.0,"output_usd_per_million":8.0,
-            "cache_read_usd_per_million":0.2,"cache_write_usd_per_million":3.0,"source":"fixture tariff 2026-11-14"}});
-        for (n, method) in ["begin_request", "begin_compression"].into_iter().enumerate() {
-            let request = format!("priced-{n}");
-            let revision = revision_of(&ctl, "i1");
-            ctl.submit(
-                cmd(
-                    &request,
-                    method,
-                    json!({"instance_id":"i1","request_id":request,"revision":revision,
-                "pricing":pricing,"est_prompt_tokens":1000}),
-                ),
-                Identity::Instance("i1".into()),
-            )
-            .unwrap();
-            let attempt = cmd(
-                &format!("cost-a-{n}"),
-                "record_attempt",
-                json!({"request_id":request,
-                "attempt_id":format!("a-{n}"),"status":"COMPLETE",
-                "pricing":{"model":"changed","rates":null},
-                "usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100,
-                         "cache_hit_tokens":400,"cache_write_tokens":200}}),
-            );
-            ctl.submit(attempt.clone(), Identity::System).unwrap();
-            ctl.submit(attempt, Identity::System).unwrap();
-        }
-        ctl.submit(
-            cmd(
-                "unknown-cost",
-                "record_attempt",
-                json!({"request_id":"priced-0",
-            "attempt_id":"unknown-cost","status":"LOST","unknown_usage":true}),
-            ),
-            Identity::System,
-        )
-        .unwrap();
-        drop(ctl);
-        let ctl = Control::open(&path, "s1", false).unwrap();
-        let costs = crate::v2::pricing::work_costs(ctl.connection()).unwrap();
-        assert_eq!(costs["g1"]["attempts"], 3);
-        assert_eq!(costs["g1"]["unpriced_attempts"], 1);
-        assert_eq!(costs["g1"]["complete"], false);
-        assert!((costs["g1"]["known_estimated_usd"].as_f64().unwrap() - 0.00456).abs() < 1e-12);
-        let receipt: String = ctl
-            .connection()
-            .query_row("SELECT cost_json FROM attempts WHERE attempt_id='a-0'", [], |r| r.get(0))
-            .unwrap();
-        let receipt: Json = serde_json::from_str(&receipt).unwrap();
-        assert_eq!(receipt["rates"]["source"], "fixture tariff 2026-11-14");
-        // An old schema-9 store gets nullable receipts, never invented historical prices.
-        ctl.connection()
-            .execute_batch(
-                "ALTER TABLE attempts DROP COLUMN cost_json; ALTER TABLE model_requests DROP COLUMN pricing_json",
-            )
-            .unwrap();
-        drop(ctl);
-        let ctl = Control::open(&path, "s1", false).unwrap();
-        let costs = crate::v2::pricing::work_costs(ctl.connection()).unwrap();
-        assert_eq!(costs["g1"]["unpriced_attempts"], 3);
-        assert_eq!(costs["g1"]["known_estimated_usd"], 0.0);
-        drop(ctl);
         cleanup(&path);
     }
 

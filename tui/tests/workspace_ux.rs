@@ -42,7 +42,6 @@ fn base_app() -> V2App {
         model: "claude-sonnet".into(),
         provider: "anthropic".into(),
         efforts: vec!["medium".into(), "high".into()],
-        context_window: Some(200_000),
     }];
     app.apply_checkpoint(
         json!({
@@ -56,10 +55,9 @@ fn base_app() -> V2App {
             ],
             "work": {
                 "status": "ACTIVE",
-                "known_usage": {"total": 50_000},
+                "known_usage": {"total": 50_000, "cache_hit": 30_000, "cache_miss": 20_000},
                 "unknown_usage": 0,
-                "limits": {"max_total_tokens": 100_000},
-                "cost": {"currency": "USD", "known_estimated_usd": 0.12, "attempts": 3, "complete": true}
+                "limits": {"max_total_tokens": 100_000}
             },
             "mcp": [{"name": "graph", "transport": "stdio", "required": false, "oauth": false}],
             "mcp_policy": {"services": {"graph": {"running": true, "exposed": true}}},
@@ -329,8 +327,11 @@ fn transcript_diff_stats_search_osc52_and_status_bar() {
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let row0: String = (0..120).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
-    assert!(row0.contains("$0.12"), "expected cost USD on status row: {row0}");
-    assert!(row0.contains("50%"), "expected budget bar on status row: {row0}");
+    // Usage is shown as recorded tokens; cost and the usage-percentage gauge were removed by request.
+    // The cache hit rate replaces them: 30k hit of 50k reported tokens is 60%.
+    assert!(row0.contains("50k/100k tokens"), "expected recorded token usage on status row: {row0}");
+    assert!(row0.contains("cache 60%"), "expected the cache hit rate on the status row: {row0}");
+    assert!(!row0.contains('$'), "no cost estimate on the status row: {row0}");
 
     // Search Ctrl+F finds code block entry and navigates matches.
     app.handle_key(ctrl('f'));
@@ -442,4 +443,52 @@ fn live_sessions_sidebar_click_opens_session_and_monitor_probes_socket() {
     };
     let eff = v2ui::handle_mouse(&mut app, area, click);
     assert!(matches!(eff, Some(V2Effect::Sessions(SessionAction::Open(row))) if row.id == "sib-1"));
+}
+
+#[test]
+fn deduplicated_chrome_keeps_single_source_per_signal() {
+    let mut app = base_app();
+    app.apply_checkpoint(
+        json!({
+            "environment": {"workspace": "/tmp/ws"},
+            "instances": [
+                {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "MODEL_PENDING", "model": "leader_main", "effort": "high"},
+                {"id": "w-worker", "lifecycle": "ACTIVE", "phase": "READY", "model": "leader_main", "effort": "medium"}
+            ],
+            "work": {
+                "status": "ACTIVE",
+                "known_usage": {"total": 50_000, "cache_read": 30_000, "uncached_input": 20_000},
+                "limits": {"max_total_tokens": 100_000}
+            }
+        }),
+        11,
+    );
+    app.team.phase_since.insert("i-leader".into(), ("ACTIVE:MODEL_PENDING".into(), teamagents_tui::now_epoch() - 5.0));
+    app.team.select("w-worker");
+    app.zoomed = true;
+
+    let mut terminal = Terminal::new(TestBackend::new(140, 32)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let row0: String = (0..140).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+
+    assert!(row0.contains("main-work") && row0.contains("50k/100k tokens"), "{row0}");
+    assert!(
+        !row0.contains("Thinking") && !row0.contains("[ZOOM]") && !row0.contains("Ready"),
+        "top row should hold only session identity and usage: {row0}"
+    );
+
+    app.zoomed = false;
+    app.team.selected = "w-worker".into();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let geo = v2ui::geometry(&app, Rect::new(0, 0, 140, 32));
+    let full = buffer_text(&terminal, 140, 32);
+    let act_row: String = (0..140).map(|x| terminal.backend().buffer()[(x, geo.activity.y)].symbol()).collect();
+    assert!(act_row.contains("Thinking") && act_row.contains("5s"), "{act_row}");
+    assert!(!act_row.contains("Ctrl+C interrupt"), "shortcut belongs only in footer: {act_row}");
+    assert!(!full.contains("Leader · conversation"));
+    assert!(!full.contains("open tasks") && !full.contains("Token limit"));
+    assert!(!full.contains("Message Leader · viewing"));
+    assert!(full.contains("Message Leader"));
+    assert!(!full.contains("d details / h history"));
+    assert!(!full.contains("Read-only member history"));
 }

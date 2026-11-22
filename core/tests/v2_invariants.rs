@@ -208,15 +208,17 @@ impl Harness {
             if command.command_id.is_empty() { Command { command_id: self.id(), ..command } } else { command };
         self.last_label = label.split('(').next().unwrap_or("").to_string();
         let result = self.ctl.submit(command.clone(), identity.clone());
-        // C5/D-463: a drain that changed nothing keeps no receipt by decision, so a replay of it re-executes. Track
-        // that here so the random walk does not demand the receipt contract from a command that has none.
-        let no_op_drain = command.method == "drain_inbox"
-            && result.as_ref().is_ok_and(|value| {
-                value["applied"].as_i64() == Some(0)
-                    && value["sealed"].as_i64() == Some(0)
-                    && value["woken"].as_array().is_some_and(|woken| woken.is_empty())
-            });
-        self.last_kept_receipt = !no_op_drain;
+        // C5/D-463/D-466: a poll that changed nothing (an idle `drain_inbox` or `fire_timer`) keeps no
+        // receipt by decision, so a replay of it re-executes. Observe the receipt itself rather than
+        // re-deriving which commands are exempt here: the copy of that rule that lived in this harness
+        // drifted from the implementation the moment a second exemption was added.
+        self.last_kept_receipt = self
+            .ctl
+            .connection()
+            .query_row("SELECT EXISTS(SELECT 1 FROM commands WHERE command_id = ?1)", [&command.command_id], |row| {
+                row.get::<_, bool>(0)
+            })
+            .unwrap_or(true);
         let outcome = match &result {
             Ok(_) => "ok".to_string(),
             Err(error) => format!("err({})", error.chars().take(48).collect::<String>()),

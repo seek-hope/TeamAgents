@@ -41,15 +41,6 @@ generation_options = { reasoning_effort = "high" }    # default effort; max take
 # efforts = ["low", "medium", "high"]                 # optional Ctrl+M menu values for this model;
 #                                                      # absent means minimal/low/medium/high/xhigh/max
 
-# Optional estimates, with EXAMPLE prices only: replace every rate and source with your actual tariff.
-# Missing rates/usage remain unknown; these rates do not create a monetary spending limit.
-# [models.leader_main.price]
-# input_usd_per_million = 2.0
-# output_usd_per_million = 8.0
-# cache_read_usd_per_million = 0.2
-# cache_write_usd_per_million = 3.0
-# source = "Example only; replace with provider tariff URL and date"
-
 # --- other service samples (enable on demand; each maps a logical name to a real endpoint)
 # [models.research_kimi]
 # provider = "openai"          # Kimi speaks the OpenAI-compatible protocol
