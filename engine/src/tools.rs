@@ -1376,7 +1376,15 @@ pub(crate) fn member_executor_with_control(
             if bindings.is_empty() {
                 return Err(format!("tool {tool} is not bound to this member"));
             }
-            web_search(&bindings, args)
+            // §5.1: search reaches the whole web, so it needs the same `web` grant `web_fetch` does.
+            // Without this a member narrowed to `domain:example.com` could still search anything.
+            if !control.web_permitted() {
+                return Err("web_search: this member holds no web grant".into());
+            }
+            let answer = web_search(&bindings, args)?;
+            // A domain-restricted policy also filters the hits: a result pointing outside the
+            // granted hosts is content the member is not authorized to read.
+            Ok(restrict_search_results(answer, control))
         }
         "web_fetch" => {
             let web = web.get_or_init(|| web_tools(&catalog, &bindings)).as_ref().map_err(Clone::clone)?;
@@ -1403,6 +1411,30 @@ pub(crate) fn member_executor_with_control(
             workspace(other, args, control)
         }
     }
+}
+
+/// Drop search hits whose host the member's `web` policy does not cover.
+///
+/// `web_search` reaches the whole web, so a member narrowed to `domain:example.com` would otherwise
+/// receive content from anywhere. A hit whose URL cannot be parsed is dropped too: an unparseable
+/// result is not evidence that the host is permitted.
+fn restrict_search_results(mut answer: Json, control: &TurnControl) -> Json {
+    if matches!(control.web_policy(), crate::tools::WebPolicy::Unrestricted) {
+        return answer;
+    }
+    let Some(rows) = answer.get_mut("results").and_then(Json::as_array_mut) else { return answer };
+    let before = rows.len();
+    rows.retain(|row| {
+        row.get("url")
+            .and_then(Json::as_str)
+            .and_then(|raw| url::Url::parse(raw).ok())
+            .and_then(|url| url.host_str().map(str::to_string))
+            .is_some_and(|host| control.domain_allowed(&host))
+    });
+    if rows.len() != before {
+        answer["restricted_by_domain"] = json!(before - rows.len());
+    }
+    answer
 }
 
 fn shell_quote(s: &str) -> String {
@@ -2059,6 +2091,7 @@ pub fn guard_url(url: &str) -> Result<String, String> {
 const IPV4_BLOCKED: &[(u128, u8)] = &[
     (0x0000_0000, 8),  // 0.0.0.0/8
     (0x0a00_0000, 8),  // 10.0.0.0/8
+    (0x6440_0000, 10), // 100.64.0.0/10 RFC 6598 shared address space (CGNAT); hosts cloud metadata
     (0x7f00_0000, 8),  // 127.0.0.0/8
     (0xa9fe_0000, 16), // 169.254.0.0/16
     (0xac10_0000, 12), // 172.16.0.0/12
@@ -2201,7 +2234,10 @@ pub fn web_fetch(
     fetch::Fetcher::default().fetch(
         &[binding],
         &json!({"url":url, "max_bytes":max_bytes}),
-        &TurnControl::default(),
+        // This helper exists for callers outside the member dispatcher (probes and the URL-guard
+        // test), which have no session authority to resolve. A member call always goes through the
+        // dispatcher, which derives the policy from that member's `web` grants.
+        &TurnControl::with_web_scopes(vec!["session".to_string()]),
         OutputLocation { root: None, prefix: ARTIFACTS_PREFIX },
     )
 }
@@ -2289,6 +2325,11 @@ pub(crate) struct ToolWiring {
     /// clamps its own job path; this carries the same ceiling to the toolkit's shell arm, so one session has one
     /// rule.
     pub max_tool_seconds: Option<u64>,
+    /// The profile's declared native context window, in tokens. Codemode uses it as the budget for what one
+    /// script may return into the context, so the sandbox is as permissive as the model itself is. `None` means
+    /// the profile declared no window; codemode then falls back to its own loose default rather than shrinking
+    /// the budget silently.
+    pub context_window: Option<u64>,
 }
 
 impl V2Toolkit {
@@ -2520,6 +2561,14 @@ impl V2Toolkit {
                     store: self.codemode_store.clone(),
                     veto,
                     timeout_ms: crate::codemode::DEFAULT_TIMEOUT_MS,
+                    // The model's own window is the output budget: a script may return as much as the
+                    // model can read. A profile without a declared window keeps codemode's loose default.
+                    max_output_tokens: self
+                        .wiring
+                        .context_window
+                        .filter(|tokens| *tokens > 0)
+                        .map(|tokens| tokens as usize)
+                        .unwrap_or(crate::codemode::FALLBACK_MAX_OUTPUT_TOKENS),
                     aborted: control.check().is_err(),
                 },
                 &self.native,
@@ -2607,6 +2656,61 @@ fn receipt_error_class(text: &str) -> &'static str {
     "tool_error"
 }
 
+/// What a member's live `web` grants permit (§5.1, D-470).
+///
+/// This used to be a bare `Vec<String>` whose empty case meant "no restriction", which inverted
+/// the authority: a member with *no* web grant could reach every host, while granting
+/// `web@domain:example.com` narrowed it to one. A capability that grows when you withhold it is
+/// not a capability, so the three states are now explicit and `Denied` is the default.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum WebPolicy {
+    /// No live `web` grant: the member may not use web tools at all.
+    #[default]
+    Denied,
+    /// A `web@session` grant: every host is reachable.
+    Unrestricted,
+    /// One or more `web@domain:<host>` grants: only these hosts, plus `*.suffix` subdomain wildcards.
+    Domains(Vec<String>),
+}
+
+impl WebPolicy {
+    /// The policy for the scopes of a member's live `web` grants.
+    pub fn from_scopes<I: IntoIterator<Item = String>>(scopes: I) -> Self {
+        let mut domains = Vec::new();
+        for scope in scopes {
+            if scope == "session" {
+                return WebPolicy::Unrestricted;
+            }
+            if let Some(host) = scope.strip_prefix("domain:").filter(|host| !host.is_empty()) {
+                domains.push(host.to_string());
+            }
+        }
+        if domains.is_empty() {
+            WebPolicy::Denied
+        } else {
+            WebPolicy::Domains(domains)
+        }
+    }
+
+    /// Whether this member may use web tools at all.
+    pub fn permits_web(&self) -> bool {
+        !matches!(self, WebPolicy::Denied)
+    }
+
+    /// Whether `host` is reachable under this policy.
+    pub fn allows(&self, host: &str) -> bool {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        match self {
+            WebPolicy::Denied => false,
+            WebPolicy::Unrestricted => true,
+            WebPolicy::Domains(patterns) => patterns.iter().any(|pattern| {
+                let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
+                pattern == host || (pattern.starts_with("*.") && host.ends_with(&pattern[1..]))
+            }),
+        }
+    }
+}
+
 /// The turn-cancellation flag the reference loop and the driver share: cancelling
 /// a running turn is a local execution concern, not team state (§10 keeps one
 /// owner per fact).
@@ -2614,8 +2718,8 @@ fn receipt_error_class(text: &str) -> &'static str {
 pub struct TurnControl {
     cancelled: Arc<AtomicBool>,
     active: Arc<Mutex<()>>,
-    /// D-470: the hosts this member's live `web` grants allow; empty means no allowlist.
-    domains: Vec<String>,
+    /// D-470: what this member's live `web` grants permit. `Denied` unless the driver resolved a grant.
+    web: WebPolicy,
     // A script consumes structured data before formatting a transcript preview.
     script_output: bool,
     // Populated only by a direct native edit after its checked write commits.
@@ -2629,21 +2733,26 @@ impl TurnControl {
         record
     }
 
-    pub fn with_domains(domains: Vec<String>) -> Self {
-        TurnControl { domains, ..Default::default() }
+    /// A control whose web policy is the one those grant scopes imply.
+    pub fn with_web_scopes<I: IntoIterator<Item = String>>(scopes: I) -> Self {
+        TurnControl { web: WebPolicy::from_scopes(scopes), ..Default::default() }
     }
 
-    /// D-470: an empty allowlist means unrestricted (the historical behavior); otherwise the host must match an
-    /// entry exactly, or match a `*.suffix` entry as a subdomain.
+    /// The member's resolved web policy.
+    pub fn web_policy(&self) -> &WebPolicy {
+        &self.web
+    }
+
+    /// Whether this member may use web tools at all. A bound tool whose member holds no `web`
+    /// grant is refused rather than silently unrestricted.
+    pub fn web_permitted(&self) -> bool {
+        self.web.permits_web()
+    }
+
+    /// Whether `host` is reachable. `Denied` refuses everything, so the absence of a grant can
+    /// never mean "any host".
     pub fn domain_allowed(&self, host: &str) -> bool {
-        if self.domains.is_empty() {
-            return true;
-        }
-        let host = host.trim_end_matches('.').to_ascii_lowercase();
-        self.domains.iter().any(|pattern| {
-            let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
-            pattern == host || (pattern.starts_with("*.") && host.ends_with(&pattern[1..]))
-        })
+        self.web.allows(host)
     }
 
     pub fn check(&self) -> Result<(), String> {
@@ -2724,22 +2833,86 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// D-470: an empty allowlist is unrestricted; otherwise an exact host or a `*.suffix` subdomain matches.
+    /// D-470/§5.1: `web` is a capability, so a member with no `web` grant reaches nothing; a `session`
+    /// grant reaches every host; `domain:<host>` entries (and `*.suffix` wildcards) narrow the targets.
+    /// The default is `Denied`, because a permission that grows when it is withheld is not a permission.
     #[test]
-    fn the_web_domain_allowlist_is_optional_exact_or_wildcard() {
-        assert!(TurnControl::default().domain_allowed("anything.example"));
-        let control = TurnControl::with_domains(vec!["example.com".into(), "*.docs.example.com".into()]);
-        assert!(control.domain_allowed("example.com"));
-        assert!(!control.domain_allowed("evil.example.com"));
-        assert!(control.domain_allowed("api.docs.example.com"));
-        assert!(!control.domain_allowed("docs.example.com"), "the wildcard covers subdomains, not the bare host");
+    fn the_web_policy_denies_by_default_and_narrows_with_domain_grants() {
+        assert!(!TurnControl::default().domain_allowed("anything.example"));
+        assert!(!TurnControl::default().web_permitted());
+        let narrowed = TurnControl::with_web_scopes(vec![
+            "domain:example.com".to_string(),
+            "domain:*.docs.example.com".to_string(),
+        ]);
+        assert!(narrowed.web_permitted());
+        assert!(narrowed.domain_allowed("example.com"));
+        assert!(!narrowed.domain_allowed("evil.example.com"));
+        assert!(narrowed.domain_allowed("api.docs.example.com"));
+        assert!(!narrowed.domain_allowed("docs.example.com"), "the wildcard covers subdomains, not the bare host");
+        let every = TurnControl::with_web_scopes(vec!["session".to_string()]);
+        assert!(every.domain_allowed("anything.example"));
+        assert!(every.domain_allowed("deepseek.com"));
+        // A grant that names no usable scope authorizes nothing.
+        assert!(!TurnControl::with_web_scopes(vec!["domain:".to_string()]).web_permitted());
+        assert!(!TurnControl::with_web_scopes(vec!["instance:i1".to_string()]).web_permitted());
+    }
+
+    /// H1/H2 regression: a member holding no `web` grant must be refused by *both* web tools. The
+    /// defect pinned here was an inversion rather than a missing check — `TurnControl::default()`
+    /// carried an empty allowlist that meant "no restriction", so withholding the grant granted the
+    /// whole web while `web@domain:example.com` narrowed it. §5.1 says a grant only narrows its
+    /// parent, so the absence of one must authorize nothing.
+    #[test]
+    fn a_member_without_a_web_grant_is_refused_by_both_web_tools() {
+        let _lock = crate::env_lock();
+        std::env::set_var("TA_WEB_GATE_KEY", "test-value");
+        let mut catalog = teamagents_core::models::UserConfig::default();
+        for (name, kind, url) in
+            [("search", "web_search", "http://127.0.0.1:9/search"), ("fetch", "web_fetch", "http://127.0.0.1:9/fetch")]
+        {
+            catalog.tools.insert(
+                name.into(),
+                serde_json::from_value(
+                    json!({"kind": kind, "provider": "deepseek", "url": url, "api_key_env": "TA_WEB_GATE_KEY"}),
+                )
+                .unwrap(),
+            );
+        }
+        let executor = member_executor_with_control(
+            std::env::temp_dir(),
+            catalog,
+            vec!["web".into()],
+            ArtifactPaths::own(None),
+            None,
+            None,
+            None,
+        );
+        let denied = TurnControl::default();
+        for (tool, args) in
+            [("web_search", json!({"query": "anything"})), ("web_fetch", json!({"url": "https://93.184.216.34/"}))]
+        {
+            let error = executor(tool, &args, &denied).unwrap_err();
+            assert!(error.contains("no web grant"), "{tool} must be refused, got {error}");
+        }
+        // A session grant lets the same call reach dispatch; the literal public IP keeps the DNS guard
+        // off the resolver, so whatever fails next is the request, never the authorization.
+        let allowed = TurnControl::with_web_scopes(vec!["session".to_string()]);
+        let reached = executor("web_fetch", &json!({"url": "https://93.184.216.34/"}), &allowed).unwrap_err();
+        assert!(!reached.contains("no web grant"), "a session grant must allow dispatch: {reached}");
+        std::env::remove_var("TA_WEB_GATE_KEY");
     }
 
     use super::*;
 
     /// The product builds an executor through `V2Toolkit::new`, which resolves the member's own
-    /// `ArtifactPaths` and turn control. The probes below only need the shared-artifact, default-control
-    /// shape, so they adapt it here rather than the crate exporting a second constructor for them (D-130).
+    /// `ArtifactPaths` and turn control. The probes below only need the shared-artifact shape, so they
+    /// adapt it here rather than the crate exporting a second constructor for them (D-130).
+    ///
+    /// The control carries a session-wide `web` grant because these probes exercise *dispatch*, not
+    /// authorization: `TurnControl::default()` is `WebPolicy::Denied`, so a web probe given the default
+    /// would be refused before it reached the code under test. The authorization boundary has its own
+    /// tests (`the_web_policy_denies_by_default_and_narrows_with_domain_grants` and
+    /// `a_member_without_a_web_grant_is_refused_by_both_web_tools`).
     fn member_executor(
         root: PathBuf,
         catalog: teamagents_core::models::UserConfig,
@@ -2748,7 +2921,8 @@ mod tests {
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
         let executor =
             member_executor_with_control(root, catalog, bindings, ArtifactPaths::own(artifacts), None, None, None);
-        move |tool, args| executor(tool, args, &TurnControl::default())
+        let control = TurnControl::with_web_scopes(vec!["session".to_string()]);
+        move |tool, args| executor(tool, args, &control)
     }
 
     fn workspace_executor(
@@ -3508,8 +3682,6 @@ mod tests {
         "9.255.255.255",
         "11.0.0.0",
         "100.63.255.255",
-        "100.64.0.0",
-        "100.127.255.255",
         "100.128.0.0",
         "126.255.255.255",
         "128.0.0.0",

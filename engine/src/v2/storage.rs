@@ -24,9 +24,18 @@ impl Storage {
             .name(format!("v2-store-{session_id}"))
             .spawn(move || {
                 // when every sender is gone the worker exits; pending replies
-                // are dropped with their cancelled waiters
+                // are dropped with their cancelled waiters.
+                //
+                // A task closure that panics is contained here: without this, one
+                // poisoned control call would unwind the only writer thread, and every
+                // later `call` would fail with "storage worker gone" for the rest of the
+                // session's life. SQLite keeps its own consistency, so the honest
+                // recovery is to drop that one command's reply (its waiter sees
+                // "storage worker dropped the reply") and keep serving the session.
                 while let Ok(task) = rx.recv() {
-                    task(&mut control);
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(&mut control))).is_err() {
+                        eprintln!("teamagents: storage worker recovered from a panicking command");
+                    }
                 }
             })
             .map_err(|e| format!("storage worker spawn: {e}"))?;

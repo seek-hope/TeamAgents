@@ -32,7 +32,7 @@
 
 ## Current evidence
 
-The source contains **893 Rust tests** (core 210 / engine 561 / tui 122). Formal material contains **387
+The source contains **895 Rust tests** (core 210 / engine 563 / tui 122). Formal material contains **387
 configurations across 47 modules**: **63 positive configurations in 60 traversals**, **323 negative controls**,
 **79 normal-path witnesses** and **9 Kani harnesses**. Search-tree coverage includes ordered pair transitions,
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.

@@ -58,7 +58,7 @@ Bounded storage worker -> Control::submit -> SQLite (WAL + synchronous=FULL)
 - **Control plane:** `core/src/v2/control.rs::Control::submit` performs ingest, validation, reduction and
   persistence in one transaction. Identity and revisions are assigned there.
 - **Store:** `core/src/v2/store.rs` checks the format stamp, applies WAL and `synchronous=FULL`, and migrates
-  only known versions explicitly. Schema 9 is current.
+  only known versions explicitly. Schema 13 is current.
 - **Execution:** `engine/src/v2/driver.rs` owns the phase machine; `engine/src/v2/supervisor.rs` coordinates all
   ACTIVE instances. Model and tool waits are outside transactions.
 - **Products:** `engine/src/v2/daemon.rs`, `engine/src/v2/exec.rs`, `engine/src/cli.rs` and
@@ -107,10 +107,25 @@ alone does not undo a schema migration.
 narrow its parent; revocation removes descendants. Creating an instance grants neither arbitrary connections
 nor blanket file permissions. Binding an MCP service or web tool does not bypass grants.
 
+Absence of a grant authorizes nothing: `web` fails closed, so a member with no `web` grant is refused by both
+web tools, and `web@domain:<host>` both admits those hosts and filters search hits to them. The Leader of a
+session the user opened receives `web@session` from the same bootstrap that gives it `manage`, `delegate` and
+`message`; a spawned Worker receives none of it and must have its scope narrowed through its task.
+
 ### 5.2 The model-visible surface
 
 Tool and collaboration schemas are selected by current grants, profile bindings and model capabilities. The
 surface shown to a model is not proof that the model used it correctly.
+
+Binding and authorization answer different questions. A binding (`[tools.*]`, the product's `files`/`shell`/
+`web`/`skills`/`memory` list) decides which tools are *advertised and callable* for a member; a grant decides
+which of those calls is *allowed* to take effect. The two are deliberately not the same set: a bound tool can
+still be refused at dispatch (`shell` needs `shell@workspace`, `web` needs a `web` grant), and a member can hold
+a grant for a tool it was never bound. Because `files` is a product-default binding with no matching action in
+the capability vocabulary, file tools are gated by binding alone — a member that is bound `files` may write in
+the workspace it was given even without `shell@workspace`. That is the intended split for the shared workspace
+(Q14), not an oversight: `shell` is withheld from spawned members because a shell is arbitrary execution, while
+workspace file access is the collaboration surface itself.
 
 ### 5.3 Delivery, wakeups and revocation
 
@@ -128,6 +143,10 @@ alone is not process-stop evidence; shared-workspace takeover separately observe
 
 ## 6. Side effects, tool processes and recovery
 
+File tools are workspace-confined. Shell, acceptance commands and local MCP run on the host with explicit
+receipts, process-group cancellation and durable journals; this is not an OS sandbox. Provider credentials are
+not automatically inherited by tool processes.
+
 ### 6.1 Pre-execution protocol
 
 Dispatch is the authorization linearization point: operation identity, argument hash, grant revision and any
@@ -137,6 +156,28 @@ approval and execution. The raw call remains in history; a failed, not-started r
 A field named `_invalid_arguments` in valid JSON is ordinary data, not proof of a parse failure.
 
 ### 6.2 The necessary scope of the shell runner
+
+Same-response tool calls dispatch in order, each as one durable operation. A Shell command runs in its own
+`jobs-runner` process that owns the command's journal and process group, so the driver and the runner recover
+from their own journals instead of replaying an uncertain effect. A signal goes only to the group the runner
+created, after re-checking the recorded boot id and process start ticks; a settled group is left alone once its
+members' birth times prove the group id was reused. `shutdown` is refused while a runner still has an active
+child, so a long command keeps its journal rather than losing it. Escaped descendants, `setsid` children and
+remote effects stay outside that observer: this is process-group ownership, not host confinement.
+
+### 6.3 Recovery matrix
+
+After interruption, persisted phase and operation location decide reuse, failure or `OUTCOME_UNKNOWN`. A known
+result is consumed once; an uncertain external effect is not replayed. Late results remain in their original
+epoch and cannot take over new work.
+
+### 6.4 Pause, cancellation and shutdown
+
+Interrupt cancels the in-flight model request, while running tools and delegated work keep their lifecycle.
+Cancellation persists intent before any signal and does not prove execution stopped. Instance termination is
+user-only, and TUI detachment does not stop the daemon.
+
+## 7. Models, tools and context
 
 Requests use the profile's declared native window. Capacity includes instructions, schemas, history, output and
 protocol reserves. Provider-reported usage supersedes estimates. Unknown usage stays unknown. Logical request ids
@@ -149,6 +190,15 @@ The retained tail remains the current working set.
 The Leader's compact response can contain a structured summary and an exploration-tree patch. A legacy text
 summary may still commit without a tree update. Invalid or stale tree patches emit an explicit failure and leave
 the old tree stale; they do not fail the summary or the user's turn.
+
+MCP supports stdio and streamable HTTP. `codemode` composes bound tools in a restricted JavaScript sandbox with
+no ambient filesystem, network or timers. Resource list/read uses the existing service binding and requires an
+explicit service when multiple bindings are ambiguous. OAuth input and credential writes are bounded and atomic.
+A codemode script may run for up to twelve hours and may return as much text as the profile's own context window
+holds; a `// @options:` line may shorten either bound and never extend it.
+
+Skills are read on demand and never grant authority. User hooks may veto native calls or emit notifications.
+Project configuration cannot silently supply permissions, hooks, checks, retention or update policy.
 
 ### 7.1 Session exploration tree
 
@@ -167,33 +217,6 @@ ordered operations validate against the preceding result and roll back as a unit
 reparents children and transfers focus correctly. Fresh patches create at most 96 nodes, 32 operations and 32
 levels. Exact replay returns the prior result without growth and reconstructs assigned `added_ids` when needed.
 Omitted nodes and old revisions remain inspectable; no operation deletes conversation history or rewinds effects.
-
-## 7. Tools, integrations and providers
-
-File tools are workspace-confined. Shell, acceptance commands and local MCP run on the host with explicit
-receipts, process-group cancellation and durable journals; this is not an OS sandbox. Provider credentials are
-not automatically inherited by tool processes.
-
-### 6.3 Recovery matrix
-
-After interruption, persisted phase and operation location decide reuse, failure or `OUTCOME_UNKNOWN`. A known
-result is consumed once; an uncertain external effect is not replayed. Late results remain in their original
-epoch and cannot take over new work.
-
-### 6.4 Pause, cancellation and shutdown
-
-Interrupt cancels the in-flight model request, while running tools and delegated work keep their lifecycle.
-Cancellation persists intent before any signal and does not prove execution stopped. Instance termination is
-user-only, and TUI detachment does not stop the daemon.
-
-## 7. Models, tools and context
-
-MCP supports stdio and streamable HTTP. `codemode` composes bound tools in a restricted JavaScript sandbox with
-no ambient filesystem, network or timers. Resource list/read uses the existing service binding and requires an
-explicit service when multiple bindings are ambiguous. OAuth input and credential writes are bounded and atomic.
-
-Skills are read on demand and never grant authority. User hooks may veto native calls or emit notifications.
-Project configuration cannot silently supply permissions, hooks, checks, retention or update policy.
 
 ## 8. Work, budget and completion
 
@@ -234,7 +257,7 @@ JSON export are read-only projections, not second business stores.
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current source has 893 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
+The current source has 895 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
 configurations, 323 controls and one separate wide configuration, evaluated in 60 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 

@@ -153,6 +153,11 @@ impl Fetcher {
         }
         url.set_fragment(None);
         let host = url.host_str().ok_or("URL has no host")?;
+        // §5.1: `web` is a capability. Refuse outright when the member holds no web grant, and
+        // otherwise require the host to be covered. Neither branch can widen access.
+        if !control.web_permitted() {
+            return Err("web_fetch: this member holds no web grant".into());
+        }
         if !control.domain_allowed(host) {
             return Err(format!("web_fetch: {host} is not in this member's allowed domains"));
         }
@@ -311,7 +316,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         crate::scratch_owner::record_ownership(&root);
         let exec = executor(&endpoint, Some(root.join("member")));
-        let control = TurnControl::default();
+        let control = TurnControl::with_web_scopes(vec!["session".to_string()]);
         let args = json!({"url":format!("{URL}#fragment"),"max_bytes":3});
         let first = exec("web_fetch", &args, &control).unwrap();
         let requests = server.join().unwrap();
@@ -357,7 +362,7 @@ mod tests {
         assert_eq!(exec("web_fetch", &args, &script).unwrap()["next_byte_offset"], 2);
         assert!(executor(&endpoint, Some(root.join("peer")))("read_file", &json!({"path":path}), &control).is_err());
         assert_eq!(exec("web_fetch", &args, &control).unwrap()["from_cache"], true);
-        assert!(exec("web_fetch", &args, &TurnControl::with_domains(vec!["other.example".into()]))
+        assert!(exec("web_fetch", &args, &TurnControl::with_web_scopes(vec!["domain:other.example".into()]))
             .unwrap_err()
             .contains("allowed domains"));
         std::fs::remove_dir_all(root).unwrap();
@@ -388,7 +393,7 @@ mod tests {
     fn fetch_fallback_is_transient_only_and_explicit_selection_is_final() {
         let _lock = crate::env_lock();
         let _keys = Keys::set();
-        let control = TurnControl::default();
+        let control = TurnControl::with_web_scopes(vec!["session".to_string()]);
         let body = json!({"content":"result"}).to_string();
         for status in [408, 429, 503] {
             let (endpoint, server) = serve(vec![(status, "reason".into()), (200, body.clone())]);

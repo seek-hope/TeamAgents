@@ -221,17 +221,19 @@ pub(crate) fn os_trust_anchors() -> Vec<reqwest::Certificate> {
     anchors
 }
 
-/// Silence longer than this is a stalled stream, not a thinking model (§8
-/// requires per-request stall detection). The bound follows the configured
-/// request timeout but never drops below the floor, so a provider configured
-/// with a short timeout is not killed mid-reasoning, and never exceeds the
-/// ceiling, so a connection that only trickles keep-alives cannot hold a turn
-/// open indefinitely. ponytail: a per-provider knob if real runs disagree.
-const STREAM_STALL_FLOOR: Duration = Duration::from_secs(120);
-const STREAM_STALL_CEILING: Duration = Duration::from_secs(900);
+/// Silence longer than this is a stalled stream, not a thinking model (§8 requires per-request stall
+/// detection).
+///
+/// **Two minutes, fixed, for every profile.** It used to be a floor/ceiling pair whose ceiling was
+/// 900 s, and the bound was derived from the profile's request timeout — so a profile with a generous
+/// timeout could sit through fifteen minutes of silence, and the effective stall bound silently
+/// depended on an unrelated setting. A stalled stream is a stalled stream regardless of how long the
+/// whole request may take, so this is now one number. The parameter stays because the four adapters
+/// and the `with_stream_stall` test knobs share one call shape; it is deliberately unused.
+const STREAM_STALL_BOUND: Duration = Duration::from_secs(120);
 
-pub(crate) fn stream_stall_bound(timeout: Duration) -> Duration {
-    timeout.max(STREAM_STALL_FLOOR).min(STREAM_STALL_CEILING)
+pub(crate) fn stream_stall_bound(_timeout: Duration) -> Duration {
+    STREAM_STALL_BOUND
 }
 
 /// One HTTP client policy for every protocol adapter (§7 keeps a single
@@ -614,10 +616,13 @@ mod tests {
     }
 
     #[test]
-    fn the_stream_stall_bound_clamps_between_floor_and_ceiling() {
+    fn the_stream_stall_bound_is_two_minutes_for_every_configured_timeout() {
+        // One number for every profile: silence past two minutes is a stalled stream no matter how
+        // long the total request timeout is. Measured against the old ceiling behaviour, which let
+        // `timeout = 3600` keep a silent stream open for fifteen minutes.
         assert_eq!(stream_stall_bound(Duration::from_secs(1)), Duration::from_secs(120));
-        assert_eq!(stream_stall_bound(Duration::from_secs(300)), Duration::from_secs(300));
-        assert_eq!(stream_stall_bound(Duration::from_secs(3600)), Duration::from_secs(900));
+        assert_eq!(stream_stall_bound(Duration::from_secs(300)), Duration::from_secs(120));
+        assert_eq!(stream_stall_bound(Duration::from_secs(3600)), Duration::from_secs(120));
     }
 
     /// D-416: the three numbers a stream reports. A frame resets the gap clock, the first one measures the wait for

@@ -45,7 +45,7 @@ make verify-model-counterexamples
 make verify-witnesses
 make verify-kani
 ```
-Current source inventory: **893 Rust tests** (core 210 / engine 561 / tui 122), **63 positive TLA configurations in 60
+Current source inventory: **895 Rust tests** (core 210 / engine 563 / tui 122), **63 positive TLA configurations in 60
 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**, and **387 configurations across 47
 modules**. `make test-aarch64` covers 26 tool tests under GNU user emulation. See `docs/ACCEPTANCE.md`
 for scenario coverage and `verification/REPORT.md` for formal scope. Inventory regeneration does not renew test, install or formal evidence.

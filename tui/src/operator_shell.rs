@@ -98,7 +98,12 @@ fn run_foreground(workspace: &Path, mut shell: Command, capture: bool) -> io::Re
     }
     let (mut reader, writer) = UnixStream::pair()?;
     reader.set_read_timeout(Some(Duration::from_millis(60)))?;
-    let mut child = shell.stdout(OwnedFd::from(writer)).spawn()?;
+    // Both pipes go through the same socket so the terminal only ever receives text this module has
+    // filtered. Leaving stderr inherited meant a repository-influenced command (the CodeGraph run this
+    // path exists for) could write raw ANSI/OSC sequences to the user's terminal — including OSC 52
+    // clipboard writes and title changes — while stdout was scrubbed. One filtered path for both.
+    let stderr_writer = writer.try_clone()?;
+    let mut child = shell.stdout(OwnedFd::from(writer)).stderr(OwnedFd::from(stderr_writer)).spawn()?;
     drop(shell);
     let mut bytes = Vec::new();
     let mut limited = false;

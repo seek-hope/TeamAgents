@@ -708,6 +708,12 @@ fn safe_entries(archive: &Path) -> Result<(String, String), String> {
         {
             return Err(format!("the archive contains an unsafe path: {entry}"));
         }
+        // A member whose name starts with `-` is not a release path, and it is the shape that made
+        // tar read a member name as an option (see `extract`). Refuse it here so the rule holds even
+        // if the extractor's argument handling changes again.
+        if entry.starts_with('-') {
+            return Err(format!("the archive contains an option-shaped path: {entry}"));
+        }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         match name {
             "teamagents" => cli = Some(entry.to_string()),
@@ -727,6 +733,12 @@ fn extract(archive: &Path, dir: &Path) -> Result<(), String> {
         .arg(archive)
         .arg("-C")
         .arg(dir)
+        // `--` ends tar's option parsing. `safe_entries` only rejects absolute, root and `..`
+        // components: a member named `--to-command=…/teamagents` is *relative* and its basename is
+        // `teamagents`, so it passed that check and was then re-read by tar as an option, executing
+        // the embedded command during extraction (measured with GNU tar 1.35). A leading `-` never
+        // names a legitimate release member, so refuse it as well instead of relying on `--` alone.
+        .arg("--")
         .arg(&cli)
         .arg(&tui)
         .output()
@@ -1742,6 +1754,49 @@ mod tests {
 
     fn layout(root: &Path) -> Layout {
         Layout { root: root.join("install"), bin_dir: root.join("bin") }
+    }
+
+    /// A release member whose *name* is also a tar option passed `safe_entries` (the name is
+    /// relative, has no `..`, and its basename is `teamagents`) and was then re-read by `tar` as an
+    /// option, running the embedded command during extraction — measured with GNU tar 1.35, which
+    /// executed `--to-command` from the member argument and created the proof file. Both layers now
+    /// refuse it: `safe_entries` rejects a leading `-`, and `extract` passes `--` before the members.
+    #[test]
+    fn an_option_shaped_archive_member_is_refused_before_extraction() {
+        let temp = Temp::new("tar-option");
+        let stage = temp.path().join("stage");
+        let package = stage.join("teamagents-9.9.9");
+        std::fs::create_dir_all(&package).unwrap();
+        script(&package.join("teamagents"), "9.9.9");
+        script(&package.join("teamagents-tui"), "9.9.9");
+        let proof = temp.path().join("proof");
+        let archive = temp.path().join("evil.tar.gz");
+        // `$` anchors the rename to the CLI member only, so `teamagents-tui` keeps its real name.
+        let transform = format!("s|teamagents-9.9.9/teamagents$|--to-command=touch {0};X/teamagents|", proof.display());
+        let status = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&stage)
+            .arg("--transform")
+            .arg(&transform)
+            .arg("teamagents-9.9.9")
+            .status()
+            .unwrap();
+        assert!(status.success(), "tar could not build the fixture archive");
+        let listed = std::process::Command::new("tar").arg("-tzf").arg(&archive).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&listed.stdout).contains("--to-command="),
+            "the fixture archive must carry an option-shaped member name"
+        );
+        let error = safe_entries(&archive).unwrap_err();
+        assert!(error.contains("option-shaped"), "expected an option-shape refusal, got {error}");
+        // The extractor is unreachable now, but it must stay safe on its own: `--` is what stops tar
+        // from reading the member argument as an option.
+        let out = temp.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        assert!(extract(&archive, &out).is_err(), "extract must refuse the option-shaped archive");
+        assert!(!proof.exists(), "no archive member may execute during staging");
     }
 
     fn options(state: PathBuf, target: &str, archive: PathBuf, crash_at: Option<&str>) -> ApplyOptions {

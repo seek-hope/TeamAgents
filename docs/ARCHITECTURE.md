@@ -112,7 +112,7 @@ stale and emits `search_tree_update_failed`; the summary and user's turn continu
 
 ## 5. Authoritative data
 
-Schema 9 stores SQL/JSON projections rather than duplicate mirror DTOs. Main records include:
+Schema 13 stores SQL/JSON projections rather than duplicate mirror DTOs. Main records include:
 
 | Record | Essential identity or constraint | Purpose |
 |---|---|---|
@@ -161,7 +161,7 @@ drivers, fake providers, runner processes and random control walks. Kani covers 
 vocabulary proofs. PTY checks terminal behavior.
 
 Current totals are 63 positive configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani harnesses,
-plus 893 Rust tests. Search-tree coverage includes ordered pairs, 23 controls covering every non-`TypeOK` tree
+plus 895 Rust tests. Search-tree coverage includes ordered pairs, 23 controls covering every non-`TypeOK` tree
 claim and 11 witnesses. Witnesses demonstrate reachability only.
 
 These results do not establish full Rust/SQLite refinement, whole-system composition, wide exhaustive completion

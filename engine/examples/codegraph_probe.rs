@@ -105,6 +105,7 @@ for (const [suffix, params] of Object.entries({status: {}, search: {query: args.
             store: Arc::new(Mutex::new(BTreeMap::<String, Json>::new())),
             veto: None,
             timeout_ms: 120_000,
+            max_output_tokens: codemode::FALLBACK_MAX_OUTPUT_TOKENS,
             aborted: false,
         },
     );

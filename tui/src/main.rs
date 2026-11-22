@@ -439,12 +439,25 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
             }
             match client.command(&format!("profile-{}", uuid::Uuid::new_v4()), "set_role_model", params) {
                 Ok(reply) => {
+                    // The composer border already shows the Leader's model and effort, and the checkpoint
+                    // refresh below updates it. A Leader switch therefore needs no transcript note: it
+                    // repeated the same label after the input box on every switch. Worker policy is not
+                    // rendered in the border, so its confirmation stays.
                     let message = match role {
-                        teamagents_tui::v2app::ProfileRole::Leader => reply["leader"].as_str().map(|key| format!("Chat model set to {}.", app.model_label(key))),
-                        teamagents_tui::v2app::ProfileRole::Workers if reply["workers"]["mode"] == "follow" => Some("Workers will use the same model as your chat.".into()),
-                        teamagents_tui::v2app::ProfileRole::Workers => reply["workers"]["key"].as_str().map(|key| format!("Worker model set to {}.", app.model_label(key))),
+                        teamagents_tui::v2app::ProfileRole::Leader => None,
+                        teamagents_tui::v2app::ProfileRole::Workers if reply["workers"]["mode"] == "follow" => {
+                            Some("Workers will use the same model as your chat.".to_string())
+                        }
+                        teamagents_tui::v2app::ProfileRole::Workers => Some(
+                            reply["workers"]["key"]
+                                .as_str()
+                                .map(|key| format!("Worker model set to {}.", app.model_label(key)))
+                                .unwrap_or_else(|| "Model settings saved.".into()),
+                        ),
                     };
-                    app.command_note(message.unwrap_or_else(|| "Model settings saved.".into()));
+                    if let Some(message) = message {
+                        app.command_note(message);
+                    }
                     v2_sync_checkpoint(client, app);
                 }
                 Err(error) => app.command_note(format!("Could not change the model: {error}")),

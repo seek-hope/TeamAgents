@@ -99,6 +99,12 @@ fn default_protocol() -> String {
     "openai".into()
 }
 
+/// One model request's wall-clock ceiling, in seconds, when the profile does not set one.
+///
+/// It matches `STREAM_STALL_BOUND`: both are two minutes, so a stream that goes silent and a request
+/// that drags on fail at the same point instead of one hiding the other. The value is a ceiling on a
+/// single request, not a policy about how much work a turn may do — long work belongs to durable work
+/// and codemode, which have their own budgets. A profile may raise it per model.
 fn default_timeout() -> i64 {
     120
 }

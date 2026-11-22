@@ -746,7 +746,14 @@ pub(crate) async fn bootstrap(
                 // evaluation harness issued these grants by hand, which is why the
                 // fixtures passed while the product could not build a team. Fixed
                 // command ids keep a restart (or an older session) idempotent.
-                for action in ["manage", "delegate", "message"] {
+                //
+                // `web` belongs in this list for the same reason and one more: it now fails closed
+                // (D-470), so without this row the user's own Leader would be refused both web tools
+                // even though the user configured the binding — the product default is unrestricted
+                // web for the session the user opened. A spawned Worker is created through
+                // `spawn_instance`, never through this bootstrap, so a child still starts with no web
+                // access and must narrow to `domain:<host>` through its task's capability request.
+                for action in ["manage", "delegate", "message", "web"] {
                     control.submit(
                         command(
                             format!("boot-grant-{action}"),
@@ -867,6 +874,9 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
             )),
             // D-415: the session's ceiling on one model-picked tool timeout
             max_tool_seconds: config.catalog.limits.max_tool_seconds,
+            // The profile's own window bounds what a codemode script may return into the context, so the
+            // sandbox is exactly as permissive as the model that asked for the script.
+            context_window: config.profile.context_window,
         },
     )?);
     *shared.service_status.lock().unwrap() = json!({"revision":policy.revision,"services":toolkit.service_status()});
@@ -3562,9 +3572,10 @@ that delegated it learns the outcome only from a settlement.";
     /// Read-only inline tools (web search/fetch): no runner needed (§6.2);
     /// recovery re-executes them because they are idempotent reads.
     /// `pre_tool`: see [`Driver::execute_shell`] — recovery never re-asks.
-    /// D-470: the hosts this member's live `web` grants allow. Empty means no allowlist; a `session` grant allows
-    /// every domain; `domain:<host>` entries restrict the targets.
-    async fn allowed_web_domains(&self) -> Result<Vec<String>, String> {
+    /// D-470: the resource scopes of this member's live `web` grants. The caller turns them into a
+    /// [`crate::tools::WebPolicy`]; an empty list means the member holds **no** web grant and therefore
+    /// may not use web tools, which is the whole point of `web` being a capability (§5.1).
+    async fn web_grant_scopes(&self) -> Result<Vec<String>, String> {
         let instance = self.config.instance_id.clone();
         self.storage
             .call(move |control| {
@@ -3578,19 +3589,7 @@ that delegated it learns the outcome only from a settlement.";
                 let rows = stmt
                     .query_map([&instance], |row| row.get::<_, String>(0))
                     .map_err(|e| format!("web grant query: {e}"))?;
-                let mut domains = Vec::new();
-                for row in rows {
-                    let scope = row.map_err(|e| format!("web grant row: {e}"))?;
-                    if scope == "session" {
-                        return Ok(Vec::new());
-                    }
-                    if let Some(host) = scope.strip_prefix("domain:") {
-                        if !host.is_empty() {
-                            domains.push(host.to_string());
-                        }
-                    }
-                }
-                Ok(domains)
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("web grant row: {e}"))
             })
             .await?
     }
@@ -3614,8 +3613,11 @@ that delegated it learns the outcome only from a settlement.";
         }
         let toolkit = self.toolkit.clone();
         let op = operation_id.to_string();
-        let domains = self.allowed_web_domains().await?;
-        let mut control = crate::tools::TurnControl::with_domains(domains);
+        // §5.1: `web` is a capability, so the grant scopes decide what this member may reach. No
+        // grant resolves to `WebPolicy::Denied`, which refuses both web tools instead of silently
+        // allowing every host (the inverted behaviour this replaced).
+        let scopes = self.web_grant_scopes().await?;
+        let mut control = crate::tools::TurnControl::with_web_scopes(scopes);
         let edit_record = (name == "edit_file").then(|| control.record_native_edit());
         let receipt = tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &control))
             .await

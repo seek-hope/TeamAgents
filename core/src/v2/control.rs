@@ -666,6 +666,15 @@ fn issue_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     if subject.is_empty() || action.is_empty() || scope.is_empty() {
         return Err("issue_grant: subject/action/resource_scope must not be empty".into());
     }
+    // The same rule `issue_task_grant` already enforced: refuse a row no check will ever consult.
+    // Without it a client that bypasses `teamagents authority` (which does validate) could write
+    // `bogus@whatever` or `web@instance:x`, and the user would believe a permission exists while the
+    // runtime never reads it — the "product trap" `capability`'s module docs warn about.
+    if !crate::v2::capability::authorizes_something(action, scope) {
+        return Err(format!(
+            "issue_grant: no check asks about {action}@{scope}, so this grant would authorize nothing"
+        ));
+    }
     let delegable = params["delegable"].as_bool().unwrap_or(false);
     let task_id = params["task_id"].as_str().map(str::to_string);
     if delegable && !matches!(identity, Identity::User) {
@@ -1292,7 +1301,11 @@ fn send_message(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
             actor.clone()
         }
     };
-    let max_inbox = params["max_inbox"].as_i64().unwrap_or(DEFAULT_MAX_INBOX);
+    // The inbox bound is a backpressure limit the caller may only tighten. An unclamped
+    // caller value was a denial-of-service lever: `max_inbox: 0` makes the test below true for
+    // every message, so the recipient can never be sent anything, and a huge value disables
+    // backpressure entirely. The ceiling is the control plane's own default.
+    let max_inbox = params["max_inbox"].as_i64().unwrap_or(DEFAULT_MAX_INBOX).clamp(1, DEFAULT_MAX_INBOX);
     let queued: i64 = tx
         .query_row("SELECT COUNT(*) FROM envelopes WHERE recipient = ?1 AND state = 'ACCEPTED'", [recipient], |row| {
             row.get(0)

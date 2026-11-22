@@ -36,15 +36,19 @@ pub const TOOL_NAME: &str = "codemode";
 /// A runaway script must not grow the wasm32 heap without bound; QuickJS reports `out of memory` inside the
 /// script when this is crossed (pi's codemode uses the same 256 MiB).
 const MEMORY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
-/// The script's own output is what reaches the context, so it is capped even when the script prints more.
-/// pi's default is 10,000 tokens; a token is estimated at four characters here.
-const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
+/// The script's own output is what reaches the context, so it is bounded by the model's own context
+/// window rather than by an arbitrary small constant: whatever the model can read is fair game for a
+/// script to produce. When the profile does not declare a window, this loose fallback applies instead
+/// of failing or silently shrinking the budget; a token is estimated at four characters here.
+pub const FALLBACK_MAX_OUTPUT_TOKENS: usize = 1_000_000;
 const CHARS_PER_TOKEN: usize = 4;
 /// pi's store limits: one value may be 256 Ki characters of JSON and all values together 1 Mi.
 const MAX_STORE_VALUE_CHARS: usize = 256 * 1024;
 const MAX_STORE_TOTAL_CHARS: usize = 1024 * 1024;
-/// Default hard deadline for one script; a `// @options:` line may override it per call.
-pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+/// One script may run for a long time: the default deadline is **12 hours**, the loose ceiling this
+/// product intends so a model can use the tool to its full extent. A `// @options:` line may shorten it
+/// per call and can never extend it, so the ceiling stays a real bound on one turn's wall clock.
+pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 12 * 60 * 60 * 1000;
 
 /// The user's `pre_tool` veto, as the driver supplies it: `Some(reason)` denies the call.
 pub type Veto = Arc<dyn Fn(&str, &Json) -> Option<String> + Send + Sync>;
@@ -93,7 +97,12 @@ pub struct Codemode {
     pub store: Arc<Mutex<BTreeMap<String, Json>>>,
     /// The user's `pre_tool` veto, asked once per nested call (D-376).
     pub veto: Option<Veto>,
+    /// The ceiling for one script. A `// @options:` line may only shorten it.
     pub timeout_ms: u64,
+    /// The model's own context window in tokens: the budget for what a script may return into the
+    /// context. Supplying the model rather than a small constant is deliberate — the model can read a
+    /// whole window, so a script should be able to fill one. A `// @options:` line may narrow it.
+    pub max_output_tokens: usize,
     /// True when the turn was already interrupted before the script started.
     pub aborted: bool,
 }
@@ -495,8 +504,13 @@ pub(crate) fn run_with_native(
     if body.trim().is_empty() {
         return kind(Kind::Script, "codemode: the script is empty".into());
     }
-    let deadline = Instant::now() + Duration::from_millis(options.timeout_ms.unwrap_or(context.timeout_ms).max(1));
-    let max_output_tokens = options.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
+    // A `// @options:` line may narrow either bound, never widen it: the context supplies the ceiling
+    // (12 hours by default, the model's own window for output), so a script cannot grant itself more
+    // than the turn already has.
+    let timeout_ms = options.timeout_ms.map_or(context.timeout_ms, |asked| asked.min(context.timeout_ms)).max(1);
+    let deadline = Instant::now().checked_add(Duration::from_millis(timeout_ms)).unwrap_or_else(Instant::now);
+    let max_output_tokens =
+        options.max_output_tokens.map_or(context.max_output_tokens, |asked| asked.min(context.max_output_tokens));
     let timed_out = Arc::new(AtomicBool::new(false));
     let runtime = match Runtime::new() {
         Ok(runtime) => runtime,
@@ -745,6 +759,7 @@ mod tests {
                 store: store(),
                 veto: None,
                 timeout_ms: DEFAULT_TIMEOUT_MS,
+                max_output_tokens: FALLBACK_MAX_OUTPUT_TOKENS,
                 aborted: false,
             },
         )
@@ -814,6 +829,7 @@ for line in sys.stdin:
                 store: store(),
                 veto: None,
                 timeout_ms: DEFAULT_TIMEOUT_MS,
+                max_output_tokens: FALLBACK_MAX_OUTPUT_TOKENS,
                 aborted: false,
             },
         );
@@ -846,6 +862,7 @@ for line in sys.stdin:
                 store: store(),
                 veto: Some(veto),
                 timeout_ms: DEFAULT_TIMEOUT_MS,
+                max_output_tokens: FALLBACK_MAX_OUTPUT_TOKENS,
                 aborted: false,
             },
         );
@@ -874,6 +891,7 @@ for line in sys.stdin:
                     store: store.clone(),
                     veto: None,
                     timeout_ms: DEFAULT_TIMEOUT_MS,
+                    max_output_tokens: FALLBACK_MAX_OUTPUT_TOKENS,
                     aborted: false,
                 },
             )

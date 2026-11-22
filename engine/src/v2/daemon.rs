@@ -130,11 +130,14 @@ where
     let supervisor = Arc::new(super::supervisor::start(config.supervisor).await?);
     if let Some(parent) = config.socket.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("socket dir: {e}"))?;
-        // the socket directory is private to this OS user (§9)
+        // the socket directory is private to this OS user (§9). This is not "best effort": every
+        // command a client sends is submitted as `Identity::User`, so a directory other users can
+        // traverse is the whole authorization boundary. Refusing to start is the honest failure.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("cannot restrict the socket directory {} to this user: {e}", parent.display()))?;
         }
     }
     let _ = std::fs::remove_file(&config.socket); // stale socket from a crashed daemon
@@ -145,6 +148,17 @@ where
             return Err(format!("bind {}: {e}", config.socket.display()));
         }
     };
+    // The socket file itself also carries the mode: the bind honours the umask, so a permissive
+    // umask would leave it world-writable even inside a 0700 directory.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&config.socket, std::fs::Permissions::from_mode(0o600)) {
+            supervisor.shutdown_shared().await.ok();
+            let _ = std::fs::remove_file(&config.socket);
+            return Err(format!("cannot restrict the daemon socket {} to this user: {e}", config.socket.display()));
+        }
+    }
     // D-351 (D-191's cadence, decided by D-341): **one** collection sweep at daemon start — the daemon is the
     // process that outlives a driver, so it is the second trigger a root whose last driver never boots again
     // needs, and the decision was explicitly *against* a timer. Its position is the point: it runs after the
@@ -271,6 +285,30 @@ async fn accept_loop(
             Ok(pair) => pair,
             Err(e) => break Err(format!("accept: {e}")),
         };
+        // Defense in depth on top of the 0700 directory and 0600 socket: every command is submitted
+        // as `Identity::User`, so a connection from another uid must never be served even if the
+        // filesystem modes were loosened underneath us (a replaced state root, a copied socket, a
+        // hostile mount). The design targets one machine and one system user, so a peer whose uid is
+        // not ours is refused rather than authenticated.
+        #[cfg(target_os = "linux")]
+        {
+            match stream.peer_cred() {
+                Ok(cred) if cred.uid() == unsafe { libc::geteuid() } => {}
+                Ok(cred) => {
+                    eprintln!(
+                        "teamagents: refusing daemon client uid {} (this daemon serves uid {})",
+                        cred.uid(),
+                        unsafe { libc::geteuid() }
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    // An unreadable credential is not proof of identity.
+                    eprintln!("teamagents: refusing daemon client: cannot read peer credentials: {error}");
+                    continue;
+                }
+            }
+        }
         let (supervisor, session_db, facts, shutdown_in_client) =
             (supervisor.clone(), session_db.clone(), facts.clone(), shutdown.clone());
         clients.spawn(async move {
