@@ -121,7 +121,9 @@ fn directory_refresh_changes_only_new_requests_and_rollback_restores_metadata() 
             .spawn()
             .unwrap(),
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The same startup budget as `cli.rs`'s other daemon waits: a loaded runner needs longer than five
+    // seconds to open the store and reach the accept loop, and this wait is not asserting a product timeout.
+    let deadline = Instant::now() + super::DAEMON_START;
     let mut client = loop {
         if let Ok(c) = Client::connect(&session.join("daemon.sock")) {
             break c;

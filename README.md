@@ -188,6 +188,7 @@ remain open. Runnable checks include `make probe-offline` and separately authori
 | [Verification](verification/REPORT.md) | Formal results and abstraction limits |
 | [Verification guide](verification/README.md) | Current formal material and module index |
 | [Product comparison](docs/PRODUCT-COMPARISON.md) | Current open work and comparison obligations |
+| [Maintenance team](docs/MAINTENANCE.md) | Roles, ownership, evidence per change and escalation |
 | [Tools](tools/README.md) | Current development and verification utilities |
 
 Code, documentation and commit messages are English, except `README.zh-CN.md`. Never put credentials in source,
@@ -201,6 +202,7 @@ prompts, events or logs.
 <!-- maps: docs/CAPABILITIES.md reader=user -->
 <!-- maps: docs/INSTALL.md reader=user -->
 <!-- maps: docs/PRODUCT-COMPARISON.md reader=user -->
+<!-- maps: docs/MAINTENANCE.md reader=developer -->
 <!-- maps: docs/DEVELOPMENT.md reader=developer -->
 <!-- maps: tools/README.md reader=developer -->
 <!-- maps: verification/README.md reader=evidence -->

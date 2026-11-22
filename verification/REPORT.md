@@ -3,9 +3,9 @@
 This report records accepted finite verification evidence and its limits. Property/configuration mappings are
 in [README.md](README.md); reproduction commands are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
-## 0. Gate status (re-run 2026-11-21)
+## 0. Gate status (re-run 2026-11-22)
 
-Material SHA-256: `99c41d68c1767bc3c274383e848ecc4afae59c119037a729a9d34aef821eb3ff`.
+Material SHA-256: `435dc65eff01360fd228abc344271715ea5ccae67123bdaf49fc4dcb3f5cf9e6`.
 
 The maintained targets cover all **63** configurations in **60** positive traversals, all **323** negative controls
 and **79** reachability witnesses. The verified material includes the two-key profile-switch model with an optional
@@ -13,6 +13,13 @@ Worker. SQLite persistence, endpoint selection and HTTP bodies have separate exe
 
 Kani result for the identified inputs: `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
 To compare the checkout with the verified material, run `python3 tools/verification_catalogue.py --source-hash`.
+
+Re-run on 2026-11-22 after `MC_inbox_stale_applied.cfg` was reduced to the one claim it refutes (it used to list
+`AtMostOncePerEnvelope` too, and TLC reported whichever violation its search reached first): `make
+verify-model-counterexamples`, `make verify-witnesses` and `make verify-model-all` all exited 0, with 323/323
+controls refuted unambiguously, 79 witnesses reached and 60/60 positive traversals free of errors and warnings.
+`make verify-kani` was re-run on 2026-11-22 against the current inputs (including `core/src/kernel/types.rs` updated
+for `D-537`), exiting 0 with all 9 harnesses verified (`Complete - 9 successfully verified harnesses, 0 failures, 9 total`).
 
 The catalogue contains **387 configurations across 47 modules**, including one separate incomplete wide
 configuration. Positive inputs share a traversal only when their model, specification and domains match;

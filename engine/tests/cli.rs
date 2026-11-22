@@ -221,7 +221,8 @@ while True:
                 .unwrap(),
         );
         let socket = state.join("daemon.sock");
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + DAEMON_START;
+        while std::time::Instant::now() < deadline {
             if socket.exists() {
                 break;
             }
@@ -307,6 +308,16 @@ impl Drop for Daemon {
         self.stop();
     }
 }
+
+/// How long a test waits for a daemon it started to reach the state the test needs.
+///
+/// A fixed number of 25 ms polls is a wall-clock budget in disguise, and the smallest of them (5 s) was shorter
+/// than a loaded CI runner needs to open the store and reach the accept loop: six tests failed in one run of
+/// `engine/tests/cli.rs` on a daemon that was merely slow (`daemon_stop_stops_the_session_by_its_socket`, the two
+/// configured-limit tests and three others that share the shape). Polling against a deadline keeps the fast path
+/// fast — the probe returns as soon as it holds — while a loaded machine gets the time it actually needs. It is a
+/// harness budget, never a product deadline: a test that asserts a product timeout keeps its own shorter one.
+const DAEMON_START: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Stop the daemon serving `state`, by pid, and report whether one was found.
 ///
@@ -1488,7 +1499,8 @@ fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -1580,7 +1592,8 @@ fn the_daemon_carries_configured_checks_into_the_work() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -1590,7 +1603,8 @@ fn the_daemon_carries_configured_checks_into_the_work() {
     // the work is created at bootstrap: read the stored limits until it lands
     let db = state.join("session.sqlite");
     let mut limits = String::new();
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if let Ok(control) = teamagents_core::v2::Control::open(&db, "test", false) {
             if let Ok(stored) =
                 control
@@ -1778,7 +1792,8 @@ fn cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
     // the instance the daemon drives works in exactly that directory
     let db = state.join("session.sqlite");
     let mut stored = String::new();
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if let Ok(control) = teamagents_core::v2::Control::open(&db, "test", false) {
             if let Ok(value) =
                 control
@@ -2005,7 +2020,8 @@ fn the_instances_list_says_why_an_instance_is_parked() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -2152,7 +2168,8 @@ fn the_daemon_grants_the_leader_the_team_authority() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -2167,7 +2184,8 @@ fn the_daemon_grants_the_leader_the_team_authority() {
     let mut greeting = String::new();
     reader.read_line(&mut greeting).expect("greeting");
     let mut grants = serde_json::Value::Null;
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         writer
             .write_all(
                 format!(
@@ -2240,7 +2258,8 @@ fn an_unbootable_instance_parks_itself_and_the_session_survives() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -2289,7 +2308,8 @@ fn an_unbootable_instance_parks_itself_and_the_session_survives() {
     // it parks with the reason, and the leader's session keeps running
     let mut parked = false;
     let mut reason = String::new();
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         let reply = command("c-check", "checkpoint", serde_json::json!({}));
         let instances = reply["result"]["snapshot"]["instances"].as_array().cloned().unwrap_or_default();
         let leader = instances.iter().find(|entry| entry["id"] == serde_json::json!("i-leader"));
@@ -2423,7 +2443,8 @@ fn the_authority_surface_grants_and_revokes_through_the_daemon() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -2431,7 +2452,8 @@ fn the_authority_surface_grants_and_revokes_through_the_daemon() {
     }
     let mut rpc = Rpc::connect(&socket);
     // wait for the bootstrap (the leader's own grants)
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if rpc.grants().iter().any(|grant| grant["action"] == serde_json::json!("manage")) {
             break;
         }
@@ -2620,7 +2642,8 @@ fn the_work_surface_lists_and_opens_work_scopes_through_the_daemon() {
         .expect("start the daemon");
     let _guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -2628,7 +2651,8 @@ fn the_work_surface_lists_and_opens_work_scopes_through_the_daemon() {
     }
     // wait for the bootstrap's own work
     let mut listed = serde_json::Value::Null;
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         let (code, out, _) = work_scopes(&["work_scopes", "--json"]);
         if code == 0 {
             listed = json(&out);
@@ -2793,7 +2817,8 @@ fn the_surface_verb_reads_back_what_a_request_was_offered() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -2816,7 +2841,8 @@ fn the_surface_verb_reads_back_what_a_request_was_offered() {
     assert_eq!(empty["surfaces"], serde_json::json!([]), "{out}");
     // one input: the provider is unreachable, the turn fails — and the request's record still exists
     let _ = report(&["exec", "say something"]);
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         let (code, out, _) = report(&["surface", "--json"]);
         if code == 0
             && serde_json::from_str::<serde_json::Value>(&out)
@@ -2942,7 +2968,8 @@ fn work_scopes_cancel_closes_a_spent_work_and_the_parked_leader_works_again() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -3091,7 +3118,8 @@ fn a_work_that_cannot_accept_work_is_not_presented_as_in_force() {
         .expect("start the daemon");
     let _guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -3257,7 +3285,8 @@ fn configured_limits_reach_the_work_and_really_bound_the_session() {
     let mut daemon_guard = Daemon(daemon);
     let db = state.join("session.sqlite");
     let mut row = None;
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if let Ok(connection) = teamagents_core::v2::store::open_read_only(&db) {
             row = connection
                 .query_row("SELECT limits_json, deadline FROM work_scopes LIMIT 1", [], |row| {
@@ -3318,7 +3347,8 @@ fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -3326,7 +3356,8 @@ fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
     }
     let mut rpc = Rpc::connect(&socket);
     // wait for the bootstrap: the socket exists before the leader does
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         let checkpoint = rpc.call("checkpoint", serde_json::json!({}));
         if checkpoint["snapshot"]["instances"].as_array().is_some_and(|instances| !instances.is_empty()) {
             break;
@@ -3407,7 +3438,8 @@ fn daemon_stops_gracefully_when_signalled(signal: &str) {
         .spawn()
         .expect("start the daemon");
     let socket = state.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() {
             break;
         }
@@ -3614,7 +3646,8 @@ fn daemon_stop_stops_the_session_by_its_socket() {
             .expect("start the daemon"),
     );
     let socket = state.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() {
             break;
         }
@@ -3867,7 +3900,8 @@ fn sessions_fork_snapshots_a_session_and_refuses_a_live_source() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = base.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -3944,7 +3978,8 @@ fn a_due_automation_opens_one_work_and_does_not_overlap_itself() {
         .expect("start the daemon");
     let mut daemon_guard = Daemon(daemon);
     let socket = state.join("daemon.sock");
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             break;
         }
@@ -3953,7 +3988,8 @@ fn a_due_automation_opens_one_work_and_does_not_overlap_itself() {
     assert!(socket.exists(), "the daemon must listen");
     // wait for the automation to fire (the schedule records the work it opened)
     let mut fired = None;
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + DAEMON_START;
+    while std::time::Instant::now() < deadline {
         let schedule: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(state.join("automations.json")).unwrap()).unwrap();
         if let Some(work) = schedule["automations"][0]["last_work"].as_str() {

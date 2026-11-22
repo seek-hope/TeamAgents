@@ -177,6 +177,7 @@ make pty
 | [验证](verification/REPORT.md) | 形式化结果和抽象边界 |
 | [形式化指南](verification/README.md) | 当前形式化材料与模块索引 |
 | [产品比较](docs/PRODUCT-COMPARISON.md) | 当前未解决工作和比较义务 |
+| [维护团队](docs/MAINTENANCE.md) | 角色、归属、每次改动的证据和升级路径 |
 | [工具](tools/README.md) | 当前开发与验证工具 |
 
 除本文件外，代码、文档和提交信息均使用英文。不得把凭据写入源码、提示词、事件或日志。
