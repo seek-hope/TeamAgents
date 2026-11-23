@@ -26,7 +26,7 @@ Current source inventory: core 212 / engine 566 / tui 148 test targets.
 | Q15 | Authorized work resumes after restart; unknown effects are never blindly replayed | A08, A09, A11, A24: persisted-phase recovery, `OUTCOME_UNKNOWN`, durable operation and runner journals |
 | Q16 | Single-instance behavior must not regress and collaboration should show reproducible gain | A01: local scripted collaboration evidence exists; a general matched held-out outcome/cost comparison remains open |
 | Q17 | Estimate usage before committing a full multi-round budget | A18, `docs/PRODUCT-COMPARISON.md`: token usage is recorded per request/work with known and unknown accounting; billing is removed, so no priced comparison is claimed |
-| Q18 | Old config/session compatibility is not inherently required; migration and cleanup are deliberate | A34, A36: migrations through schema 13 and explicit cleanup are implemented; older writers cannot reopen the migrated store |
+| Q18 | Old config/session compatibility is not inherently required; migration and cleanup are deliberate | A34, A36: migrations through schema 14 and explicit cleanup are implemented; older writers cannot reopen the migrated store |
 | Q19 | Cleanup follows an explicit ownership decision while Git history remains | A36, `tools/README.md`: current tree contains only current source and tools; `tools/` holds executable development and verification utilities |
 
 ## Matrix A01–A36 (per-item evidence)
@@ -68,7 +68,7 @@ Current source inventory: core 212 / engine 566 / tui 148 test targets.
 | A33 | Second daemon, coordinator exclusion and lock recovery | `second_daemon_is_refused_and_shutdown_releases_the_lock`, `V2Coordinator`, D-522 listener/uncertainty guards and explicit-stop refusal checks |
 | A34 | Foreign or wrong-version state-store refusal | `open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_v8_to_the_session_search_tree`, conflict rollback and `V2Store` |
 | A35 | Work deadline | `work_deadline_refuses_new_requests_and_dispatches`, deadline park and cancel/release behavior |
-| A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `engine/tests/session_workspace.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 13 and maintained development tools |
+| A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `engine/tests/session_workspace.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 14 and maintained development tools |
 
 ## Workflow checks
 

@@ -5,7 +5,7 @@ in [README.md](README.md); reproduction commands are in [DEVELOPMENT.md](../docs
 
 ## 0. Gate status (re-run 2026-11-23)
 
-Material SHA-256: `24f704bd4bdbabe65348b40cc996a14c6dcd04d0f78e743be858c5bbf8a2b008`.
+Material SHA-256: `c46585df510feab4db472a96d1afc7d4c85625ccccf4e2692f68267078281d75`.
 
 The maintained targets cover all **63** configurations in **60** positive traversals, all **323** negative controls
 and **79** reachability witnesses. The verified material includes the two-key profile-switch model with an optional
@@ -14,12 +14,16 @@ Worker. SQLite persistence, endpoint selection and HTTP bodies have separate exe
 Kani result for the identified inputs: `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
 To compare the checkout with the verified material, run `python3 tools/verification_catalogue.py --source-hash`.
 
-Re-run on 2026-11-22 after `MC_inbox_stale_applied.cfg` was reduced to the one claim it refutes (it used to list
-`AtMostOncePerEnvelope` too, and TLC reported whichever violation its search reached first): `make
-verify-model-counterexamples`, `make verify-witnesses` and `make verify-model-all` all exited 0, with 323/323
-controls refuted unambiguously, 79 witnesses reached and 60/60 positive traversals free of errors and warnings.
-`make verify-kani` was re-run on 2026-11-23 against the current inputs (including `core/src/kernel/types.rs` updated
-for `D-538`), exiting 0 with all 9 harnesses verified (`Complete - 9 successfully verified harnesses, 0 failures, 9 total`).
+Re-run on 2026-11-23 because the `Makefile` gained two gate steps (`make deny` now runs
+`tools/advisory_ledger.py` and `make hygiene` runs `tools/format_version.py`): `make verify-model-all`,
+`make verify-model-counterexamples`, `make verify-witnesses` and `make verify-kani` all exited 0 against the current
+inputs, with 60/60 positive traversals free of errors and warnings, 323/323 controls refuted unambiguously,
+79 witnesses reached and all 9 Kani harnesses verified (`Complete - 9 successfully verified harnesses, 0 failures,
+9 total`). The change was to the gate wiring, not to a model, a configuration or a harness.
+
+Earlier, on 2026-11-22, `MC_inbox_stale_applied.cfg` was reduced to the one claim it refutes (it used to list
+`AtMostOncePerEnvelope` too, and TLC reported whichever violation its search reached first); that re-run reached the
+same 323/323, 79 and 60/60 counts.
 
 The catalogue contains **387 configurations across 47 modules**, including one separate incomplete wide
 configuration. Positive inputs share a traversal only when their model, specification and domains match;

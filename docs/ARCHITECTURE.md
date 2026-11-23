@@ -14,7 +14,7 @@ flowchart TB
     daemon --> supervisor["Supervisor and instance drivers"]
     supervisor --> storage["Bounded storage worker"]
     storage --> control["Control::submit"]
-    control --> database[("SQLite: schema 13, WAL, FULL")]
+    control --> database[("SQLite: schema 14, WAL, FULL")]
     supervisor --> providers["Model providers"]
     supervisor --> tools["Files / web / Skills / MCP"]
     supervisor --> runners["Host Shell runners"]

@@ -9,6 +9,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 LEDGER = REPO / "docs" / "ACCEPTANCE.md"
@@ -34,6 +35,17 @@ HEADLINES = (
     ("docs/DECISIONS.md", r"^- Current source contains " + TOTAL + r" Rust tests: " + TRIPLE),
     ("docs/PRODUCT-COMPARISON.md", r"^- \*\*" + TOTAL + r" Rust tests\*\*"),
 )
+# `make test-aarch64` runs one engine module subset, so its size is quoted separately in four documents. It
+# drifted once (the documents said 26 while the suite listed 27) and nothing compared them, so these statements
+# are held to Cargo's own list for that selection. Group 1 is the number and group 2 the noun the sentence already
+# uses, so an update rewrites the count without rewording the prose around it.
+TOOL_STATEMENTS = (REPO / "AGENTS.md", REPO / "docs" / "DEVELOPMENT.md",
+                   REPO / "docs" / "PRODUCT-COMPARISON.md", REPO / ".github" / "release-notes.md",
+                   REPO / "docs" / "DECISIONS.md")
+# Both spellings the tree uses: "27 tool tests" and "the 27-tool subset". Group 2 is the separator plus the noun, so
+# an update rewrites the count without rewording the sentence. `\b` keeps "tools/" paths out.
+TOOL_COUNT = re.compile(r"(\d+)([ -]tool\b)")
+TOOL_SELECTION = ("--lib", "tools::tests::")
 
 
 def stale_statements(path, wanted):
@@ -75,6 +87,59 @@ def current_headlines(root, counts, write=False):
     return findings, changed
 
 
+def tool_tests() -> int:
+    """The engine tests `make test-aarch64` runs: Cargo's own list for that selection, without executing them."""
+    try:
+        out = subprocess.run(
+            ["cargo", "test", "--offline", "--manifest-path", "engine/Cargo.toml",
+             *TOOL_SELECTION, "--", "--list"],
+            cwd=REPO, capture_output=True, text=True, check=True).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError) as error:
+        raise SystemExit(f"cannot list the tool-test subset ({error}); run `make build` first") from error
+    return sum(1 for line in out.split("\n") if line.endswith(": test"))
+
+
+def tool_statement_findings(wanted, files=None) -> tuple:
+    """`(statements_read, findings)` for the documents that quote the tool-test count."""
+    read, findings = 0, []
+    for path in (TOOL_STATEMENTS if files is None else files):
+        path = pathlib.Path(path)
+        text = path.read_text(encoding="utf-8")
+        name = path.relative_to(REPO) if path.is_relative_to(REPO) else path
+        matches = TOOL_COUNT.findall(text)
+        if len(matches) != 1:
+            findings.append(f"{name}: expected one stated tool-test count, found {len(matches)}; a statement "
+                            "that disappears is a check that goes quiet (D-221)")
+            continue
+        read += 1
+        if int(matches[0][0]) != wanted:
+            findings.append(f"{name} says {matches[0][0]} tool tests, the suite lists {wanted} for "
+                            f"`make test-aarch64`")
+    return read, findings
+
+
+def self_check() -> int:
+    """The tool-count rule must report a mismatch, a missing statement and a clean document."""
+    assert [match.group(1) for match in TOOL_COUNT.finditer("covers 27 tool tests under emulation")] == ["27"]
+    assert [match.group(1) for match in TOOL_COUNT.finditer("27 tool regressions")] == ["27"]
+    assert [match.group(1) for match in TOOL_COUNT.finditer("runs the 26-tool GNU subset")] == ["26"], \
+        "the hyphenated spelling states the same fact and must be checked too"
+    assert TOOL_COUNT.findall("926 Rust tests") == [], "the crate ledger is not a tool-test statement"
+    assert TOOL_COUNT.findall("`tools/test_counts.py` checks") == [], "a `tools/` path is not a count"
+    with tempfile.TemporaryDirectory(prefix="teamagents-toolcount-") as scratch:
+        root = pathlib.Path(scratch)
+        (root / "ok.md").write_text("covers 27 tool tests, and 926 Rust tests\n")
+        (root / "stale.md").write_text("covers 26 tool tests\n")
+        (root / "absent.md").write_text("covers the tool subset\n")
+        assert tool_statement_findings(27, [root / "ok.md"]) == (1, []), "an agreeing statement passes"
+        read, found = tool_statement_findings(27, [root / "stale.md"])
+        assert read == 1 and len(found) == 1 and "says 26" in found[0], f"drift must be reported: {found}"
+        read, found = tool_statement_findings(27, [root / "absent.md"])
+        assert read == 0 and len(found) == 1 and "expected one" in found[0], f"absence must be reported: {found}"
+    print("tool-count controls passed: agreement, drift and a vanished statement")
+    return 0
+
+
 def counted() -> dict:
     """`{crate: tests}` from the crates' own test lists (exact, and no test body runs)."""
     counts = {}
@@ -94,11 +159,14 @@ def counted() -> dict:
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true", help="update the counts in docs/ACCEPTANCE.md")
+    parser.add_argument("--self-check", action="store_true", help="audit the statement rules against fixtures")
     parser.add_argument("--ledger", default=str(LEDGER), help="the ledger to read (a copy is the control)")
     parser.add_argument("--statement", action="append", default=[], metavar="PATH",
                         help="a document that states the counts, instead of the default two (a copy is the "
                              "control)")
     args = parser.parse_args(argv)
+    if args.self_check:
+        return self_check()
     ledger = pathlib.Path(args.ledger)
     statements = [pathlib.Path(p) for p in args.statement] or list(STATEMENTS)
     check_headlines = ledger.resolve() == LEDGER.resolve() and not args.statement
@@ -158,9 +226,13 @@ def main(argv):
                             "file are read as the baseline too (D-221)")
     for path in [ledger, *statements]:
         findings.extend(stale_statements(path, wanted))
+    tool_total = 0
     if check_headlines:
         headline_findings, _ = current_headlines(REPO, counts)
         findings.extend(headline_findings)
+        tool_total = tool_tests()
+        _, tool_findings = tool_statement_findings(tool_total)
+        findings.extend(tool_findings)
     if findings:
         for finding in findings:
             print(f"FAIL: {finding}")

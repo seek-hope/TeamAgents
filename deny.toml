@@ -1,11 +1,25 @@
 # cargo-deny policy for all three independent crate graphs.
-# Vulnerabilities and unsound releases fail. Unmaintained direct dependencies also fail;
-# transitive maintenance notices are scoped and reviewed in the dated security report.
+# Vulnerabilities and unsound releases fail. Unmaintained crates fail too, including transitive ones: these are
+# three *standalone* graphs with no `[workspace]` table, so `workspace` would match nothing and silently disable
+# the check (it behaved exactly like `none`). The reviewed exceptions are listed per advisory ID below.
 [advisories]
 version = 2
 unsound = "all"
 yanked = "deny"
-unmaintained = "workspace"
+unmaintained = "all"
+# Each entry is an advisory that was read, judged to affect only the rendering path, and kept because no patched
+# release exists. `make deny` also runs tools/advisory_ledger.py, which fails when an ID below stops being
+# reported (stale exemption) or when an unreviewed unmaintained advisory appears (triaged drift).
+ignore = [
+    # bincode 1.3.3, via syntect's dump-load/dump-create: syntax and theme dumps, not user data.
+    "RUSTSEC-2025-0141",
+    # yaml-rust 0.4.5, via syntect's yaml-load: reading bundled .sublime-syntax definitions.
+    "RUSTSEC-2024-0320",
+    # ttf-parser 0.25.1, via fontdb/mermaid-rs-renderer: glyph metrics for diagram text.
+    "RUSTSEC-2026-0192",
+    # chrono 0.4.45, via mermaid-text: the upstream release still depends on chrono ^0.4.
+    "RUSTSEC-2026-0543",
+]
 
 [sources]
 unknown-registry = "deny"

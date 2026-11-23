@@ -38,7 +38,7 @@ configurations across 47 modules**: **63 positive configurations in 60 traversal
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.
 
 `make release-rehearsal` exercises the x86_64 Linux musl archive. `make pty` exercises the TUI in a real terminal.
-`make probe-offline` runs the local product probes. `make test-aarch64` covers 26 tool regressions under GNU user emulation.
+`make probe-offline` runs the local product probes. `make test-aarch64` covers 27 tool regressions under GNU user emulation.
 
 ## Current boundaries
 

@@ -24,6 +24,7 @@ import atexit
 import hashlib
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,19 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-musl"
 # what the workflow puts in the archive, in its own order (D-216 gates that each of these exists)
 ARCHIVE_FILES = ("README.md", "examples/config.toml", "install.sh", "docs", "examples", "AGENTS.md")
+# The schema the source declares. The smoke compares it with the store the installed `init` actually writes, so a
+# bumped constant with unrebumped documents (or the reverse) fails the release path instead of shipping.
+SCHEMA_DECLARATION = "core/src/v2/models.rs"
+SCHEMA_PATTERN = re.compile(r"pub const V2_SCHEMA_VERSION: i64 = (\d+);")
+
+
+def schema_constant() -> int:
+    """The schema version the source declares."""
+    text = (REPO / SCHEMA_DECLARATION).read_text(encoding="utf-8")
+    match = SCHEMA_PATTERN.search(text)
+    if match is None:
+        raise SystemExit(f"{SCHEMA_DECLARATION} no longer declares V2_SCHEMA_VERSION; update this rehearsal")
+    return int(match.group(1))
 
 
 def version_of(crate: str) -> str:
@@ -149,8 +163,28 @@ def main(argv) -> int:
         print(f"FAIL: init prepared no state root under {state_home}: the smoke reached a home outside the "
               "scratch, or init stopped after writing the config")
         return 1
-    print(f"[smoke] installed into {bin_dir}, init wrote {written.relative_to(scratch)} and its state root "
-          f"under {state_home.relative_to(scratch)}")
+    # `init` does write a session store, so the schema the documents state is checkable here. It drifted once
+    # (the constant said 14 while twelve documents said 13) and nothing compared the two, so the artifact that
+    # ships is the right place to bind them.
+    stores = sorted((state_home / "teamagents").rglob("session.sqlite"))
+    if len(stores) != 1:
+        print(f"FAIL: expected one session store under {state_home / 'teamagents'}, found {len(stores)}")
+        return 1
+    store = stores[0]
+    try:
+        import sqlite3
+        with sqlite3.connect(f"file:{store}?mode=ro", uri=True) as db:
+            stamped = int(db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0])
+    except Exception as error:  # noqa: BLE001 - any failure here means the smoke cannot judge the store
+        print(f"FAIL: cannot read the schema version from {store}: {error}")
+        return 1
+    declared = schema_constant()
+    if stamped != declared:
+        print(f"FAIL: the installed store is schema {stamped}, {SCHEMA_DECLARATION} declares {declared}: "
+              "the artifact and the source disagree about the format they ship")
+        return 1
+    print(f"[smoke] installed into {bin_dir}, init wrote {written.relative_to(scratch)} and a schema "
+          f"{stamped} store under {state_home.relative_to(scratch)}")
     if args.keep:
         print(f"kept: {scratch}")
     print(f"the release path rehearsed: {build_version} packages, installs and runs from this tree")

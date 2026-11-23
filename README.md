@@ -6,7 +6,7 @@ TeamAgents is a Rust-native, local-first agent runtime. A Leader works with the 
 to other instances, and persists execution, approvals, context, costs and evidence in one authoritative SQLite
 store per session. The TUI and headless clients share the same daemon and phase machine.
 
-The current format is **database schema 13**, **socket protocol 2** and **work policy 1**.
+The current format is **database schema 14**, **socket protocol 2** and **work policy 1**.
 
 ## Current capabilities
 

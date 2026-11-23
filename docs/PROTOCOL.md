@@ -5,7 +5,7 @@ it: the TUI, `teamagents exec`, the CLI verbs (`instances`, `tasks`, `approvals`
 under `tools/dogfood/`. The design's JSON-lines protocol guarantees
 (handshake, `command_id` dedup, the event watermark); this document lists what it actually carries, generated from
 the two dispatchers in the code. The [visual architecture](ARCHITECTURE.md) relates these methods to state,
-transactions and recovery. Database schema 13, socket protocol 2 and work policy 1 are separate versions.
+transactions and recovery. Database schema 14, socket protocol 2 and work policy 1 are separate versions.
 A checkpoint's `role_models` contains `leader_id`, `leader` (exact key, or null), and `workers`. Workers have mode
 `follow`, `pinned` (with `key`), or `unresolved` after migration. The user command `set_role_model` takes
 `{"role":"leader","model":"KEY"}` (optional `effort`), `{"role":"workers","model":"KEY"}`, or
@@ -82,7 +82,7 @@ they may negotiate protocol 1 or 2 to send only `checkpoint` or `shutdown`, with
 read legacy event streams, submit work or accept future protocol versions. A connection failure is not proof of
 daemon termination unless the socket is missing or refuses a new connection.
 
-MCP's negotiated `2025-06-18` revision is independent of this socket protocol, schema 13 and work policy 1.
+MCP's negotiated `2025-06-18` revision is independent of this socket protocol, schema 14 and work policy 1.
 The CLI and this documented JSON-lines boundary are the integration interfaces. Pin direct Rust library users
 to an exact source revision; there is no separately versioned SDK or extension host. Configured MCP bindings,
 Skills and hooks remain the supported integration mechanisms.

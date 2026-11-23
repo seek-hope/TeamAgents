@@ -42,7 +42,7 @@ make test-aarch64
 This optional local target is a separate CI job. It needs the pinned Rust toolchain's
 `aarch64-unknown-linux-gnu` target, `aarch64-linux-gnu-gcc`, `qemu-aarch64` and the
 `/usr/aarch64-linux-gnu` sysroot (Ubuntu packages `gcc-aarch64-linux-gnu` and `qemu-user`). It runs the existing
-26 tool tests in the release profile, with four build jobs and an explicit QEMU runner, under the leak guard.
+27 tool tests in the release profile, with four build jobs and an explicit QEMU runner, under the leak guard.
 Both test targets audit leaks even after a failed test command; either a test failure or an audit failure
 fails the target.
 Use `CARGO_FLAGS=--locked` when dependencies need downloading. This checks target-ABI behavior; it is not a
@@ -111,7 +111,7 @@ python3 tools/test_counts.py
 
 | Area | Current audit entry points |
 |---|---|
-| Build and document inventory | `tools/build_references.py`, `tools/hygiene_catalogue.py`, `tools/doc_inventory.py` |
+| Build and document inventory | `tools/build_references.py`, `tools/hygiene_catalogue.py`, `tools/doc_inventory.py`, `tools/format_version.py` |
 | Decisions and citations | `tools/decision_citations.py`, `tools/citations.py`, `tools/requirement_trace.py` |
 | User and interface documents | `tools/project_config_claim.py`, `tools/release_artifact.py`, `tools/readme_zh.py`, `tools/doc_flags.py`, `tools/exec_report.py`, `tools/tui_keys.py`, `tools/env_knobs.py`, `tools/markdown_tables.py` |
 | Configuration and control surface | `tools/config_keys.py`, `tools/flag_fields.py`, `tools/command_params.py`, `tools/config_reference.py` |

@@ -47,7 +47,7 @@ make verify-kani
 ```
 Current source inventory: **926 Rust tests** (core 212 / engine 566 / tui 148), **63 positive TLA configurations in 60
 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**, and **387 configurations across 47
-modules**. `make test-aarch64` covers 26 tool tests under GNU user emulation. See `docs/ACCEPTANCE.md`
+modules**. `make test-aarch64` covers 27 tool tests under GNU user emulation. See `docs/ACCEPTANCE.md`
 for scenario coverage and `verification/REPORT.md` for formal scope. Inventory regeneration does not renew test, install or formal evidence.
 
 Real-model evaluation must use the model's native context window and record it with its source. A synthetic small
@@ -57,7 +57,7 @@ window is for scripted regression only.
 
 - Single team-transaction entry: `core/src/v2/control.rs::Control::submit` (ingest, validate, reduce and persist
   in one SQLite transaction). Identity, operation ids and permission revisions come from the control plane.
-- Authoritative state: `core/src/v2/store.rs` with WAL and explicit `synchronous=FULL`; schema 13 and explicit
+- Authoritative state: `core/src/v2/store.rs` with WAL and explicit `synchronous=FULL`; schema 14 and explicit
   migration. In-process callers serialize through `engine/src/v2/storage.rs`.
 - Execution: `engine/src/v2/driver.rs` and `engine/src/v2/supervisor.rs`. Model and tool waits happen outside
   transactions. Shell commands run through `engine/src/jobs`.

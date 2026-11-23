@@ -962,17 +962,16 @@ async fn user_cancel_stops_a_running_job() {
     handle.input("run something long").await.expect("input");
     wait_phase(&handle, "TOOLS_PENDING", 10_000).await;
     tokio::time::sleep(Duration::from_millis(300)).await; // let the job start
-    let cancelled = handle.cancel_operation("d-stub:0").await;
-    // the real operation id is derived from the request id; find it via events
+                                                          // The operation id is derived from the request id, so read it off the dispatch event and cancel *that* id.
+                                                          // Cancelling a guessed id and retrying only when it errored made this test pass whichever way the guess
+                                                          // went, so the request-derived-id path was never actually asserted.
     let events = handle.events(0).await.unwrap();
     let op = events
         .iter()
         .find(|e| e["kind"] == json!("operation_dispatched"))
         .map(|e| e["payload"]["operation_id"].as_str().unwrap_or("").to_string())
         .expect("dispatched op");
-    if cancelled.is_err() {
-        handle.cancel_operation(&op).await.expect("cancel op");
-    }
+    handle.cancel_operation(&op).await.expect("cancel the dispatched operation");
     let event = wait_event(&handle, "operation_completed", 10_000).await;
     assert_eq!(event["payload"]["status"], json!("CANCELLED"));
     handle.shutdown().await.expect("shutdown");
@@ -2987,6 +2986,11 @@ async fn spawn_resolves_the_requested_workspace_policy() {
 /// A crashed driver releases its coordinator lock: the next start on the same
 /// state root must acquire it (the fork/exec window that used to make this fail
 /// is absorbed by `jobs::state_lock`; see D-51).
+///
+/// `crash()` aborts the driver task in-process — it is not process death — so what this proves is that an
+/// aborted driver stops holding the lock before the replacement starts. A real SIGKILL, and the fork/exec
+/// window the old comment named, are not exercised here; `LOCK_WAIT` (engine/src/jobs/mod.rs) also absorbs a
+/// restart that lands in that window, so a lock that merely cleared inside those two seconds would pass too.
 #[tokio::test]
 async fn a_crashed_driver_releases_its_coordinator_lock() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

@@ -6,7 +6,7 @@ TeamAgents 是一个 Rust 原生、本地优先的智能体运行时。Leader �
 实例，并在每个会话的权威 SQLite 存储中持久化执行状态、审批、上下文、用量和证据。TUI 与无界面客户端
 共享同一个 daemon 和阶段机。
 
-当前格式为 **数据库 schema 13**、**socket protocol 2** 和 **work policy 1**。
+当前格式为 **数据库 schema 14**、**socket protocol 2** 和 **work policy 1**。
 
 ## 当前能力
 

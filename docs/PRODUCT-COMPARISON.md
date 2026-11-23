@@ -21,7 +21,7 @@ This is the candidate-work queue, not a record of past experiments. Implemented 
   limits, retention and update policy remain under user control.
 - **926 Rust tests**, 63 positive TLA configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani
   harnesses. The terminal matrix covers five PTY profiles and both graphics modes. The AArch64 target
-  covers 26 tool regressions under GNU user emulation.
+  covers 27 tool regressions under GNU user emulation.
 
 ## Open work
 

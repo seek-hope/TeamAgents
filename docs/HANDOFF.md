@@ -2,7 +2,7 @@
 
 ## Current baseline
 
-TeamAgents uses SQLite schema 13, socket protocol 2 and work policy 1. The user selects a Leader profile
+TeamAgents uses SQLite schema 14, socket protocol 2 and work policy 1. The user selects a Leader profile
 by catalogue key. Workers follow it or share a pinned profile. In the TUI, click Model, choose a
 `model(provider)` row and save. At startup an explicit `--model` takes priority over the saved selection,
 then the user configuration's `default_model`.

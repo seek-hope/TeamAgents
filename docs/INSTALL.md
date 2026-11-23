@@ -12,11 +12,29 @@ engine/target/debug/teamagents doctor
 engine/target/debug/teamagents
 ```
 
-`init` writes a minimal config and preserves an existing one. Set the credential environment variable named by
+`init` writes a minimal config, preserves an existing one, and prepares the state root including an empty
+session store at the current schema version. Set the credential environment variable named by
 your model profile's `api_key_env`; never put credentials in the repository or prompts. `doctor` makes no model
 requests. `doctor environment` discovers tools without executing them.
 
 The binaries are `teamagents` (engine/CLI) and `teamagents-tui`. Use the same build for both.
+
+### Install a published release
+
+`install.sh` is the release bootstrap and ships in every archive. It downloads a release, verifies its SHA-256 and
+installs both binaries into one directory:
+
+```bash
+sh install.sh                      # latest release into ~/.local/bin; no sudo needed
+sh install.sh --version v0.2.0     # a pinned release
+sh install.sh --bin-dir DIR        # another install directory
+sh install.sh --archive FILE       # a local archive with SHA256SUMS beside it (no network)
+```
+
+It leaves an existing installation untouched when verification fails. A private repository needs
+`gh auth login` first. Quit a running TeamAgents before upgrading; the config and sessions are kept.
+`python3 tools/install_check.py` exercises this path end to end against a published release, and its
+`--offline` mode checks only the local refusal.
 
 ## 2. Configuration and state
 
@@ -24,8 +42,10 @@ Defaults:
 
 - Config: `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`
 - Sessions: `${XDG_STATE_HOME:-$HOME/.local/state}/teamagents`
-- Versioned installs: `~/.local/lib/teamagents`
-- Launchers: `~/.local/bin/teamagents` and `~/.local/bin/teamagents-tui`
+- Source builds and `install.sh` write real executables into the chosen `--bin-dir` (default `~/.local/bin`);
+  `teamagents update` keeps the versioned root `~/.local/lib/teamagents` and points those two launchers at it as
+  symlinks. The two schemes are not interchangeable: a directory installed by `install.sh` has no previous
+  version for `update --rollback` to restore.
 
 The starter profile is `leader_main`. Set `default_model` above the first table in the user config to choose another profile for new sessions.
 
@@ -60,7 +80,10 @@ the host. Retired sandbox keys are rejected rather than silently converted into 
 
 `init` does not merge new settings into an existing config; review and edit it explicitly.
 
-Source builds use **schema 13**. The 12→13 migration creates empty workspace snapshot and restore-attempt tables.
+Source builds use **schema 14**. The 13→14 migration drops the `model_requests.pricing_json` and
+`attempts.cost_json` columns that the removed billing readout wrote; token usage is still recorded, so a priced
+estimate is no longer available anywhere rather than being silently reinterpreted. The 12→13 migration creates
+empty workspace snapshot and restore-attempt tables.
 Existing conversation checkpoints continue to work with their original data. The 11→12 step fences off older writers that would ignore session MCP
 restrictions. It creates an empty rewind-point table and allows multiple reviewed envelopes to reference the
 same immutable attachment, preserving existing attachment rows. It does not infer past checkpoints. Untouched
@@ -87,7 +110,8 @@ An older updater may report `staged binary reports "}", expected ...` or reject 
 Use the verified new archive's extracted CLI to run the transition with the same installation paths:
 
 ```bash
-/path/to/extracted/teamagents update --to 0.2.0 --archive /path/to/release.tar.gz \
+/path/to/extracted/teamagents update --to 0.2.0 \
+  --archive ~/Downloads/teamagents-0.2.0-x86_64-unknown-linux-musl.tar.gz \
   --install-root /path/to/versioned-install --bin-dir /path/to/bin --state-root /path/to/session-state
 ```
 

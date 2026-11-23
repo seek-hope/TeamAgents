@@ -57,6 +57,7 @@ check: fmt-check lint test hygiene
 
 deny:
 	@set -eu; for crate in $(CRATES); do cargo deny --manifest-path $$crate/Cargo.toml check advisories sources; done
+	python3 tools/advisory_ledger.py
 
 fmt:
 	@set -eu; for crate in $(CRATES); do cargo fmt --manifest-path $$crate/Cargo.toml; done
@@ -424,6 +425,7 @@ hygiene: language-check
 	python3 tools/config_reference.py
 	python3 tools/dead_code.py
 	python3 tools/doc_inventory.py
+	python3 tools/format_version.py
 	python3 tools/verification_catalogue.py --self-check
 	python3 tools/exec_report.py
 	python3 tools/tui_keys.py

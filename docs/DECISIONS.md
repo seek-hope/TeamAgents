@@ -48,6 +48,8 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Request construction | Borrowed estimation preserves wire content and token-count semantics | D-511 |
 | Tool arguments | Malformed calls fail before approval/dispatch; valid sentinel-key data remains valid | D-518 |
 | Source inventory | Cargo lists determine current counts, not passing-gate claims | D-519 |
+| Format versions | Stated schema/protocol/policy versions and their migration chain are gated against the constants | D-539 |
+| Advisory exceptions | Reviewed `ignore` entries are gated in both directions: a stale exemption and an unreviewed unmaintained advisory both fail | D-540 |
 | File edits | Supplied hash preconditions validate before staging or writes | D-520 |
 | Target ABI | File-open flags use target constants; cross-emulation is not native acceptance | D-521 |
 | Session safety | Listening or uncertain endpoints prevent destructive lifecycle actions | D-522 |
@@ -72,7 +74,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 - `core/src/v2/control.rs::Control::submit` is the single team-transaction entry. Identity, operation IDs,
   permission revisions and event sequence numbers come from control state, not model/client claims.
 - Each session has one SQLite store with WAL and `synchronous=FULL`. Engine writes serialize through a bounded
-  single-writer worker; model/tool waits happen outside transactions. The store uses schema 13 with explicit migration.
+  single-writer worker; model/tool waits happen outside transactions. The store uses schema 14 with explicit migration.
 - Persisted phase and location drive execution. Known results are reused; unknown effects become
   `OUTCOME_UNKNOWN` and are never replayed on a guess.
 - Instance termination is user-only, distinct from interrupt, cancellation, pause, detachment and shutdown.
@@ -342,7 +344,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 - Search-tree coverage includes ordered pairs, 23 controls for every non-`TypeOK` claim and 11 witnesses.
   Executable tests cover Unicode/JSON, SQLite rollback, migration refusal and control walks without displacing
   approval coverage. `TypeOK` is a type claim, not behavioral completeness.
-- `make test-aarch64` runs the 26-tool GNU user-emulation subset. Test targets audit leaks even after test
+- `make test-aarch64` runs the 27-tool GNU user-emulation subset. Test targets audit leaks even after test
   failure, and either failure fails the target. Emulation is not native ARM/kernel/package acceptance.
 - Leak audits bind a run marker to its scratch registry. A marked run attributes processes by the inherited
   marker and directories by its own registry. A missing or malformed binding fails before cleanup. Peer
