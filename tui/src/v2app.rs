@@ -203,18 +203,32 @@ fn filter_models(menu: &mut ProfileMenu, fallback: &[String]) {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ApprovalKind {
+    #[default]
+    Operation,
+    Capability,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalInfo {
+    pub kind: ApprovalKind,
     pub id: String,
     pub operation_id: String,
     pub instance_id: String,
     pub tool: String,
     pub preview: String,
     pub args: String,
+    pub requester: String,
+    pub action: String,
+    pub resource_scope: String,
+    pub task_id: String,
+    pub parent_grant_id: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct WorkInfo {
+    pub id: String,
     pub status: String,
     pub known_total: i64,
     pub unknown: bool,
@@ -295,6 +309,17 @@ pub enum V2Effect {
         approval_id: String,
         decision: &'static str,
     },
+    DecideCapability {
+        request_id: String,
+        decision: &'static str,
+    },
+    CreateWork {
+        work_id: String,
+        instance: String,
+    },
+    CancelWork {
+        work_id: String,
+    },
     SetLifecycle {
         instance: String,
         lifecycle: &'static str,
@@ -333,13 +358,22 @@ const NOTE_CAP: usize = 200;
 /// The reference both `?` and `/help` show. One list, so the cheat-sheet and the help text cannot drift apart.
 pub const HELP_SECTIONS: &[(&str, &[&str])] = &[
     (
+        "Quick start (4 basics)",
+        &[
+            "Enter send · Shift+Enter new line",
+            "@path + Tab attach a workspace file",
+            "Ctrl+M choose AI model (or click [Model])",
+            "Ctrl+K quick menu · Ctrl+C stop reply · Ctrl+Q exit",
+        ],
+    ),
+    (
         "Input editing",
         &[
             "Enter send · Shift+Enter newline",
             "Ctrl+Left/Right / Alt+Left/Right move by word",
-            "Ctrl+B/F move by character · Home/End line edges",
+            "Left/Right move by character · Home/End line edges",
             "Ctrl+W / Alt+Backspace delete previous word",
-            "Ctrl+U/K delete to line start/end · Ctrl+Y restore deletion",
+            "Ctrl+U delete to line start · Ctrl+Y restore deletion",
             "Ctrl+E external editor · Up/Down input history",
         ],
     ),
@@ -424,6 +458,7 @@ pub struct V2App {
     environment: Json,
     pub rewind_preview: Option<Json>,
     pending_input_receipts: HashSet<String>,
+    pending_delivery_ids: HashSet<String>,
     pub entries: Vec<ChatEntry>,
     pub transcript: crate::transcript::Transcript,
     pub graphics: crate::graphics::Graphics,
@@ -463,6 +498,7 @@ pub struct V2App {
     pub approval_detail: Option<crate::overlays::ApprovalDetail>,
     pub confirm: Option<crate::overlays::ConfirmAction>,
     pub chat_search: Option<ChatSearch>,
+    pub pending_search_scroll: Option<usize>,
     pub expanded_entries: HashSet<usize>,
     pub live_sessions: Vec<crate::live_sessions::LiveSession>,
     pub mcp_snapshot: Json,
@@ -495,6 +531,7 @@ impl V2App {
             environment: Json::Null,
             rewind_preview: None,
             pending_input_receipts: HashSet::new(),
+            pending_delivery_ids: HashSet::new(),
             entries: vec![],
             transcript: crate::transcript::Transcript::default(),
             graphics: crate::graphics::Graphics::default(),
@@ -529,6 +566,7 @@ impl V2App {
             approval_detail: None,
             confirm: None,
             chat_search: None,
+            pending_search_scroll: None,
             expanded_entries: HashSet::new(),
             live_sessions: vec![],
             mcp_snapshot: Json::Null,
@@ -564,6 +602,17 @@ impl V2App {
 
     pub fn active_instance(&self) -> Option<&InstanceInfo> {
         self.instances.iter().find(|instance| instance.id == self.team.leader_id)
+    }
+
+    pub fn leader_diagnosis_code(&self) -> Option<&str> {
+        self.work_diagnostics
+            .iter()
+            .find(|(id, _)| id == &self.team.leader_id)
+            .and_then(|(_, diagnostic)| diagnostic["code"].as_str())
+    }
+
+    pub fn pending_input_count(&self) -> usize {
+        self.pending_delivery_ids.union(&self.pending_input_receipts).count()
     }
 
     /// Replace the transient streaming previews from the daemon's `previews` read (§9). Empty text is not stored,
@@ -653,7 +702,7 @@ impl V2App {
     }
 
     /// `?` and `/help` share one reference overlay: shortcuts plus this session's live detail.
-    fn open_help(&mut self) {
+    pub(crate) fn open_help(&mut self) {
         self.help_open = true;
         self.help_scroll = 0;
         self.report = None;
@@ -699,23 +748,25 @@ impl V2App {
     pub fn apply_checkpoint(&mut self, snapshot: Json, watermark: i64) {
         self.environment = snapshot["environment"].clone();
         self.team.checkpoint(&snapshot);
-        for row in snapshot["input_delivery"].as_array().into_iter().flatten() {
-            let Some(envelope) = row["id"].as_str() else { continue };
-            let state = match row["state"].as_str() {
-                Some("APPLIED") => "received into the Leader's context (not a completion verdict)",
-                Some("AFTER_WORK") => "accepted; waiting for the current work to settle",
-                Some("DEFERRED") => "accepted; waiting for the current turn to end",
-                Some("ACCEPTED") => "accepted; queued for the next safe boundary",
-                Some("CANCELLED") => "pending delivery cancelled; no model interruption was requested",
-                Some("SUPERSEDED") => "undelivered: the instance epoch changed",
-                _ => continue,
-            };
-            self.update_input_receipt(
-                envelope,
-                state,
-                false,
-                matches!(row["state"].as_str(), Some("ACCEPTED" | "DEFERRED" | "AFTER_WORK")),
-            );
+        if let Some(rows) = snapshot["input_delivery"].as_array() {
+            self.pending_delivery_ids.clear();
+            for row in rows {
+                let Some(envelope) = row["id"].as_str() else { continue };
+                let pending = matches!(row["state"].as_str(), Some("ACCEPTED" | "DEFERRED" | "AFTER_WORK"));
+                if pending {
+                    self.pending_delivery_ids.insert(envelope.to_string());
+                }
+                let state = match row["state"].as_str() {
+                    Some("APPLIED") => "received into the Leader's context (not a completion verdict)",
+                    Some("AFTER_WORK") => "accepted; waiting for the current work to settle",
+                    Some("DEFERRED") => "accepted; waiting for the current turn to end",
+                    Some("ACCEPTED") => "accepted; queued for the next safe boundary",
+                    Some("CANCELLED") => "pending delivery cancelled; no model interruption was requested",
+                    Some("SUPERSEDED") => "undelivered: the instance epoch changed",
+                    _ => continue,
+                };
+                self.update_input_receipt(envelope, state, false, pending);
+            }
         }
         if self.session_name.is_empty() {
             if let Some(row) = snapshot["sessions"].as_array().into_iter().flatten().find(|row| row["active"] == true) {
@@ -754,6 +805,7 @@ impl V2App {
             }
             let known = &g["known_usage"];
             Some(WorkInfo {
+                id: g["id"].as_str().unwrap_or("").to_string(),
                 status: g["status"].as_str().unwrap_or("").to_string(),
                 known_total: known["total"].as_i64().unwrap_or(0),
                 unknown: g["unknown_usage"].as_i64().unwrap_or(0) != 0,
@@ -990,17 +1042,8 @@ impl V2App {
                     refresh.checkpoint = true;
                     self.note(format!("instance {} created", event["scope"].as_str().unwrap_or("?")));
                 }
-                "input_queued"
-                | "input_cancelled"
-                | "input_edited"
-                | "task_delegated"
-                | "task_started"
-                | "task_completed"
-                | "wait_satisfied"
-                | "inbox_drained"
-                | "capability_requested"
-                | "capability_approved"
-                | "capability_denied" => {
+                "input_queued" | "input_cancelled" | "input_edited" | "task_delegated" | "task_started"
+                | "task_completed" | "wait_satisfied" | "inbox_drained" => {
                     refresh.checkpoint = true;
                 }
                 "task_blocked" => {
@@ -1019,7 +1062,12 @@ impl V2App {
                         payload["reason"].as_str().unwrap_or("")
                     ));
                 }
-                "approval_requested" | "approval_granted" | "approval_denied" => {
+                "approval_requested"
+                | "approval_granted"
+                | "approval_denied"
+                | "capability_requested"
+                | "capability_approved"
+                | "capability_denied" => {
                     refresh.approvals = true;
                     refresh.checkpoint = true;
                 }
@@ -1038,25 +1086,71 @@ impl V2App {
     }
 
     pub fn apply_approvals(&mut self, result: Json) {
-        let selected = self.approvals.get(self.approval_sel).map(|approval| approval.id.clone());
-        self.approvals = result["approvals"]
+        let selected = self.approvals.get(self.approval_sel).map(|approval| (approval.kind, approval.id.clone()));
+        let mut list: Vec<ApprovalInfo> = result["approvals"]
             .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
+            .into_iter()
+            .flatten()
             .map(|a| ApprovalInfo {
+                kind: ApprovalKind::Operation,
                 id: a["id"].as_str().unwrap_or("").to_string(),
                 operation_id: a["operation_id"].as_str().unwrap_or("").to_string(),
                 instance_id: a["instance_id"].as_str().unwrap_or("").to_string(),
                 tool: a["tool"].as_str().unwrap_or("").to_string(),
                 preview: a["preview"].as_str().unwrap_or("").to_string(),
                 args: a["args"].as_str().unwrap_or("").to_string(),
+                requester: String::new(),
+                action: String::new(),
+                resource_scope: String::new(),
+                task_id: String::new(),
+                parent_grant_id: String::new(),
             })
             .collect();
-        let retained = selected.as_ref().and_then(|id| self.approvals.iter().position(|approval| &approval.id == id));
+        for r in result["capability_requests"].as_array().into_iter().flatten() {
+            let id = r["id"].as_str().unwrap_or("").to_string();
+            let requester = r["requester"].as_str().unwrap_or("").to_string();
+            let subject = r["subject"].as_str().unwrap_or("").to_string();
+            let action = r["action"].as_str().unwrap_or("").to_string();
+            let scope = r["resource_scope"].as_str().unwrap_or("").to_string();
+            let task_id = r["task_id"].as_str().unwrap_or("").to_string();
+            let parent_grant_id = r["parent_grant_id"].as_str().unwrap_or("").to_string();
+            let status = r["status"].as_str().unwrap_or("PENDING");
+            let preview = format!(
+                "{action}@{scope} -> {subject}{}",
+                if task_id.is_empty() { String::new() } else { format!(" ({task_id})") }
+            );
+            let args = [
+                format!("Requester: {}", if requester.is_empty() { "-" } else { &requester }),
+                format!("Subject: {}", if subject.is_empty() { "-" } else { &subject }),
+                format!("Action: {}", if action.is_empty() { "-" } else { &action }),
+                format!("Scope: {}", if scope.is_empty() { "-" } else { &scope }),
+                format!("Task: {}", if task_id.is_empty() { "-" } else { &task_id }),
+                format!("Parent grant: {}", if parent_grant_id.is_empty() { "-" } else { &parent_grant_id }),
+                format!("Status: {status}"),
+            ]
+            .join("\n");
+            list.push(ApprovalInfo {
+                kind: ApprovalKind::Capability,
+                id,
+                operation_id: String::new(),
+                instance_id: subject,
+                tool: "capability".into(),
+                preview,
+                args,
+                requester,
+                action,
+                resource_scope: scope,
+                task_id,
+                parent_grant_id,
+            });
+        }
+        self.approvals = list;
+        let retained = selected.as_ref().and_then(|(kind, id)| {
+            self.approvals.iter().position(|approval| approval.kind == *kind && &approval.id == id)
+        });
         self.approval_sel = retained.unwrap_or(0);
         if let Some(detail) = &self.approval_detail {
-            if !self.approvals.iter().any(|a| a.id == detail.approval_id) {
+            if !self.approvals.iter().any(|a| a.kind == detail.kind && a.id == detail.approval_id) {
                 self.approval_detail = None;
             }
         }
@@ -1131,7 +1225,13 @@ impl V2App {
         } else {
             "accepted by the daemon; delivery not yet confirmed"
         };
-        self.update_input_receipt(envelope, state, true, reply["applied"] != true);
+        let pending = reply["applied"] != true;
+        if pending {
+            self.pending_delivery_ids.insert(envelope.to_string());
+        } else {
+            self.pending_delivery_ids.remove(envelope);
+        }
+        self.update_input_receipt(envelope, state, true, pending);
     }
 
     fn update_input_receipt(&mut self, envelope: &str, state: &str, create: bool, pending: bool) {
@@ -1149,6 +1249,7 @@ impl V2App {
             self.pending_input_receipts.insert(envelope.to_string());
         } else {
             self.pending_input_receipts.remove(envelope);
+            self.pending_delivery_ids.remove(envelope);
         }
         self.pending_input_receipts.retain(|id| self.entries.iter().any(|entry| entry.who == format!("input:{id}")));
     }
@@ -1416,6 +1517,7 @@ impl V2App {
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => return self.interrupt(),
                     (KeyCode::Esc, _) => {
                         self.chat_search = None;
+                        self.pending_search_scroll = None;
                         return None;
                     }
                     (KeyCode::Enter, _) => {
@@ -1435,6 +1537,13 @@ impl V2App {
                     }
                     (KeyCode::Down, _) => {
                         self.jump_chat_search(true);
+                        return None;
+                    }
+                    (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                        if let Some(search) = self.chat_search.as_mut() {
+                            search.query.clear();
+                        }
+                        self.update_chat_search();
                         return None;
                     }
                     (KeyCode::Backspace, _) => {
@@ -1464,6 +1573,7 @@ impl V2App {
                             && self.direct_target.is_none() =>
                     {
                         self.chat_search = None;
+                        self.pending_search_scroll = None;
                         return None;
                     }
                     KeyCode::Char('n') if key.modifiers.is_empty() && empty_draft => {
@@ -1482,20 +1592,27 @@ impl V2App {
         }
         if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
+                KeyCode::Char('a') => {
+                    if !self.approvals.is_empty() {
+                        self.focus = Focus::Approvals;
+                    }
+                    return None;
+                }
                 KeyCode::Char('k') => {
                     self.palette = Some(crate::overlays::Palette::open(self));
                     return None;
                 }
                 KeyCode::Char('f') if self.team.view == crate::team::View::Conversation => {
-                    let mut search = self.chat_search.take().unwrap_or_default();
-                    search.editing = true;
-                    self.chat_search = Some(search);
-                    self.update_chat_search();
+                    self.open_chat_search();
                     return None;
                 }
                 KeyCode::Char('s') => return self.open_sessions(),
-                KeyCode::Char('p') if self.focus == Focus::Composer => return self.open_queue(),
-                KeyCode::Char('m') if self.focus == Focus::Composer => return self.open_profile(),
+                KeyCode::Char('p') if matches!(self.focus, Focus::Composer | Focus::Team | Focus::Panel) => {
+                    return self.open_queue();
+                }
+                KeyCode::Char('m') if matches!(self.focus, Focus::Composer | Focus::Team | Focus::Panel) => {
+                    return self.open_profile();
+                }
                 KeyCode::Enter if self.focus == Focus::Composer => return self.open_profile(),
                 KeyCode::Char('q') => {
                     self.quit = true;
@@ -1510,12 +1627,6 @@ impl V2App {
                     return None;
                 }
                 KeyCode::Char('c') => return self.interrupt(),
-                KeyCode::Char('a') => {
-                    if !self.approvals.is_empty() {
-                        self.focus = Focus::Approvals;
-                    }
-                    return None;
-                }
                 _ => {}
             }
         }
@@ -1596,8 +1707,35 @@ impl V2App {
             }
             PaletteAction::SelectTask(idx) => {
                 self.team.selected_task = idx;
+                self.team.tasks_follow_selection = true;
                 self.team.show(crate::team::View::Tasks);
                 self.focus = Focus::Panel;
+                None
+            }
+            PaletteAction::FocusApproval(idx) => {
+                if !self.approvals.is_empty() {
+                    self.approval_sel = idx.min(self.approvals.len() - 1);
+                    self.focus = Focus::Approvals;
+                    if let Some(approval) = self.approvals.get(self.approval_sel) {
+                        self.approval_detail = Some(crate::overlays::ApprovalDetail {
+                            kind: approval.kind,
+                            approval_id: approval.id.clone(),
+                            scroll: 0,
+                        });
+                    }
+                }
+                None
+            }
+            PaletteAction::ResumeMember(id) => {
+                self.confirm = Some(crate::overlays::ConfirmAction::ResumeMember(id));
+                None
+            }
+            PaletteAction::OpenNewWork => {
+                self.confirm = Some(crate::overlays::ConfirmAction::OpenNewWork);
+                None
+            }
+            PaletteAction::CancelWork(id) => {
+                self.confirm = Some(crate::overlays::ConfirmAction::CancelWork(id));
                 None
             }
             PaletteAction::FocusTreeNode(prefix) => {
@@ -1704,6 +1842,11 @@ impl V2App {
             crate::overlays::ConfirmAction::CancelTask(task_id) => {
                 Some(V2Effect::CancelTask { task_id, reason: "cancelled by the user (TUI)".into() })
             }
+            crate::overlays::ConfirmAction::OpenNewWork => Some(V2Effect::CreateWork {
+                work_id: format!("work-{}", &uuid::Uuid::new_v4().to_string()[..8]),
+                instance: self.team.leader_id.clone(),
+            }),
+            crate::overlays::ConfirmAction::CancelWork(work_id) => Some(V2Effect::CancelWork { work_id }),
         }
     }
 
@@ -1715,7 +1858,20 @@ impl V2App {
             crate::overlays::ApprovalDecision::Deny(approval_id) => {
                 Some(V2Effect::Decide { approval_id, decision: "deny" })
             }
+            crate::overlays::ApprovalDecision::ApproveCapability(request_id) => {
+                Some(V2Effect::DecideCapability { request_id, decision: "approve" })
+            }
+            crate::overlays::ApprovalDecision::DenyCapability(request_id) => {
+                Some(V2Effect::DecideCapability { request_id, decision: "deny" })
+            }
         }
+    }
+
+    fn open_chat_search(&mut self) {
+        let mut search = self.chat_search.take().unwrap_or_default();
+        search.editing = true;
+        self.chat_search = Some(search);
+        self.update_chat_search();
     }
 
     pub fn update_chat_search(&mut self) {
@@ -1765,8 +1921,10 @@ impl V2App {
 
     fn scroll_chat_to_search_match(&mut self) {
         let Some(entry_idx) = self.chat_search.as_ref().and_then(|s| s.matches.get(s.current).copied()) else {
+            self.pending_search_scroll = None;
             return;
         };
+        self.pending_search_scroll = Some(entry_idx);
         if let Some((_, range)) = self.transcript.entry_ranges.iter().find(|(ix, _)| *ix == entry_idx) {
             let max_scroll = self.last_chat_lines.saturating_sub(self.last_chat_height);
             let target_start = range.start.saturating_sub(self.last_chat_height / 3);
@@ -1978,8 +2136,11 @@ impl V2App {
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(approval) = self.approvals.get(self.approval_sel) {
-                    self.approval_detail =
-                        Some(crate::overlays::ApprovalDetail { approval_id: approval.id.clone(), scroll: 0 });
+                    self.approval_detail = Some(crate::overlays::ApprovalDetail {
+                        kind: approval.kind,
+                        approval_id: approval.id.clone(),
+                        scroll: 0,
+                    });
                 }
                 None
             }
@@ -1991,7 +2152,10 @@ impl V2App {
 
     fn decide_selected(&mut self, decision: &'static str) -> Option<V2Effect> {
         let approval = self.approvals.get(self.approval_sel)?;
-        Some(V2Effect::Decide { approval_id: approval.id.clone(), decision })
+        Some(match approval.kind {
+            ApprovalKind::Operation => V2Effect::Decide { approval_id: approval.id.clone(), decision },
+            ApprovalKind::Capability => V2Effect::DecideCapability { request_id: approval.id.clone(), decision },
+        })
     }
 
     /// Client commands never become model input, including retired management commands.
@@ -2447,7 +2611,10 @@ impl V2App {
             .iter()
             .find(|instance| instance.lifecycle == "ACTIVE" && instance.phase == "WAITING_CAPABILITY")
         {
-            return format!("{} · waiting for capability approval · teamagents instances", waiting.id);
+            return format!(
+                "{} · waiting for capability approval · Ctrl+A or teamagents authority requests",
+                waiting.id
+            );
         }
         let Some(leader) = self.active_instance() else { return "Connecting to the Leader".into() };
         if leader.lifecycle != "ACTIVE" {
@@ -2463,12 +2630,18 @@ impl V2App {
             match diagnostic["code"].as_str() {
                 Some("needs_input") => {
                     return format!(
-                        "Needs your decision · {} · /help",
+                        "Needs your decision · {}",
                         diagnostic["reason"].as_str().unwrap_or("Reply to the recorded question")
                     )
                 }
-                Some("work_blocked") => return "Work blocked · /help for the saved reason".into(),
-                Some("stopped") => return "Stopped · Enter send · /help for recovery".into(),
+                Some("work_blocked") => {
+                    let reason = diagnostic["reason"].as_str().filter(|s| !s.is_empty());
+                    return match reason {
+                        Some(reason) => format!("Work blocked · {reason} · Ctrl+K new work"),
+                        None => "Work blocked · Ctrl+K new work · /help".into(),
+                    };
+                }
+                Some("stopped") => return "Stopped · Enter send · Ctrl+K recover".into(),
                 _ => {}
             }
         }
@@ -2574,7 +2747,7 @@ impl V2App {
             return "Type filter · Up/Down choose · Enter run · Esc close".into();
         }
         if self.rewind_modal.is_some() {
-            return "Up/Down choose · r chat preview · f file diff · Enter apply · Esc close".into();
+            return "Up/Down choose · c conversation · f file diff · Enter preview/apply · Esc close".into();
         }
         if self.mcp_modal.is_some() {
             return "s start/stop · h hide/expose · r reconnect · Enter refresh · Esc close".into();

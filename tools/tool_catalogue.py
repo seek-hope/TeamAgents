@@ -116,7 +116,7 @@ def tools():
 
 def entry(schema, label):
     function = schema["function"]
-    if function["name"] == "work_checkpoint":
+    if function["name"] in ("checkpoint", "work_checkpoint"):
         label = "`kernel::collaboration_tool_schemas(actions)` (enrolled work; control action)"
     elif function["name"] == "wait":
         label = "`kernel::collaboration_tool_schemas(actions)` (team instances; control action)"
@@ -149,6 +149,20 @@ def section():
 
 
 def main(argv):
+    if "--self-check" in argv:
+        parsed = tools()
+        names = [tool[0] for tool in parsed]
+        expected = [
+            "finish", "history", "checkpoint", "send", "verify", "decide",
+            "delegate", "spawn", "cancel", "wait", "tree", "ls", "read",
+            "write", "edit", "delete", "glob", "grep", "shell", "search",
+            "fetch", "skill", "image", "memory", "mcp_resource",
+        ]
+        assert names == expected, f"unexpected tool catalogue: {names}"
+        checkpoint = next(item for item in parsed if item[0] == "checkpoint")
+        assert "control action" in checkpoint[3], checkpoint
+        print(f"tool catalogue self-check: {len(names)} tools parsed cleanly")
+        return 0
     generated = section()
     if "--write" in argv:
         text = DOC.read_text()

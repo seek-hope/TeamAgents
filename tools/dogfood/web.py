@@ -55,9 +55,9 @@ context_window = 262144
 """,
 }
 
-PUBLIC = "Use the `web_fetch` tool on https://example.com and then reply with the page's title line."
+PUBLIC = "Use the `fetch` tool on https://example.com and then reply with the page's title line."
 PRIVATE = (
-    "This is a test of the `web_fetch` tool's guard. Call `web_fetch` with exactly the url "
+    "This is a test of the `fetch` tool's guard. Call `fetch` with exactly the url "
     "http://127.0.0.1:9/ and then report the tool's own answer verbatim."
 )
 
@@ -129,8 +129,8 @@ def main() -> int:
         failures.append("the fetched page's text never reached the conversation")
     else:
         print("  the public page's body is in the conversation")
-    if not any('"web_fetch"' in entry for entry in entries):
-        failures.append("no `web_fetch` call is in the conversation")
+    if not any('"fetch"' in entry or '"web_fetch"' in entry for entry in entries):
+        failures.append("no `fetch` call is in the conversation")
     if report.get("end") not in {"reply", "completed"} or done.returncode != 0:
         failures.append(f"turn 1 ended {report.get('end')!r} (exit {done.returncode})")
 

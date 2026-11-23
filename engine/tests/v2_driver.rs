@@ -77,9 +77,9 @@ fn two_reads(a: &str, b: &str) -> Json {
     json!({"role": "assistant", "content": "",
     "tool_calls": [
         {"id": "c1", "type": "function",
-         "function": {"name": "read_file", "arguments": json!({"path": a}).to_string()}},
+         "function": {"name": "read", "arguments": json!({"path": a}).to_string()}},
         {"id": "c2", "type": "function",
-         "function": {"name": "read_file", "arguments": json!({"path": b}).to_string()}}
+         "function": {"name": "read", "arguments": json!({"path": b}).to_string()}}
     ]})
 }
 
@@ -317,17 +317,17 @@ impl Provider for RecordingProvider {
     }
 }
 
-/// `read_history` is the built-in readback tool: it pages the stored output of
+/// `history` is the built-in readback tool: it pages the stored output of
 /// an earlier call, covered entries included (A20).
 fn search_tree_call(id: &str, args: Json) -> Json {
     json!({"role":"assistant","content":"",
-           "tool_calls":[{"id":id,"type":"function","function":{"name":"search_tree","arguments":args.to_string()}}]})
+           "tool_calls":[{"id":id,"type":"function","function":{"name":"tree","arguments":args.to_string()}}]})
 }
 
 fn readback_call(id: &str, source: &str) -> Json {
     json!({"role": "assistant", "content": "",
            "tool_calls": [{"id": id, "type": "function",
-                           "function": {"name": "read_history",
+                           "function": {"name": "history",
                                         "arguments": json!({"tool_call_id": source}).to_string()}}]})
 }
 
@@ -887,10 +887,10 @@ async fn recovered_file_dispatch_preserves_intervening_user_edits() {
         Identity::System,
     );
     let args = json!({"path":"fact.txt","content":"session write"});
-    let call = json!({"id":"write","type":"function","function":{"name":"write_file","arguments":args.to_string()}});
+    let call = json!({"id":"write","type":"function","function":{"name":"write","arguments":args.to_string()}});
     submit(
         "import_response",
-        json!({"request_id":"r","decision_id":"d","entry":{"role":"assistant","content":"","tool_calls":[call]},"intents":[{"index":0,"name":"write_file","call_id":"write","args":args}]}),
+        json!({"request_id":"r","decision_id":"d","entry":{"role":"assistant","content":"","tool_calls":[call]},"intents":[{"index":0,"name":"write","call_id":"write","args":args}]}),
         Identity::System,
     );
     assert_eq!(
@@ -1146,7 +1146,7 @@ async fn a_read_only_batch_runs_together_and_keeps_call_order() {
     let mut config = root.config_with(provider);
     config.bindings = vec!["files".into()];
     config.profile.tools.push(json!({"type": "function", "function": {
-        "name": "read_file", "description": "read a file",
+        "name": "read", "description": "read a file",
         "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
     }}));
     let handle = start(config).await.expect("start");
@@ -2532,7 +2532,7 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
     let requests = recorded(&log);
     assert_eq!(requests.len(), 5, "one summary call plus two attempts per turn");
     assert!(request_text(&requests[0]).contains("Behavior policy v2."));
-    assert!(!requests[0]["tool_names"].as_array().unwrap().iter().any(|name| name == "work_checkpoint"));
+    assert!(!requests[0]["tool_names"].as_array().unwrap().iter().any(|name| name == "checkpoint"));
     // the summary call is a plain prompt: no system message, no tools (§7)
     let compaction = &requests[2];
     assert_eq!(compaction["tools"], json!(0));
@@ -2694,7 +2694,7 @@ async fn leader_operates_one_session_tree_through_the_tool_ledger() {
     wait_event_count(&handle, "search_tree_updated", 2, 15_000).await;
     wait_event_count(&handle, "response_imported", 4, 15_000).await;
     let requests = recorded(&log);
-    assert!(requests[0]["tool_names"].as_array().unwrap().iter().any(|name| name == "search_tree"));
+    assert!(requests[0]["tool_names"].as_array().unwrap().iter().any(|name| name == "tree"));
     let mut control = second_control(&root);
     let tree = control
         .submit(cmd("read-tree-tool", "read_search_tree", json!({})), teamagents_core::v2::Identity::User)
@@ -2705,7 +2705,7 @@ async fn leader_operates_one_session_tree_through_the_tool_ledger() {
     let successes: i64 = control
         .connection()
         .query_row(
-            "SELECT COUNT(*) FROM operations WHERE json_extract(intent_json,'$.name')='search_tree' AND status='SUCCEEDED'",
+            "SELECT COUNT(*) FROM operations WHERE json_extract(intent_json,'$.name')='tree' AND status='SUCCEEDED'",
             [],
             |row| row.get(0),
         )
@@ -3140,5 +3140,41 @@ async fn empty_session_does_not_fire_deadline_warning_or_check_briefing_before_i
     let after = handle.events(0).await.unwrap();
     assert!(after.iter().any(|e| e["kind"] == json!("work_deadline_warning")));
     assert!(after.iter().any(|e| e["kind"] == json!("work_checks_briefed")));
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn legacy_tool_names_remain_compatible_through_the_driver() {
+    let root = root("legacy-tools");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let call = |id: &str, name: &str, args: Json| json!({"role":"assistant","content":"","tool_calls":[{"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}}]});
+    let script = vec![
+        Step::Message(call("w1", "write_file", json!({"path":"note.txt","content":"legacy-v1"}))),
+        Step::Message(call("e1", "edit_file", json!({"path":"note.txt","old_string":"v1","new_string":"v2"}))),
+        Step::Message(call("r1", "read_file", json!({"path":"note.txt"}))),
+        Step::Message(call("t1", "search_tree", json!({"action":"show"}))),
+        Step::Message(call("h1", "read_history", json!({"tool_call_id":"r1"}))),
+        Step::Message(call("d1", "decide_approval", json!({"action":"list"}))),
+        Step::Message(finish_call("legacy aliases verified")),
+    ];
+    let (provider, seen) = recording(script);
+    let mut config = root.config_with(provider);
+    config.bindings = vec!["files".into()];
+    config.profile.tools = teamagents_engine::reference::basic_tool_schemas(false, false);
+    let handle = start(config).await.expect("start");
+    handle.input("run legacy tool aliases").await.expect("input");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
+    assert_eq!(std::fs::read_to_string(root.dir.join("ws/note.txt")).unwrap(), "legacy-v2");
+    let requests = recorded(&seen);
+    let final_text = request_text(requests.last().unwrap());
+    assert!(final_text.contains("legacy-v2"), "{final_text}");
+    assert!(final_text.contains("\"approvals\""), "{final_text}");
+    let control = second_control(&root);
+    let succeeded: i64 = control
+        .connection()
+        .query_row("SELECT COUNT(*) FROM operations WHERE status = 'SUCCEEDED'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(succeeded, 6);
+    drop(control);
     handle.shutdown().await.expect("shutdown");
 }

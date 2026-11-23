@@ -1,7 +1,7 @@
 # The tool surface: what a model may be offered
 
 Every model request carries functions the model may call. Execution tools create operations with durable
-receipts (A08/A30); `finish`, `wait` and `work_checkpoint` are transactional control actions with recorded
+receipts (A08/A30); `finish`, `wait` and `checkpoint` are transactional control actions with recorded
 decisions and context. The offered surface is selected in three layers:
 
 * **The profile's tools** — the schemas in `reference::basic_tool_schemas(web, skills)`, which a session starts
@@ -18,10 +18,10 @@ decisions and context. The offered surface is selected in three layers:
   discovered at session start and accessed through codemode's normalized service/tool names, rather than advertised
   as separate model functions. Doctor reports configured services; status reports the live bound surface.
 
-`kernel::builtin_tool_schemas()` is the floor: `finish` and the readback tool are offered to every instance.
+`kernel::builtin_tool_schemas()` is the floor: `finish` and the `history` readback tool are offered to every instance.
 The Leader alone also receives `kernel::search_tree_tool_schema()` for the session exploration tree (D-504);
 its show/apply operations use the durable ledger and never expose member-private history.
-For enrolled work, `work_checkpoint` is a sole control action for progress, questions, blocking and internal
+For enrolled work, `checkpoint` is a sole control action for progress, questions, blocking and internal
 new-work admission. It does not grant capabilities. Behavior instructions encourage exploration and excellent
 results within user intent and scope; harness instructions define scheduling, evidence and stopping.
 
@@ -44,7 +44,7 @@ Finish the current work exactly once. Must be the only tool call in this respons
 | `evidence` | `array` | no | References proving the claims (copy a successful operation_id from current work observations, or cite tool:CALL_ID, operation:OPERATION_ID or task:TASK_ID). |
 | `unverified` | `array` | no | Claims that could not be verified. |
 
-### `read_history`
+### `history`
 
 *Offered by `kernel::builtin_tool_schemas()` (every instance).*
 
@@ -56,7 +56,7 @@ Page through the full stored output of an earlier tool call (ids appear in maske
 | `offset` | `integer` | no | — |
 | `limit` | `integer` | no | — |
 
-### `work_checkpoint`
+### `checkpoint`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (enrolled work; control action).*
 
@@ -85,7 +85,7 @@ Send a message to another instance. Delivery is queued and applied at the recipi
 | `recipient` | `string` | yes | Target instance id. |
 | `text` | `string` | yes | — |
 
-### `verify_work`
+### `verify`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
 
@@ -95,7 +95,7 @@ Verify another instance's claim: run the target work's user-pre-authorized accep
 |---|---|---|---|
 | `work_id` | `string` | yes | The work whose checks you are running. |
 
-### `decide_approval`
+### `decide`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
 
@@ -137,7 +137,7 @@ Create a new instance and atomically register its initial task with the return p
 | `capabilities` | `array` | no | Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A standing grant on the assignee suffices. A live delegable parent grant issues a task-scoped grant immediately; otherwise the instance waits in WAITING_CAPABILITY for approval by the Leader (within its own authority) or the user. |
 | `workspace` | `string` | no | Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository. |
 
-### `cancel_task`
+### `cancel`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
 
@@ -160,7 +160,7 @@ Park this instance until the conditions hold or the timer fires. Must be the onl
 | `conditions` | `array` | yes | — |
 | `timer_seconds` | `number` | no | Optional deadline from now; the wait closes when it fires. |
 
-### `search_tree`
+### `tree`
 
 *Offered by `kernel::search_tree_tool_schema()` (Leader only; D-504).*
 
@@ -182,7 +182,7 @@ List files in your workspace (path defaults to '.').
 |---|---|---|---|
 | `path` | `string` | no | — |
 
-### `read_file`
+### `read`
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
@@ -196,7 +196,7 @@ Read UTF-8 workspace text, your own /artifacts/ files, or your private /tool-out
 | `byte_offset` | `integer` | no | — |
 | `include_sha256` | `boolean` | no | — |
 
-### `write_file`
+### `write`
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
@@ -208,11 +208,11 @@ Write a text file in your workspace, creating parent directories. /artifacts/ is
 | `content` | `string` | yes | — |
 | `expected_sha256` | `string` | no | — |
 
-### `edit_file`
+### `edit`
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Replace one occurrence of old_string, or apply several disjoint edits with `edits`. Ambiguous or overlapping matches fail the whole call unchanged. Pass expected_sha256 (or per-edit expected_sha256) from read_file to reject concurrent changes.
+Replace one occurrence of old_string, or apply several disjoint edits with `edits`. Ambiguous or overlapping matches fail the whole call unchanged. Pass expected_sha256 (or per-edit expected_sha256) from read to reject concurrent changes.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -258,32 +258,32 @@ Search workspace files for a pattern; returns matching lines (max 100).
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Run Bash on the host filesystem and network without per-command approval. Services may survive CLI exit; redirect service stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist per member; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.
+Run Bash on the host filesystem and network without per-command approval. Services may survive CLI exit; redirect service stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist per member; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
 | `command` | `string` | yes | — |
 | `timeout` | `integer` | no | — |
 
-### `web_search`
+### `search`
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Search the web through the bound DeepSeek and/or Exa providers and return ranked, deduplicated results (title, URL, snippet, site, date and authority). provider=auto uses every bound provider; both requires both; deepseek/exa selects one. Partial provider failures are reported in warnings. Use include_content=false first and web_fetch for pages that matter. Identical searches share a 300-second cache.
+Search the web through the bound DeepSeek and/or Exa providers and return ranked, deduplicated results (title, URL, snippet, site, date and authority). provider=auto uses every bound provider; both requires both; deepseek/exa selects one. Partial provider failures are reported in warnings. Use include_content=false first and fetch for pages that matter. Identical searches share a 300-second cache.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
 | `query` | `string` | yes | Short search query (1-128 characters); site:, -site: and quoted phrases are supported. |
 | `max_results` | `integer` | no | Number of results to return (1-50, default 10). |
-| `include_content` | `boolean` | no | Include extracted page content; costs more tokens, so prefer web_fetch for selected pages. |
+| `include_content` | `boolean` | no | Include extracted page content; costs more tokens, so prefer fetch for selected pages. |
 | `ori_question` | `string` | no | The user's original question, which helps the search engine understand intent. |
 | `provider` | `string` | no | auto uses every bound provider; both requires DeepSeek and Exa; deepseek/exa restricts the source. |
 
-### `web_fetch`
+### `fetch`
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Fetch readable page text through bound providers. auto prefers Exa and falls back to DeepSeek on transient errors only. For truncated content, read full_path with read_file starting at next_byte_offset.
+Fetch readable page text through bound providers. auto prefers Exa and falls back to DeepSeek on transient errors only. For truncated content, read full_path with read starting at next_byte_offset.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -304,7 +304,7 @@ Discover and load agent skills. action='search' with query keywords lists matchi
 | `name` | `string` | no | — |
 | `path` | `string` | no | — |
 
-### `view_image`
+### `image`
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 

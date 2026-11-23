@@ -504,8 +504,10 @@ async fn codemode_runs_mcp_tools_and_only_its_output_reaches_the_context() {
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let script = r#"
 const paths = ["input.txt", "absent.txt", ...Array(9).fill("other.txt")];
-const reads = parallelReads(paths.map(path => ({name:"read_file", args:{path,limit:1}})));
+const reads = parallelReads(paths.map(path => ({name:"read", args:{path,limit:1}})));
 if (reads.length !== paths.length || reads.slice(2).some(r => r.value.content !== "other")) throw new Error("incomplete batch");
+const legacy = await tools.read_file({path:"input.txt",limit:1});
+if (legacy.content !== "ping") throw new Error("legacy read_file alias failed");
 const [page, missing, other] = reads;
 if (missing.ok || !missing.error || other.value.content !== "other") throw new Error("wrong batch results");
 const a = await tools.echo_echo({ text: page.value.content.trim(), times: 2 });
@@ -549,10 +551,10 @@ return "filtered";
         .is_some_and(|s| s.starts_with("data:image/png;base64,iVBORw0"))
         && m["content"][0]["text"].as_str().is_some_and(|s| s.contains("9:14"))));
     let calls = result["calls"].as_array().unwrap();
-    assert_eq!(calls.len(), 13);
+    assert_eq!(calls.len(), 14);
     for (path, status) in [("input.txt", "ok"), ("absent.txt", "error"), ("other.txt", "ok")] {
         let hash = teamagents_core::kernel::args_hash(&json!({"path":path,"limit":1}));
-        assert!(calls.iter().any(|c| c["name"] == "read_file" && c["status"] == status && c["args_hash"] == hash));
+        assert!(calls.iter().any(|c| c["name"] == "read" && c["status"] == status && c["args_hash"] == hash));
     }
     assert!(
         !reply.contains("ping ping") && !reply.contains("pong pong"),

@@ -121,6 +121,9 @@ pub struct Team {
     pub tasks_dirty: bool,
     pub tasks_error: Option<String>,
     pub selected_task: usize,
+    pub task_row_ranges: Vec<(usize, std::ops::Range<usize>)>,
+    pub tasks_list_rect: Rect,
+    pub tasks_follow_selection: bool,
     pub activity: VecDeque<String>,
     pub activity_filter_selected: bool,
     last_event: i64,
@@ -155,6 +158,9 @@ impl Default for Team {
             tasks_dirty: true,
             tasks_error: None,
             selected_task: 0,
+            task_row_ranges: vec![],
+            tasks_list_rect: Rect::default(),
+            tasks_follow_selection: false,
             activity: VecDeque::new(),
             activity_filter_selected: false,
             last_event: 0,
@@ -373,6 +379,9 @@ impl Team {
         self.scroll = 0;
         if view == View::Tasks {
             self.tasks_dirty = true;
+            if self.selected_task > 0 {
+                self.tasks_follow_selection = true;
+            }
         } else if view == View::Tree {
             self.tree_dirty = true;
         }
@@ -536,10 +545,12 @@ pub fn key(app: &mut V2App, key: KeyEvent) {
         }
         KeyCode::Up | KeyCode::Char('k') if app.focus == Focus::Panel && app.team.view == View::Tasks => {
             app.team.selected_task = app.team.selected_task.saturating_sub(1);
+            app.team.tasks_follow_selection = true;
         }
         KeyCode::Down | KeyCode::Char('j') if app.focus == Focus::Panel && app.team.view == View::Tasks => {
             let count = app.team.all_tasks.as_ref().unwrap_or(&app.team.tasks).len();
             app.team.selected_task = (app.team.selected_task + 1).min(count.saturating_sub(1));
+            app.team.tasks_follow_selection = true;
         }
         KeyCode::Enter if app.focus == Focus::Panel && app.team.view == View::Tasks => {
             let assignee = app
@@ -1012,6 +1023,60 @@ pub fn activity_filter_rect(area: Rect) -> Option<Rect> {
     Some(Rect::new(inner.x, inner.y, inner.width, 1))
 }
 
+fn format_wait_condition(condition: &Json) -> String {
+    if let Some(s) = condition.as_str() {
+        return s.to_string();
+    }
+    if let Some(obj) = condition.as_object() {
+        match obj.get("kind").and_then(Json::as_str) {
+            Some("task") => {
+                return format!("task {}", obj.get("task_id").and_then(Json::as_str).unwrap_or("?"));
+            }
+            Some("message") => {
+                return match obj.get("from").and_then(Json::as_str) {
+                    Some(from) => format!("message from {from}"),
+                    None => "message".into(),
+                };
+            }
+            Some("operation") => {
+                return format!("operation {}", obj.get("operation_id").and_then(Json::as_str).unwrap_or("?"));
+            }
+            Some("envelope") => {
+                return format!("envelope {}", obj.get("envelope_id").and_then(Json::as_str).unwrap_or("?"));
+            }
+            Some("capability") => {
+                return format!("capability {}", obj.get("request_id").and_then(Json::as_str).unwrap_or("?"));
+            }
+            _ => {
+                let parts: Vec<String> = obj
+                    .iter()
+                    .map(|(k, v)| match v.as_str() {
+                        Some(s) => format!("{k} {s}"),
+                        None => format!("{k} {v}"),
+                    })
+                    .collect();
+                if !parts.is_empty() {
+                    return parts.join(" ");
+                }
+            }
+        }
+    }
+    condition.to_string()
+}
+
+fn format_wait_conditions(conditions: &Json) -> String {
+    if let Some(arr) = conditions.as_array() {
+        if arr.is_empty() {
+            return "none".into();
+        }
+        arr.iter().map(format_wait_condition).collect::<Vec<_>>().join(", ")
+    } else if conditions.is_null() {
+        "unavailable".into()
+    } else {
+        format_wait_condition(conditions)
+    }
+}
+
 fn detail_styled_lines(app: &V2App, target_id: &str) -> Vec<Line<'static>> {
     let Some(row) = app.team.rows.iter().find(|row| row["id"] == target_id) else {
         return vec![Line::styled("No member snapshot available.", secondary())];
@@ -1047,6 +1112,15 @@ fn detail_styled_lines(app: &V2App, target_id: &str) -> Vec<Line<'static>> {
         lines.push(Line::from(vec![
             Span::styled("Worker lifetime: ", secondary()),
             Span::styled(lifetime.to_string(), Style::default().fg(FG)),
+        ]));
+    }
+    if let Some(can_shell) = row["can_run_shell"].as_bool() {
+        lines.push(Line::from(vec![
+            Span::styled("Shell: ", secondary()),
+            Span::styled(
+                if can_shell { "allowed" } else { "not granted" },
+                if can_shell { Style::default().fg(SUCCESS) } else { secondary() },
+            ),
         ]));
     }
     if let Some(reason) = diagnostic["reason"]
@@ -1089,7 +1163,7 @@ fn detail_styled_lines(app: &V2App, target_id: &str) -> Vec<Line<'static>> {
         ]));
         lines.push(Line::from(vec![
             Span::styled("  Conditions: ", secondary()),
-            Span::styled(format!("{}", wait["conditions"]), Style::default().fg(FG)),
+            Span::styled(format_wait_conditions(&wait["conditions"]), Style::default().fg(FG)),
         ]));
     }
     for operation in diagnostic["operations"].as_array().into_iter().flatten() {
@@ -1138,26 +1212,40 @@ fn detail_styled_lines(app: &V2App, target_id: &str) -> Vec<Line<'static>> {
     lines
 }
 
-fn task_styled_lines(app: &mut V2App, has_area: bool) -> Vec<Line<'static>> {
-    app.team.tasks_visible = has_area;
-    let mut lines = vec![Line::styled("Task outcome is not process-stop evidence.", secondary())];
+fn render_tasks_panel(frame: &mut Frame, app: &mut V2App, area: Rect) {
+    app.team.task_row_ranges.clear();
+    if area.is_empty() {
+        app.team.tasks_visible = false;
+        app.team.tasks_list_rect = Rect::default();
+        app.team.lines = 0;
+        app.team.height = 1;
+        return;
+    }
+    app.team.tasks_visible = true;
+    let has_bar = area.width > 2;
+    let content_w = if has_bar { area.width - 1 } else { area.width };
+    app.team.tasks_list_rect = Rect::new(area.x, area.y, content_w, area.height);
+    let mut header = vec![Line::styled("Task outcome is not process-stop evidence.", secondary())];
     if let Some(error) = &app.team.tasks_error {
-        lines.push(Line::styled(format!("Refresh failed; rows may be stale: {error}"), Style::default().fg(ERROR)));
+        header.push(Line::styled(format!("Refresh failed; rows may be stale: {error}"), Style::default().fg(ERROR)));
     }
     let tasks = app.team.all_tasks.as_ref().unwrap_or(&app.team.tasks);
     if app.team.all_tasks.is_none() {
-        lines.push(Line::styled("Loading all tasks; showing open checkpoint rows.", secondary()));
+        header.push(Line::styled("Loading all tasks; showing open checkpoint rows.", secondary()));
     }
     if tasks.is_empty() {
-        lines.push(Line::default());
-        lines.push(Line::styled("No tasks reported.", secondary()));
-        return lines;
+        header.push(Line::default());
+        header.push(Line::styled("No tasks reported.", secondary()));
+        let wrapped: Vec<Line<'static>> =
+            header.iter().flat_map(|line| crate::wrap::wrap_line(line, content_w as usize)).collect();
+        render_wrapped_lines(frame, app, area, wrapped);
+        return;
     }
     let selected_task = app.team.selected_task.min(tasks.len().saturating_sub(1));
     let blocked = tasks.iter().filter(|t| t["status"].as_str() == Some("BLOCKED")).count();
     let running = tasks.iter().filter(|t| t["status"].as_str() == Some("RUNNING")).count();
     let succeeded = tasks.iter().filter(|t| t["status"].as_str() == Some("SUCCEEDED")).count();
-    lines.push(Line::from(vec![
+    header.push(Line::from(vec![
         Span::styled(format!("{} total", tasks.len()), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
         Span::styled(" · ", secondary()),
         Span::styled(
@@ -1172,16 +1260,19 @@ fn task_styled_lines(app: &mut V2App, has_area: bool) -> Vec<Line<'static>> {
             if succeeded > 0 { Style::default().fg(SUCCESS) } else { secondary() },
         ),
     ]));
-    lines.push(Line::default());
+    header.push(Line::default());
+    let mut wrapped: Vec<Line<'static>> =
+        header.iter().flat_map(|line| crate::wrap::wrap_line(line, content_w as usize)).collect();
     for (idx, task) in tasks.iter().enumerate() {
         let tst = task["status"].as_str().unwrap_or("?");
         let id = task["id"].as_str().unwrap_or("?");
         let assignee = task["assignee"].as_str().unwrap_or("?");
         let selected = idx == selected_task && app.focus == Focus::Panel;
+        let mut group = Vec::new();
         if selected {
-            lines.push(Line::styled(format!("> {} {tst}  {id}  → {assignee}", task_glyph(tst)), selection()));
+            group.push(Line::styled(format!("> {} {tst}  {id}  → {assignee}", task_glyph(tst)), selection()));
         } else {
-            lines.push(Line::from(vec![
+            group.push(Line::from(vec![
                 Span::styled(format!("  {} ", task_glyph(tst)), state_style(tst)),
                 Span::styled(format!("{tst}  "), state_style(tst)),
                 Span::styled(id.to_string(), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
@@ -1190,17 +1281,36 @@ fn task_styled_lines(app: &mut V2App, has_area: bool) -> Vec<Line<'static>> {
             ]));
         }
         if let Some(summary) = task["diagnosis"]["summary"].as_str() {
-            lines.push(Line::styled(format!("    {summary}"), Style::default().fg(FG)));
+            group.push(Line::styled(format!("    {summary}"), Style::default().fg(FG)));
         }
         if let Some(reason) = task["diagnosis"]["reason"].as_str() {
-            lines.push(Line::styled(
+            group.push(Line::styled(
                 format!("    Reason: {reason}"),
                 if tst == "BLOCKED" { Style::default().fg(ERROR) } else { secondary() },
             ));
         }
-        lines.push(Line::default());
+        let start = wrapped.len();
+        for line in &group {
+            wrapped.extend(crate::wrap::wrap_line(line, content_w as usize));
+        }
+        let end = wrapped.len();
+        if end > start {
+            app.team.task_row_ranges.push((idx, start..end));
+        }
+        wrapped.push(Line::default());
     }
-    lines
+    if app.team.tasks_follow_selection {
+        let height = area.height as usize;
+        if let Some((_, range)) = app.team.task_row_ranges.iter().find(|(ix, _)| *ix == selected_task) {
+            if range.start < app.team.scroll {
+                app.team.scroll = if selected_task == 0 && range.end <= height { 0 } else { range.start };
+            } else if range.end > app.team.scroll + height {
+                app.team.scroll = range.end.saturating_sub(height).min(range.start);
+            }
+        }
+        app.team.tasks_follow_selection = false;
+    }
+    render_wrapped_lines(frame, app, area, wrapped);
 }
 
 fn activity_styled_lines(app: &V2App) -> Vec<Line<'static>> {
@@ -1280,6 +1390,17 @@ fn render_styled_lines(frame: &mut Frame, app: &mut V2App, area: Rect, lines: Ve
     let content_w = if has_bar { area.width - 1 } else { area.width };
     let wrapped: Vec<Line<'static>> =
         lines.iter().flat_map(|line| crate::wrap::wrap_line(line, content_w as usize)).collect();
+    render_wrapped_lines(frame, app, area, wrapped);
+}
+
+fn render_wrapped_lines(frame: &mut Frame, app: &mut V2App, area: Rect, wrapped: Vec<Line<'static>>) {
+    if area.is_empty() {
+        app.team.lines = 0;
+        app.team.height = 1;
+        return;
+    }
+    let has_bar = area.width > 2;
+    let content_w = if has_bar { area.width - 1 } else { area.width };
     app.team.lines = wrapped.len();
     app.team.height = area.height.max(1) as usize;
     let max_scroll = wrapped.len().saturating_sub(area.height as usize);
@@ -1600,13 +1721,11 @@ pub fn render_panel(frame: &mut Frame, app: &mut V2App, area: Rect, inspect: boo
             inner = Rect::new(inner.x, inner.y.saturating_add(1), inner.width, inner.height.saturating_sub(1));
         }
     }
-    let lines = if inspect {
-        detail_styled_lines(app, &target_id)
-    } else if app.team.view == View::Tasks {
-        task_styled_lines(app, !inner.is_empty())
-    } else {
-        activity_styled_lines(app)
-    };
+    if !inspect && app.team.view == View::Tasks {
+        render_tasks_panel(frame, app, inner);
+        return;
+    }
+    let lines = if inspect { detail_styled_lines(app, &target_id) } else { activity_styled_lines(app) };
     render_styled_lines(frame, app, inner, lines);
 }
 

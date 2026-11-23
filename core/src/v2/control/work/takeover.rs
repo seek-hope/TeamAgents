@@ -6,15 +6,25 @@ use super::*;
 fn read_only(name: &str) -> bool {
     matches!(
         name,
-        "read_file"
+        "read"
+            | "read_file"
             | "read_artifact"
+            | "history"
             | "read_history"
+            | "tree"
             | "search_tree"
+            | "image"
+            | "view_image"
             | "grep"
             | "glob"
             | "skill"
+            | "search"
             | "web_search"
+            | "fetch"
             | "web_fetch"
+            | "cancel_task"
+            | "verify_work"
+            | "decide_approval"
     ) || [
         crate::kernel::SEND_TOOL,
         crate::kernel::SPAWN_TOOL,

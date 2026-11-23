@@ -660,8 +660,9 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
         .and_then(|payload| payload["completion"]["summary"].as_str().map(str::to_string))
         .filter(|text| !text.trim().is_empty());
     let work_scope = work_scope.map(|(id, status, usage, unknown, limits, deadline)| {
-        let _ = id;
-        json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
+        json!({"id": id,
+               "status": status,
+               "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
                "summary": summary,
                "unknown_usage": unknown,
                "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null),
@@ -818,6 +819,26 @@ fn apply_session_work_limits(params: &mut Json, session_limits: &Json) {
             params["deadline"] = json!(teamagents_core::models::now() + (minutes * 60) as f64);
         }
     }
+}
+
+/// Pending capability requests shared by the `approvals` and `grants` read surfaces.
+fn read_pending_capability_requests(conn: &rusqlite::Connection) -> Result<Vec<Json>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, requester, subject, action, resource_scope, task_id, parent_grant_id, status
+             FROM capability_requests WHERE status = 'PENDING' ORDER BY created_at, id",
+        )
+        .map_err(|e| format!("capability requests prepare: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(json!({"id": row.get::<_, String>(0)?, "requester": row.get::<_, String>(1)?,
+                      "subject": row.get::<_, String>(2)?, "action": row.get::<_, String>(3)?,
+                      "resource_scope": row.get::<_, String>(4)?, "task_id": row.get::<_, String>(5)?,
+                      "parent_grant_id": row.get::<_, Option<String>>(6)?,
+                      "status": row.get::<_, String>(7)?}))
+        })
+        .map_err(|e| format!("capability requests query: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("capability requests: {e}"))
 }
 
 fn read_method(
@@ -1086,7 +1107,8 @@ fn read_method(
                                       "tool": intent["name"].as_str().unwrap_or(""), "preview": preview,
                                       "args": pretty_args}));
             }
-            Ok(json!({"approvals": approvals}))
+            let capability_requests = read_pending_capability_requests(conn)?;
+            Ok(json!({"approvals": approvals, "capability_requests": capability_requests}))
         }
         // D-267: every work a session carries, with the instance each is attached to. The checkpoint reports
         // *one* work (the active one, D-266) because every client needs a single "the work"; a user opening the
@@ -1160,23 +1182,7 @@ fn read_method(
                 })
                 .map_err(|e| format!("grants query: {e}"))?;
             let grants: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("grants: {e}"))?;
-            let mut request_stmt = conn
-                .prepare(
-                    "SELECT id, requester, subject, action, resource_scope, task_id, parent_grant_id, status
-                     FROM capability_requests WHERE status = 'PENDING' ORDER BY created_at, id",
-                )
-                .map_err(|e| format!("capability requests prepare: {e}"))?;
-            let request_rows = request_stmt
-                .query_map([], |row| {
-                    Ok(json!({"id": row.get::<_, String>(0)?, "requester": row.get::<_, String>(1)?,
-                              "subject": row.get::<_, String>(2)?, "action": row.get::<_, String>(3)?,
-                              "resource_scope": row.get::<_, String>(4)?, "task_id": row.get::<_, String>(5)?,
-                              "parent_grant_id": row.get::<_, Option<String>>(6)?,
-                              "status": row.get::<_, String>(7)?}))
-                })
-                .map_err(|e| format!("capability requests query: {e}"))?;
-            let capability_requests: Vec<Json> =
-                request_rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("capability requests: {e}"))?;
+            let capability_requests = read_pending_capability_requests(conn)?;
             let revision: i64 = conn
                 .query_row("SELECT value FROM meta WHERE key = 'grant_revision'", [], |row| row.get::<_, String>(0))
                 .ok()

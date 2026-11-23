@@ -1,8 +1,11 @@
 //! D-451: optional pending-input view. Its editor never owns the conversation draft.
-use crate::text::Composer;
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crate::{
+    text::Composer,
+    viewport::{item_at, window},
+};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Margin, Position, Rect},
     style::Style,
     widgets::{Block, Paragraph, Wrap},
     Frame,
@@ -108,26 +111,73 @@ impl Queue {
             return None;
         }
         match key.code {
-            KeyCode::Up => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Down => self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1)),
+            KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1))
+            }
             KeyCode::Char('r') => return Some(Action::List { after: 0 }),
             KeyCode::Char('n') => return self.next_after.map(|after| Action::List { after }),
-            KeyCode::Enter | KeyCode::Delete => {
+            KeyCode::Enter => {
+                self.open_editor(self.selected);
+            }
+            KeyCode::Delete => {
                 let row = self.rows.get(self.selected)?;
                 self.target = Some((row["envelope_id"].as_str()?.into(), row["revision"].as_i64()?));
                 self.error = None;
-                if key.code == KeyCode::Enter {
-                    let mut editor = Composer::new(vec![]);
-                    editor.set_text(row["payload"]["text"].as_str().unwrap_or(""));
-                    self.editor = Some(editor);
-                } else {
-                    self.confirming = true;
-                }
+                self.confirming = true;
             }
             _ => {}
         }
         None
     }
+
+    fn open_editor(&mut self, index: usize) -> bool {
+        let Some(row) = self.rows.get(index) else { return false };
+        let (Some(envelope), Some(revision)) = (row["envelope_id"].as_str(), row["revision"].as_i64()) else {
+            return false;
+        };
+        self.target = Some((envelope.into(), revision));
+        self.error = None;
+        let mut editor = Composer::new(vec![]);
+        editor.set_text(row["payload"]["text"].as_str().unwrap_or(""));
+        self.editor = Some(editor);
+        true
+    }
+
+    pub fn mouse(&mut self, area: Rect, mouse: MouseEvent) -> Option<Action> {
+        if self.editor.is_some() || self.confirming || self.rows.is_empty() {
+            return None;
+        }
+        let rows = layout(area);
+        let body = rows[1];
+        let inner = body.inner(Margin::new(1, 1));
+        let point = Position::new(mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if inner.contains(point) => {
+                if let Some(idx) =
+                    item_at(self.rows.len(), self.selected, inner.height as usize, (point.y - inner.y) as usize)
+                {
+                    if self.selected == idx {
+                        self.open_editor(idx);
+                    } else {
+                        self.selected = idx;
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp if body.contains(point) => {
+                self.selected = self.selected.saturating_sub(1);
+            }
+            MouseEventKind::ScrollDown if body.contains(point) => {
+                self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1));
+            }
+            _ => {}
+        }
+        None
+    }
+}
+
+fn layout(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(3)]).split(area)
 }
 
 pub fn render(frame: &mut Frame, queue: &Queue) {
@@ -138,7 +188,7 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
 
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(3)]).split(area);
+    let rows = layout(area);
     frame.render_widget(
         Paragraph::new("Pending Leader inputs").style(Style::default().fg(CODEX).add_modifier(Modifier::BOLD)),
         rows[0],
@@ -147,13 +197,13 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
         vec![]
     } else {
         let height = rows[1].height.saturating_sub(2) as usize;
-        let start = queue.selected.saturating_sub(height.saturating_sub(1));
+        let (start, count) = window(queue.rows.len(), queue.selected, height);
         let mut lines: Vec<Line> = queue
             .rows
             .iter()
             .enumerate()
             .skip(start)
-            .take(height)
+            .take(count)
             .map(|(i, row)| {
                 let text = row["payload"]["text"].as_str().unwrap_or("");
                 let preview: String = text.chars().take(120).map(|c| if c.is_control() { ' ' } else { c }).collect();
@@ -193,8 +243,8 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
         let height = rows[1].height.saturating_sub(2) as usize;
         if queue.rows.len() > height && inner.width > 1 {
             let max_scroll = queue.rows.len().saturating_sub(height);
-            let start = queue.selected.saturating_sub(height.saturating_sub(1)).min(max_scroll);
-            let mut state = ratatui::widgets::ScrollbarState::new(max_scroll + 1).position(start);
+            let (start, _) = window(queue.rows.len(), queue.selected, height);
+            let mut state = ratatui::widgets::ScrollbarState::new(max_scroll + 1).position(start.min(max_scroll));
             frame.render_stateful_widget(
                 ratatui::widgets::Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
                     .begin_symbol(None)

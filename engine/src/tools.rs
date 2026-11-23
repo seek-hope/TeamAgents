@@ -601,7 +601,7 @@ fn edit_diff(path: &Path, text: &str, at: usize, old: &str, new: &str) -> String
     for (prefix, value) in [("-", old), ("+", new)] {
         for line in value.lines() {
             if diff.len() > 8000 {
-                diff.push_str("[diff truncated; read_file for full content]\n");
+                diff.push_str("[diff truncated; read for full content]\n");
                 return diff;
             }
             diff.push_str(prefix);
@@ -954,8 +954,8 @@ fn workspace_executor_with_control(
                 names.sort();
                 Ok(json!(names.join("\n")))
             }
-            "read_file" => read_page(member_file(&arg("path"))?, args, control),
-            "view_image" => {
+            "read" | "read_file" => read_page(member_file(&arg("path"))?, args, control),
+            "image" | "view_image" => {
                 control.check()?;
                 let key = arg("path");
                 let file = member_file(&key)?;
@@ -967,7 +967,7 @@ fn workspace_executor_with_control(
                 let (file_root, path) = artifacts.read_path(&key)?;
                 read_page(open_member_file(file_root, &path)?, args, control)
             }
-            "write_file" => {
+            "write" | "write_file" => {
                 let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
                 control.check()?;
                 let path = member_path(&arg("path"))?;
@@ -982,7 +982,7 @@ fn workspace_executor_with_control(
                 atomic_write(file_root, lock_dir.as_deref(), &path, content.as_bytes(), expected_hash(args)?, control)?;
                 Ok(json!(format!("wrote {}", path.display())))
             }
-            "edit_file" => {
+            "edit" | "edit_file" => {
                 if args.get("edits").is_some() {
                     return edit_batch(args);
                 }
@@ -1370,7 +1370,7 @@ pub(crate) fn member_executor_with_control(
     let fetcher = fetch::Fetcher::default();
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
     move |tool: &str, args: &Json, control: &TurnControl| match tool {
-        "web_search" => {
+        "search" | "web_search" => {
             let bindings =
                 web.get_or_init(|| web_tools(&catalog, &bindings)).as_ref().map_err(|e| e.clone())?.search.clone();
             if bindings.is_empty() {
@@ -1379,14 +1379,14 @@ pub(crate) fn member_executor_with_control(
             // §5.1: search reaches the whole web, so it needs the same `web` grant `web_fetch` does.
             // Without this a member narrowed to `domain:example.com` could still search anything.
             if !control.web_permitted() {
-                return Err("web_search: this member holds no web grant".into());
+                return Err("search: this member holds no web grant".into());
             }
             let answer = web_search(&bindings, args)?;
             // A domain-restricted policy also filters the hits: a result pointing outside the
             // granted hosts is content the member is not authorized to read.
             Ok(restrict_search_results(answer, control))
         }
-        "web_fetch" => {
+        "fetch" | "web_fetch" => {
             let web = web.get_or_init(|| web_tools(&catalog, &bindings)).as_ref().map_err(Clone::clone)?;
             fetcher.fetch(&web.fetch, args, control, artifacts.output())
         }
@@ -2359,10 +2359,10 @@ impl V2Toolkit {
             .profile_tools
             .iter()
             .filter(|s| match s["function"]["name"].as_str() {
-                Some("ls" | "read_file" | "glob" | "grep") => bindings.iter().any(|b| b == "files"),
+                Some("ls" | "read" | "read_file" | "glob" | "grep") => bindings.iter().any(|b| b == "files"),
                 Some("skill") => bindings.iter().any(|b| b == "skills"),
-                Some("web_search") => !web.search.is_empty(),
-                Some("web_fetch") => !web.fetch.is_empty(),
+                Some("search" | "web_search") => !web.search.is_empty(),
+                Some("fetch" | "web_fetch") => !web.fetch.is_empty(),
                 _ => false,
             })
             .cloned()
@@ -2888,17 +2888,22 @@ mod tests {
             None,
         );
         let denied = TurnControl::default();
-        for (tool, args) in
-            [("web_search", json!({"query": "anything"})), ("web_fetch", json!({"url": "https://93.184.216.34/"}))]
-        {
+        for (tool, args) in [
+            ("search", json!({"query": "anything"})),
+            ("web_search", json!({"query": "anything"})),
+            ("fetch", json!({"url": "https://93.184.216.34/"})),
+            ("web_fetch", json!({"url": "https://93.184.216.34/"})),
+        ] {
             let error = executor(tool, &args, &denied).unwrap_err();
             assert!(error.contains("no web grant"), "{tool} must be refused, got {error}");
         }
         // A session grant lets the same call reach dispatch; the literal public IP keeps the DNS guard
         // off the resolver, so whatever fails next is the request, never the authorization.
         let allowed = TurnControl::with_web_scopes(vec!["session".to_string()]);
-        let reached = executor("web_fetch", &json!({"url": "https://93.184.216.34/"}), &allowed).unwrap_err();
-        assert!(!reached.contains("no web grant"), "a session grant must allow dispatch: {reached}");
+        for tool in ["fetch", "web_fetch"] {
+            let reached = executor(tool, &json!({"url": "https://93.184.216.34/"}), &allowed).unwrap_err();
+            assert!(!reached.contains("no web grant"), "a session grant must allow {tool} dispatch: {reached}");
+        }
         std::env::remove_var("TA_WEB_GATE_KEY");
     }
 
@@ -2944,7 +2949,7 @@ mod tests {
         std::fs::write(root.join("f.txt"), "one two three\n").unwrap();
         let executor = workspace_executor(root.clone(), None);
         let out = executor(
-            "edit_file",
+            "edit",
             &json!({"edits": [
                 {"path": "f.txt", "old_string": "one", "new_string": "ONE"},
                 {"path": "f.txt", "old_string": "three", "new_string": "THREE"}
@@ -2954,7 +2959,7 @@ mod tests {
         assert!(out.as_str().unwrap_or("").contains("2 edit(s)"), "{out}");
         assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), "ONE two THREE\n");
         let err = executor(
-            "edit_file",
+            "edit",
             &json!({"edits": [
                 {"path": "f.txt", "old_string": "ONE two", "new_string": "x"},
                 {"path": "f.txt", "old_string": "two THREE", "new_string": "y"}
@@ -2964,7 +2969,7 @@ mod tests {
         assert!(err.contains("overlap"), "{err}");
         assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), "ONE two THREE\n");
         let err = executor(
-            "edit_file",
+            "edit",
             &json!({"edits": [
                 {"path": "f.txt", "old_string": "ONE", "new_string": "1", "expected_sha256": "0".repeat(64)}
             ]}),
@@ -2976,7 +2981,7 @@ mod tests {
 
     #[test]
     fn batch_edits_reject_malformed_hashes_without_writing_any_file() {
-        for tool in ["edit_file", "edit_files"] {
+        for tool in ["edit", "edit_file", "edit_files"] {
             for bad_hash in [
                 json!(null),
                 json!(123),
@@ -3548,15 +3553,16 @@ mod tests {
             member_executor(root.join("instances/i-leader"), catalog.clone(), files.clone(), Some(leader_art.clone()));
         let worker = member_executor(root.join("instances/i-worker"), catalog, files, Some(worker_art.clone()));
 
-        leader("write_file", &json!({"path": "/artifacts/plan.md", "content": "leader plan"})).unwrap();
+        leader("write", &json!({"path": "/artifacts/plan.md", "content": "leader plan"})).unwrap();
         assert!(leader_art.join("plan.md").is_file(), "the file lands in the member's own directory");
-        assert!(leader("read_file", &json!({"path": "/artifacts/plan.md"})).is_ok(), "the member reads its own");
-        assert!(worker("read_file", &json!({"path": "/artifacts/plan.md"})).is_err(), "a teammate cannot");
+        assert!(leader("read", &json!({"path": "/artifacts/plan.md"})).is_ok(), "the member reads its own");
+        assert!(leader("read_file", &json!({"path": "/artifacts/plan.md"})).is_ok(), "legacy read_file alias works");
+        assert!(worker("read", &json!({"path": "/artifacts/plan.md"})).is_err(), "a teammate cannot");
         assert!(!worker_art.join("plan.md").exists(), "and its own directory never saw it");
 
         // the legacy `/tool-output/` root has no directory in this build: reading it says so instead of
         // resolving the name inside the member's workspace
-        let error = leader("read_file", &json!({"path": "/tool-output/old.log"})).unwrap_err();
+        let error = leader("read", &json!({"path": "/tool-output/old.log"})).unwrap_err();
         assert!(error.contains("no private output directory"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -3571,8 +3577,16 @@ mod tests {
         assert!(resolve_in_root(&root, "../etc/passwd").is_err());
         assert!(resolve_in_root(&root, "/etc/passwd").is_err());
         let executor = workspace_executor(root.clone(), None);
+        assert_eq!(executor("read", &json!({"path": "sub/file.txt"})).unwrap(), json!("hello"));
         assert_eq!(executor("read_file", &json!({"path": "sub/file.txt"})).unwrap(), json!("hello"));
-        assert!(executor("read_file", &json!({"path": "../../etc/hosts"})).is_err());
+        assert!(executor("read", &json!({"path": "../../etc/hosts"})).is_err());
+        executor("write_file", &json!({"path": "sub/legacy.txt", "content": "ok"})).unwrap();
+        executor("edit_file", &json!({"path": "sub/legacy.txt", "old_string": "ok", "new_string": "legacy"})).unwrap();
+        assert_eq!(executor("read", &json!({"path": "sub/legacy.txt"})).unwrap(), json!("legacy"));
+        let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+        std::fs::write(root.join("sub/pic.png"), png).unwrap();
+        assert_eq!(executor("image", &json!({"path": "sub/pic.png"})).unwrap()["media_type"], json!("image/png"));
+        assert_eq!(executor("view_image", &json!({"path": "sub/pic.png"})).unwrap()["media_type"], json!("image/png"));
         let listing = executor("ls", &json!({"path": "."})).unwrap();
         assert!(listing.as_str().unwrap().contains("sub/"), "ls is native and needs no sandbox: {listing}");
         let globbed = executor("glob", &json!({"pattern": "**/*.txt"})).unwrap();
@@ -3760,17 +3774,18 @@ mod tests {
         // web tools resolve their binding from the catalog ("no binding" = no capability)
         let catalog = teamagents_core::models::UserConfig::default();
         let executor = member_executor(std::env::temp_dir(), catalog.clone(), vec![], None);
+        assert!(executor("search", &json!({"query": "q"})).is_err());
         assert!(executor("web_search", &json!({"query": "q"})).is_err());
         // a member that only binds web still needs a configured provider
         let executor = member_executor(std::env::temp_dir(), catalog.clone(), vec!["web".into()], None);
-        assert!(executor("web_search", &json!({"query": "q"})).unwrap_err().contains("not bound"));
+        assert!(executor("search", &json!({"query": "q"})).unwrap_err().contains("not bound"));
         let mut catalog = catalog;
         catalog.tools.insert(
             "web".into(),
             serde_json::from_value(json!({"kind": "web_search", "provider": "unknown"})).unwrap(),
         );
         let executor = member_executor(std::env::temp_dir(), catalog, vec!["web".into()], None);
-        assert!(executor("web_search", &json!({"query": "q"})).unwrap_err().contains("unsupported"));
+        assert!(executor("search", &json!({"query": "q"})).unwrap_err().contains("unsupported"));
 
         let mut fetch_catalog = teamagents_core::models::UserConfig::default();
         fetch_catalog
@@ -3857,11 +3872,17 @@ mod tests {
         );
         let executor = member_executor(std::env::temp_dir(), catalog, vec!["web".into()], None);
         let dispatched =
-            executor("web_search", &json!({"query": "dispatch", "provider": "deepseek", "ori_question": "original"}))
+            executor("search", &json!({"query": "dispatch", "provider": "deepseek", "ori_question": "original"}))
                 .expect("the member executor dispatches its bound search");
+        let legacy_dispatched = executor(
+            "web_search",
+            &json!({"query": "dispatch-legacy", "provider": "deepseek", "ori_question": "original"}),
+        )
+        .expect("legacy web_search alias dispatches its bound search");
         std::env::remove_var("TA_WEB_SEARCH_KEY_SET");
         assert_eq!(dispatched["results"], json!([]));
-        assert_eq!(seen.lock().unwrap().len(), 2);
+        assert_eq!(legacy_dispatched["results"], json!([]));
+        assert_eq!(seen.lock().unwrap().len(), 3);
     }
 
     /// D-167's boot half: a `required = true` `web_search` whose credential is missing fails the member's

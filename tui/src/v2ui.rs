@@ -125,11 +125,182 @@ pub fn approval_at(geo: &V2Geometry, app: &V2App, row: u16, col: u16) -> Option<
     item_at(app.approvals.len(), app.approval_sel, area.height.saturating_sub(2) as usize, index)
 }
 
+fn composer_title(app: &V2App) -> (String, bool) {
+    if let Some(target) = &app.direct_target {
+        (format!("Direct to {} · Esc back to Leader", fit(target, 24)), true)
+    } else {
+        ("Message Leader".to_string(), false)
+    }
+}
+
+fn composer_title_end_x(app: &V2App, composer: Rect) -> u16 {
+    let (title, _) = composer_title(app);
+    let title_w = unicode_width::UnicodeWidthStr::width(title.as_str()) as u16 + 2;
+    composer.x.saturating_add(1).saturating_add(title_w)
+}
+
 fn model_button(composer: Rect) -> Rect {
     if composer.width < 32 || composer.height < 3 {
         return Rect::default();
     }
     Rect::new(composer.right() - 10, composer.y, 7, 1)
+}
+
+fn composer_border_button(composer: Rect, title_end_x: u16, offset_from_model: u16, width: u16) -> Rect {
+    if composer.width < 54 || composer.height < 3 {
+        return Rect::default();
+    }
+    let model = model_button(composer);
+    if model.is_empty() || model.x < offset_from_model {
+        return Rect::default();
+    }
+    let x = model.x - offset_from_model;
+    if x > title_end_x {
+        Rect::new(x, composer.y, width, 1)
+    } else {
+        Rect::default()
+    }
+}
+
+fn help_button(composer: Rect, title_end_x: u16) -> Rect {
+    composer_border_button(composer, title_end_x, 4, 3)
+}
+
+fn menu_button(composer: Rect, title_end_x: u16) -> Rect {
+    composer_border_button(composer, title_end_x, 11, 6)
+}
+
+const WELCOME_STARTERS: [&str; 3] = [
+    "What does this project do?",
+    "Explain the main files and how they fit together",
+    "Find potential bugs or improvements in this project",
+];
+
+#[derive(Clone, Copy)]
+enum WelcomeHitAction {
+    Starter(&'static str),
+    Model,
+    Menu,
+    Help,
+}
+
+struct WelcomeLineHit {
+    doc_line: usize,
+    col_offset: u16,
+    width: u16,
+    action: WelcomeHitAction,
+}
+
+struct WelcomeLayout {
+    lines: Vec<Line<'static>>,
+    hits: Vec<WelcomeLineHit>,
+}
+
+fn welcome_layout(width: usize, height: usize, workspace: Option<&str>) -> WelcomeLayout {
+    let mut lines = Vec::new();
+    let mut hits = Vec::new();
+    lines.extend(crate::wrap::wrap_line(
+        &Line::styled("◆ Welcome to TeamAgents", Style::default().fg(CODEX).add_modifier(Modifier::BOLD)),
+        width,
+    ));
+    lines.extend(crate::wrap::wrap_line(
+        &Line::styled("What would you like to do?", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
+        width,
+    ));
+    if height >= 8 {
+        lines.push(Line::default());
+    }
+    for prompt in WELCOME_STARTERS {
+        let raw = Line::from(vec![
+            Span::styled("› ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(prompt, Style::default().fg(FG)),
+        ]);
+        let wrapped = crate::wrap::wrap_line(&raw, width);
+        for line in wrapped {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let row_w = unicode_width::UnicodeWidthStr::width(text.as_str()).min(u16::MAX as usize) as u16;
+            let doc_line = lines.len();
+            lines.push(line);
+            hits.push(WelcomeLineHit {
+                doc_line,
+                col_offset: 0,
+                width: row_w,
+                action: WelcomeHitAction::Starter(prompt),
+            });
+        }
+    }
+    let tip1 = crate::markdown::plain(
+        "Tips: Enter sends · Shift+Enter new line · @ + Tab attaches a file",
+        width,
+        secondary(),
+    );
+    let tip2_raw = Line::from(vec![
+        Span::styled("Click ", secondary()),
+        Span::styled("[Model]", Style::default().fg(ACCENT)),
+        Span::styled(" to change AI · ", secondary()),
+        Span::styled("[Menu]", Style::default().fg(ACCENT)),
+        Span::styled(" (Ctrl+K) for actions · ", secondary()),
+        Span::styled("[?]", Style::default().fg(ACCENT)),
+        Span::styled(" for help", secondary()),
+    ]);
+    let tip2 = crate::wrap::wrap_line(&tip2_raw, width);
+    if lines.len() + 1 + tip1.len() + tip2.len() <= height {
+        lines.push(Line::default());
+        lines.extend(tip1);
+        for line in tip2 {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let doc_line = lines.len();
+            for (token, action) in [
+                ("[Model]", WelcomeHitAction::Model),
+                ("[Menu]", WelcomeHitAction::Menu),
+                ("[?]", WelcomeHitAction::Help),
+            ] {
+                if let Some(byte_idx) = text.find(token) {
+                    let col_offset =
+                        unicode_width::UnicodeWidthStr::width(&text[..byte_idx]).min(u16::MAX as usize) as u16;
+                    let tok_w = unicode_width::UnicodeWidthStr::width(token).min(u16::MAX as usize) as u16;
+                    hits.push(WelcomeLineHit { doc_line, col_offset, width: tok_w, action });
+                }
+            }
+            lines.push(line);
+        }
+    }
+    if width < 56 {
+        if let Some(workspace) = workspace {
+            let ws_lines = crate::markdown::plain(&format!("Workspace  {workspace}"), width, secondary());
+            if lines.len() + 1 + ws_lines.len() <= height {
+                lines.push(Line::default());
+                lines.extend(ws_lines);
+            }
+        }
+    }
+    WelcomeLayout { lines, hits }
+}
+
+fn welcome_hit_rects(app: &V2App, body: Rect) -> Vec<(Rect, WelcomeHitAction)> {
+    if !(app.entries.is_empty() && app.active_preview().is_none() && app.team.view == crate::team::View::Conversation)
+        || body.is_empty()
+    {
+        return Vec::new();
+    }
+    let width = body.width as usize;
+    let height = body.height as usize;
+    let welcome = welcome_layout(width, height, app.workspace());
+    let (total, view_h) = if app.last_chat_width == width && app.last_chat_lines > 0 {
+        (app.last_chat_lines, app.last_chat_height)
+    } else {
+        (welcome.lines.len(), height.max(1))
+    };
+    let (start, _) = crate::viewport::transcript_window(total, total, view_h, app.chat_scroll);
+    let mut rects = Vec::new();
+    for hit in welcome.hits {
+        if hit.doc_line >= start && hit.doc_line - start < height && hit.col_offset < body.width {
+            let y = body.y + (hit.doc_line - start) as u16;
+            let w = hit.width.min(body.width.saturating_sub(hit.col_offset)).max(1);
+            rects.push((Rect::new(body.x + hit.col_offset, y, w, 1), hit.action));
+        }
+    }
+    rects
 }
 
 struct ModelDialog {
@@ -242,8 +413,8 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
         }
         return None;
     }
-    if app.queue.is_some() {
-        return None;
+    if let Some(queue) = app.queue.as_mut() {
+        return queue.mouse(area, mouse).map(V2Effect::Queue);
     }
     if let Some(menu) = &mut app.profile {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -334,6 +505,15 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
     if clicked && model_button(geo.composer).contains(point) {
         return app.open_profile();
     }
+    let title_end_x = composer_title_end_x(app, geo.composer);
+    if clicked && menu_button(geo.composer, title_end_x).contains(point) {
+        app.palette = Some(crate::overlays::Palette::open(app));
+        return None;
+    }
+    if clicked && help_button(geo.composer, title_end_x).contains(point) {
+        app.open_help();
+        return None;
+    }
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if !geo.sidebar.is_empty()
@@ -353,8 +533,11 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
             } else if let Some(index) = approval_at(&geo, app, mouse.row, mouse.column) {
                 if app.focus == Focus::Approvals && app.approval_sel == index {
                     if let Some(approval) = app.approvals.get(index) {
-                        app.approval_detail =
-                            Some(crate::overlays::ApprovalDetail { approval_id: approval.id.clone(), scroll: 0 });
+                        app.approval_detail = Some(crate::overlays::ApprovalDetail {
+                            kind: approval.kind,
+                            approval_id: approval.id.clone(),
+                            scroll: 0,
+                        });
                     }
                 } else {
                     app.focus = Focus::Approvals;
@@ -523,6 +706,28 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
                             }
                         }
                     }
+                } else if app.team.view == crate::team::View::Tasks && app.team.tasks_list_rect.contains(point) {
+                    let doc_line = app.team.scroll + (point.y - app.team.tasks_list_rect.y) as usize;
+                    if let Some((idx, _)) = app.team.task_row_ranges.iter().find(|(_, range)| range.contains(&doc_line))
+                    {
+                        let idx = *idx;
+                        if app.focus == Focus::Panel && app.team.selected_task == idx {
+                            let assignee = app
+                                .team
+                                .all_tasks
+                                .as_ref()
+                                .unwrap_or(&app.team.tasks)
+                                .get(idx)
+                                .and_then(|t| t["assignee"].as_str())
+                                .map(str::to_string);
+                            if let Some(id) = assignee {
+                                app.team.select(&id);
+                                app.team.show(crate::team::View::Inspect);
+                            }
+                        } else {
+                            app.team.selected_task = idx;
+                        }
+                    }
                 }
                 app.focus = Focus::Panel;
             } else if geo.chat.contains(point) {
@@ -531,6 +736,27 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
                 } else {
                     let body = chat_body_rect(app, geo.chat);
                     if body.contains(point) {
+                        if let Some((_, action)) =
+                            welcome_hit_rects(app, body).into_iter().find(|(rect, _)| rect.contains(point))
+                        {
+                            match action {
+                                WelcomeHitAction::Starter(prompt) => {
+                                    app.composer.set_text(prompt);
+                                    app.flash("Loaded starter prompt · press Enter to send");
+                                    app.focus = Focus::Composer;
+                                    return None;
+                                }
+                                WelcomeHitAction::Model => return app.open_profile(),
+                                WelcomeHitAction::Menu => {
+                                    app.palette = Some(crate::overlays::Palette::open(app));
+                                    return None;
+                                }
+                                WelcomeHitAction::Help => {
+                                    app.open_help();
+                                    return None;
+                                }
+                            }
+                        }
                         let start =
                             app.last_chat_lines.saturating_sub(app.last_chat_height).saturating_sub(app.chat_scroll);
                         let doc_line = start + (mouse.row - body.y) as usize;
@@ -585,6 +811,8 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
     app.team.member_visible = false;
     app.team.tasks_visible = false;
     app.team.tree_visible = false;
+    app.team.tasks_list_rect = Rect::default();
+    app.team.task_row_ranges.clear();
     app.graphics.begin_frame();
     app.graphics.deferred = true;
     render_content(frame, app);
@@ -642,7 +870,7 @@ fn render_content(frame: &mut Frame, app: &mut V2App) {
         palette.render(frame, area);
     }
     if let Some(detail) = &app.approval_detail {
-        let approval = app.approvals.iter().find(|a| a.id == detail.approval_id);
+        let approval = app.approvals.iter().find(|a| a.kind == detail.kind && a.id == detail.approval_id);
         detail.render(frame, approval, area);
     }
     if let Some(confirm) = &app.confirm {
@@ -936,7 +1164,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let width = body.width as usize;
     let preview = app.active_preview().map(str::to_owned);
     let workspace = app.workspace().map(str::to_owned);
-    let base = app.transcript.document_with_expanded(
+    let _ = app.transcript.document_with_expanded(
         &app.entries,
         width,
         Some(if app.expanded_tools { 40 } else { 4 }),
@@ -944,18 +1172,12 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
         Some(&mut app.graphics),
         &app.session_root,
     );
+    let (base, entry_ranges) = app.transcript.cached_document();
     let mut document = crate::graphics::Document::default();
     let lines = &mut document.lines;
     if base.lines.is_empty() && preview.is_none() {
-        lines.push(Line::styled("What would you like to do?", Style::default().fg(CODEX).add_modifier(Modifier::BOLD)));
-        lines.extend(crate::markdown::plain("Type a question below and press Enter.", width, Style::default().fg(FG)));
-        lines.extend(crate::markdown::plain("Try: What does this project do?", width, secondary()));
-        if width < 56 {
-            if let Some(workspace) = &workspace {
-                lines.push(Line::default());
-                lines.extend(crate::markdown::plain(&format!("Workspace  {workspace}"), width, secondary()));
-            }
-        }
+        let welcome = welcome_layout(width, body.height as usize, workspace.as_deref());
+        lines.extend(welcome.lines);
     }
     if let Some(work) = &app.work {
         if work.status != "ACTIVE" {
@@ -1003,7 +1225,15 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     }
     let total = base.lines.len() + document.lines.len();
     let height = body.height as usize;
-    let previous = if app.last_chat_width == width { app.last_chat_lines } else { total };
+    let mut previous = if app.last_chat_width == width { app.last_chat_lines } else { total };
+    if let Some(entry_ix) = app.pending_search_scroll.take() {
+        if let Some((_, range)) = entry_ranges.iter().find(|(ix, _)| *ix == entry_ix) {
+            let max_scroll = total.saturating_sub(height);
+            let target_start = range.start.saturating_sub(height / 3);
+            app.chat_scroll = max_scroll.saturating_sub(target_start).min(max_scroll);
+            previous = total;
+        }
+    }
     let (start, offset) = crate::viewport::transcript_window(total, previous, height, app.chat_scroll);
     app.chat_scroll = offset;
     app.last_chat_lines = total;
@@ -1017,7 +1247,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             let current_range = search
                 .matches
                 .get(search.current)
-                .and_then(|entry_ix| app.transcript.entry_ranges.iter().find(|(ix, _)| ix == entry_ix))
+                .and_then(|entry_ix| entry_ranges.iter().find(|(ix, _)| ix == entry_ix))
                 .map(|(_, r)| r.clone());
             for (row_offset, line) in visible.iter_mut().enumerate() {
                 let doc_line = start + row_offset;
@@ -1149,23 +1379,51 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
         || app.confirm.is_some()
         || app.chat_search.as_ref().is_some_and(|s| s.editing);
     let focused = app.focus == Focus::Composer && !overlay_open;
-    let (title, composer_border) = if let Some(target) = &app.direct_target {
-        (
-            format!("Direct to {} · Esc back to Leader", fit(target, 24)),
-            if focused { Style::default().fg(CODEX).add_modifier(Modifier::BOLD) } else { border(false) },
-        )
+    let (title, is_direct) = composer_title(app);
+    let composer_border = if is_direct {
+        if focused {
+            Style::default().fg(CODEX).add_modifier(Modifier::BOLD)
+        } else {
+            border(false)
+        }
     } else {
-        ("Message Leader".to_string(), border(focused))
+        border(focused)
     };
     let block = panel(title).border_style(composer_border);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let title_end_x = composer_title_end_x(app, area);
+    let menu_rect = menu_button(area, title_end_x);
+    if !menu_rect.is_empty() {
+        frame.render_widget(Paragraph::new("[Menu]").style(Style::default().fg(ACCENT)), menu_rect);
+    }
+    let help_rect = help_button(area, title_end_x);
+    if !help_rect.is_empty() {
+        frame.render_widget(Paragraph::new("[?]").style(Style::default().fg(ACCENT)), help_rect);
+    }
     frame.render_widget(Paragraph::new("[Model]").style(Style::default().fg(ACCENT)), model_button(area));
     let prefix_width = if inner.width >= 4 { 2 } else { 0 };
     let (lines, row, col) = app.composer.visual_lines(inner.width.saturating_sub(prefix_width) as usize);
     let (start, count) = window(lines.len(), row, inner.height as usize);
     if app.composer.text().is_empty() {
-        let placeholder = if app.disconnected { "Reconnecting · draft preserved" } else { "Type a question…" };
+        let placeholder = if app.disconnected {
+            "Reconnecting · draft preserved"
+        } else if app.direct_target.is_some() {
+            "Type a one-shot message to this member…"
+        } else if app.leader_diagnosis_code() == Some("needs_input") {
+            "Reply to the Leader's question…"
+        } else if app.leader_diagnosis_code() == Some("work_blocked") {
+            "Work blocked · Ctrl+K to start a new work…"
+        } else if app.active_instance().is_some_and(|i| i.lifecycle != "ACTIVE") {
+            "Leader paused/parked · Ctrl+K or Team (r) to resume…"
+        } else if app.active_instance().is_some_and(|i| {
+            i.lifecycle == "ACTIVE"
+                && matches!(i.phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING")
+        }) {
+            "Type to queue follow-up (or /later for after work)…"
+        } else {
+            "Type a question…"
+        };
         let mut spans = Vec::new();
         if prefix_width > 0 {
             spans.push(Span::styled("❯ ", Style::default().fg(USER)));
@@ -1192,19 +1450,31 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     if focused && count > 0 && inner.width > prefix_width {
         frame.set_cursor_position((inner.x + prefix_width + col as u16, inner.y + (row - start) as u16));
     }
-    // Model/effort and attachment metadata live in the border, not another permanent status row.
+    // Model/effort, attachment, and queue metadata live in the border, not another permanent status row.
     let bottom = Rect::new(inner.x, area.bottom().saturating_sub(1), inner.width, 1);
-    let attachment = if !app.attachments.paths.is_empty() && bottom.width >= 16 {
-        let text = if bottom.width >= 32 {
-            format!("{} attached · /attach", app.attachments.paths.len())
-        } else {
-            format!("{} @", app.attachments.paths.len())
+    let queued = app.pending_input_count();
+    let attached = app.attachments.paths.len();
+    let left_meta = if (attached > 0 || queued > 0) && bottom.width >= 16 {
+        let text = match (attached > 0, queued > 0) {
+            (true, true) if bottom.width >= 44 => format!("{attached} attached · /attach · {queued} queued · Ctrl+P"),
+            (true, true) if bottom.width >= 28 => format!("{attached}@ · {queued}q · Ctrl+P"),
+            (true, true) => format!("{attached}@ · {queued}q"),
+            (true, false) if bottom.width >= 32 => format!("{attached} attached · /attach"),
+            (true, false) => format!("{attached} @"),
+            (false, true) if bottom.width >= 28 => format!("{queued} queued · Ctrl+P"),
+            (false, true) => format!("{queued}q"),
+            (false, false) => unreachable!(),
         };
-        Some(fit(&text, (bottom.width as usize / 3).min(24)))
+        let cap = if attached > 0 && queued > 0 {
+            (bottom.width as usize / 2).min(42)
+        } else {
+            (bottom.width as usize / 3).min(24)
+        };
+        Some(fit(&text, cap))
     } else {
         None
     };
-    let reserved = attachment.as_ref().map_or(0, |text| unicode_width::UnicodeWidthStr::width(text.as_str()) + 2);
+    let reserved = left_meta.as_ref().map_or(0, |text| unicode_width::UnicodeWidthStr::width(text.as_str()) + 2);
     if let Some(leader) = app.active_instance() {
         if !leader.model.is_empty() && bottom.width as usize > reserved + 10 {
             let label = app.member_model_label(&leader.id, &leader.model);
@@ -1216,7 +1486,7 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
             );
         }
     }
-    if let Some(label) = attachment {
+    if let Some(label) = left_meta {
         frame.render_widget(Paragraph::new(Line::from(Span::styled(label, Style::default().fg(ACCENT)))), bottom);
     }
 }

@@ -324,8 +324,14 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
                 }
                 Err(e) => {
                     app.composer.set_text(&if after_work { format!("/later {text}") } else { text });
-                    app.submit_failed(&e);
-                    app.command_note("No send acknowledgement: delivery may have succeeded. The draft is restored; retrying it unchanged reuses its input identity. Inspect Ctrl+P/history before changing it.");
+                    if client.disconnected {
+                        app.submit_failed(&e);
+                        app.command_note("No send acknowledgement: delivery may have succeeded. The draft is restored; retrying it unchanged reuses its input identity. Inspect Ctrl+P/history before changing it.");
+                    } else if e.contains("blocked or cancelled") {
+                        app.submit_failed(&format!("{e} (Ctrl+K -> Start new work scope)"));
+                    } else {
+                        app.submit_failed(&e);
+                    }
                 }
             }
         }
@@ -338,6 +344,43 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
             match result {
                 Ok(_) => v2_refresh_approvals(client, app),
                 Err(e) => app.decide_failed(&e),
+            }
+        }
+        V2Effect::DecideCapability { request_id, decision } => {
+            let method = if decision == "approve" { "approve_capability" } else { "deny_capability" };
+            let result = client.command(
+                &format!("decide-cap-{request_id}-{decision}"),
+                method,
+                json!({"request_id": request_id}),
+            );
+            match result {
+                Ok(_) => {
+                    v2_refresh_approvals(client, app);
+                    v2_sync_checkpoint(client, app);
+                }
+                Err(e) => app.decide_failed(&e),
+            }
+        }
+        V2Effect::CreateWork { work_id, instance } => {
+            match client.command(
+                &format!("work-open-{work_id}"),
+                "create_work",
+                json!({"id": work_id, "instance_id": instance}),
+            ) {
+                Ok(_) => {
+                    app.flash(format!("Started new work {work_id}."));
+                    v2_sync_checkpoint(client, app);
+                }
+                Err(e) => app.command_failed(&e),
+            }
+        }
+        V2Effect::CancelWork { work_id } => {
+            match client.command(&format!("work-cancel-{work_id}"), "cancel_work", json!({"work_id": work_id})) {
+                Ok(_) => {
+                    app.flash(format!("Cancelled work {work_id}."));
+                    v2_sync_checkpoint(client, app);
+                }
+                Err(e) => app.command_failed(&e),
             }
         }
         V2Effect::SetLifecycle { instance, lifecycle, reason } => {
@@ -540,7 +583,21 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
             Ok(reply) => {
                 if app.mcp_modal.is_some() {
                     if let Some(modal) = app.mcp_modal.as_mut() {
-                        modal.note = Some(format!("Requested {action} on {service}: {reply}"));
+                        let running = reply["desired"]["running"].as_bool().or_else(|| reply["running"].as_bool());
+                        let exposed = reply["desired"]["exposed"].as_bool().or_else(|| reply["exposed"].as_bool());
+                        let revision = reply["revision"].as_i64();
+                        let mut parts = Vec::new();
+                        if let Some(r) = running {
+                            parts.push(if r { "running" } else { "stopped" }.to_string());
+                        }
+                        if let Some(e) = exposed {
+                            parts.push(if e { "exposed" } else { "hidden" }.to_string());
+                        }
+                        if let Some(rev) = revision {
+                            parts.push(format!("rev {rev}"));
+                        }
+                        let summary = if parts.is_empty() { "updated".to_string() } else { parts.join(" · ") };
+                        modal.note = Some(format!("{service}: {action} -> {summary}"));
                     }
                     v2_sync_checkpoint(client, app);
                 } else {

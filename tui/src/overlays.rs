@@ -3,7 +3,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
-    layout::{Alignment, Constraint, Layout, Margin, Position, Rect},
+    layout::{Alignment, Margin, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
@@ -15,7 +15,7 @@ use crate::{
     sessions::SessionRow,
     team,
     theme::*,
-    v2app::{ApprovalInfo, V2App},
+    v2app::{ApprovalInfo, ApprovalKind, V2App},
     v2ui::{fit, hint_line, panel, selection},
     viewport::{item_at, window},
 };
@@ -83,6 +83,10 @@ pub enum PaletteAction {
     SelectTask(usize),
     FocusTreeNode(String),
     OpenSession(SessionRow),
+    FocusApproval(usize),
+    ResumeMember(String),
+    OpenNewWork,
+    CancelWork(String),
     OpenRewind,
     OpenMcp,
     OpenModel,
@@ -100,6 +104,7 @@ struct PaletteItem {
     category: &'static str,
     label: String,
     detail: String,
+    keywords: &'static str,
     action: PaletteAction,
 }
 
@@ -113,18 +118,67 @@ pub struct Palette {
 impl Palette {
     pub fn open(app: &V2App) -> Self {
         let mut items = Vec::new();
+        for (idx, a) in app.approvals.iter().enumerate() {
+            items.push(PaletteItem {
+                category: "Approve",
+                label: a.id.clone(),
+                detail: format!("{} · {}", a.tool, a.preview),
+                keywords: "approve allow deny permit check decision",
+                action: PaletteAction::FocusApproval(idx),
+            });
+        }
+        for row in &app.team.rows {
+            if matches!(row["lifecycle"].as_str(), Some("PAUSED" | "PARKED")) {
+                if let Some(id) = row["id"].as_str() {
+                    items.push(PaletteItem {
+                        category: "Recover",
+                        label: format!("Resume {id}"),
+                        detail: format!("{} · return member to ACTIVE", team::state(row)),
+                        keywords: "fix unblock recover continue unpause restart",
+                        action: PaletteAction::ResumeMember(id.to_string()),
+                    });
+                }
+            }
+        }
+        let work_blocked = app.work.as_ref().is_some_and(|w| matches!(w.status.as_str(), "BLOCKED" | "CANCELLED"))
+            || app.leader_diagnosis_code() == Some("work_blocked");
+        if work_blocked {
+            items.push(PaletteItem {
+                category: "Recover",
+                label: "Start new work scope".into(),
+                detail: "Open a new active work scope on the Leader".into(),
+                keywords: "fix unblock recover continue restart reset",
+                action: PaletteAction::OpenNewWork,
+            });
+        }
+        if let Some(work) = app.work.as_ref().filter(|w| w.status == "ACTIVE" && !w.id.is_empty()) {
+            items.push(PaletteItem {
+                category: "Recover",
+                label: "Cancel active work scope".into(),
+                detail: format!("Cancel work {} (requires confirmation)", work.id),
+                keywords: "stop abort cancel work halt",
+                action: PaletteAction::CancelWork(work.id.clone()),
+            });
+        }
         for row in &app.team.rows {
             let id = row["id"].as_str().unwrap_or("?").to_string();
             let label = if id == app.team.leader_id { format!("Leader ({id})") } else { id.clone() };
             let detail =
                 format!("{} · {}", team::state(row), app.member_model_label(&id, row["model"].as_str().unwrap_or("")));
-            items.push(PaletteItem { category: "Member", label, detail, action: PaletteAction::SelectMember(id) });
+            items.push(PaletteItem {
+                category: "Member",
+                label,
+                detail,
+                keywords: "team agent member inspect person",
+                action: PaletteAction::SelectMember(id),
+            });
         }
         for (view, label) in team::VIEWS {
             items.push(PaletteItem {
                 category: "View",
                 label: label.to_string(),
                 detail: "Switch workspace view".into(),
+                keywords: "tab screen view panel",
                 action: PaletteAction::OpenView(view),
             });
         }
@@ -137,6 +191,7 @@ impl Palette {
                 category: "Task",
                 label: id.to_string(),
                 detail: format!("{status} -> {assignee}"),
+                keywords: "job work task todo",
                 action: PaletteAction::SelectTask(idx),
             });
         }
@@ -149,6 +204,7 @@ impl Palette {
                     category: "Tree",
                     label: title.to_string(),
                     detail: format!("{id} · {status}"),
+                    keywords: "topic branch map node",
                     action: PaletteAction::FocusTreeNode(format!("Focus on tree node {id} ({title}): ")),
                 });
             }
@@ -167,6 +223,7 @@ impl Palette {
                 category: "Session",
                 label: s.name.clone(),
                 detail: status,
+                keywords: "chat workspace history conversation",
                 action: PaletteAction::OpenSession(SessionRow {
                     id: s.id.clone(),
                     name: s.name.clone(),
@@ -176,20 +233,81 @@ impl Palette {
                 }),
             });
         }
-        for (label, detail, action) in [
-            ("Rewind conversation or files", "/rewind · restore an earlier prompt", PaletteAction::OpenRewind),
-            ("MCP services", "/mcp · start, stop, hide, expose, reconnect", PaletteAction::OpenMcp),
-            ("Choose model & reasoning effort", "Ctrl+M · Leader / Workers", PaletteAction::OpenModel),
-            ("Pending input queue", "Ctrl+P · edit or cancel held inputs", PaletteAction::OpenQueue),
-            ("Browse all sessions", "Ctrl+S · search & history", PaletteAction::OpenSessions),
-            ("Copy last code block", "Write most recent code block via OSC 52", PaletteAction::CopyLastCode),
-            ("Toggle zoom pane", "Alt+Z · expand active workspace pane", PaletteAction::ToggleZoom),
-            ("Toggle team sidebar", "Alt+B · show or hide team list", PaletteAction::ToggleSidebar),
-            ("Request Leader compaction", "/compact · summarize older context", PaletteAction::Compact),
-            ("Interrupt Leader request", "Ctrl+C · cancel in-flight model call", PaletteAction::Interrupt),
-            ("Shortcuts & environment", "? / /help · keys and diagnostics", PaletteAction::OpenHelp),
+        for (label, detail, keywords, action) in [
+            (
+                "Rewind conversation or files",
+                "/rewind · go back to an earlier message or file state",
+                "undo revert restore rollback back earlier",
+                PaletteAction::OpenRewind,
+            ),
+            (
+                "Manage tool plugins (MCP)",
+                "/mcp · start, stop, hide, expose, or reconnect plugins",
+                "tools servers plugins mcp",
+                PaletteAction::OpenMcp,
+            ),
+            (
+                "Choose AI model & thinking effort",
+                "Ctrl+M · pick model for chat or workers",
+                "ai llm provider switch effort model",
+                PaletteAction::OpenModel,
+            ),
+            (
+                "Pending message queue",
+                "Ctrl+P · view, edit, or cancel waiting messages",
+                "pending waiting later queue",
+                PaletteAction::OpenQueue,
+            ),
+            (
+                "Browse all sessions",
+                "Ctrl+S · search, switch, or resume saved chats",
+                "chat switch history conversation sessions",
+                PaletteAction::OpenSessions,
+            ),
+            (
+                "Copy last code block",
+                "Copy the newest code block to your clipboard",
+                "clipboard copy code",
+                PaletteAction::CopyLastCode,
+            ),
+            (
+                "Toggle zoom pane",
+                "Alt+Z · expand or restore the current panel",
+                "expand fullscreen maximize zoom",
+                PaletteAction::ToggleZoom,
+            ),
+            (
+                "Toggle team sidebar",
+                "Alt+B · show or hide the team member list",
+                "panel list team sidebar hide show",
+                PaletteAction::ToggleSidebar,
+            ),
+            (
+                "Summarize older conversation",
+                "/compact · shrink older context to free memory",
+                "summarize memory shrink context compact",
+                PaletteAction::Compact,
+            ),
+            (
+                "Stop current AI reply",
+                "Ctrl+C · cancel in-flight model call (running tools may continue)",
+                "stop halt cancel interrupt abort",
+                PaletteAction::Interrupt,
+            ),
+            (
+                "Help, shortcuts & system info",
+                "? / /help · beginner guide, keys, and diagnostics",
+                "guide shortcuts keys howto help",
+                PaletteAction::OpenHelp,
+            ),
         ] {
-            items.push(PaletteItem { category: "Action", label: label.into(), detail: detail.into(), action });
+            items.push(PaletteItem {
+                category: "Action",
+                label: label.into(),
+                detail: detail.into(),
+                keywords,
+                action,
+            });
         }
         let mut palette = Self { query: String::new(), items, filtered: Vec::new(), selected: 0 };
         palette.refilter();
@@ -199,19 +317,40 @@ impl Palette {
     fn refilter(&mut self) {
         let q = self.query.to_lowercase();
         let words: Vec<&str> = q.split_whitespace().collect();
-        self.filtered = self
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| {
-                if words.is_empty() {
-                    return true;
-                }
-                let hay = format!("{} {} {}", item.category, item.label, item.detail).to_lowercase();
-                words.iter().all(|word| hay.contains(word))
-            })
-            .map(|(i, _)| i)
-            .collect();
+        if words.is_empty() {
+            self.filtered = (0..self.items.len()).collect();
+        } else {
+            let mut scored: Vec<(u8, usize)> = self
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, item)| {
+                    let hay =
+                        format!("{} {} {} {}", item.category, item.label, item.detail, item.keywords).to_lowercase();
+                    if !words.iter().all(|word| hay.contains(word)) {
+                        return None;
+                    }
+                    let label = item.label.to_lowercase();
+                    let label_words: Vec<&str> =
+                        label.split(|c: char| !c.is_alphanumeric()).filter(|s| !s.is_empty()).collect();
+                    let rank = if words.iter().all(|w| label_words.contains(w)) {
+                        0
+                    } else if words.iter().all(|w| label.contains(w)) {
+                        1
+                    } else {
+                        let visible = format!("{} {} {}", item.category, item.label, item.detail).to_lowercase();
+                        if words.iter().all(|w| visible.contains(w)) {
+                            2
+                        } else {
+                            3
+                        }
+                    };
+                    Some((rank, i))
+                })
+                .collect();
+            scored.sort_by_key(|&(rank, idx)| (rank, idx));
+            self.filtered = scored.into_iter().map(|(_, idx)| idx).collect();
+        }
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
     }
 
@@ -326,7 +465,7 @@ impl Palette {
             Line::from(vec![
                 Span::styled("❯ ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    format!("Type to filter {} items (members, tasks, sessions, actions)…", self.items.len()),
+                    format!("Type to search {} items (try undo, ai, stop, chat, plugins)…", self.items.len()),
                     secondary(),
                 ),
             ])
@@ -360,12 +499,14 @@ impl Palette {
                     if selected {
                         Line::styled(fit(&text, w), selection())
                     } else {
+                        let label = fit(&item.label, w.saturating_sub(14) / 2 + 8);
+                        let label_w = unicode_width::UnicodeWidthStr::width(label.as_str());
                         Line::from(vec![
                             Span::styled(format!("{marker} "), secondary()),
                             Span::styled(format!("[{:7}] ", item.category), Style::default().fg(ACCENT)),
-                            Span::styled(fit(&item.label, w.saturating_sub(14) / 2 + 8), Style::default().fg(FG)),
+                            Span::styled(label, Style::default().fg(FG)),
                             Span::styled(
-                                fit(&format!("  {}", item.detail), w.saturating_sub(item.label.len() + 14)),
+                                fit(&format!("  {}", item.detail), w.saturating_sub(label_w + 14)),
                                 secondary(),
                             ),
                         ])
@@ -617,6 +758,30 @@ impl RewindModal {
                                 return ModalKey::Submit(RewindAction::Preview { key: k, files: self.files_mode });
                             }
                         }
+                    }
+                }
+                ModalKey::Consumed
+            }
+            MouseEventKind::ScrollUp if list.contains(point) => {
+                if self.selected > 0 {
+                    self.selected -= 1;
+                    self.confirming = false;
+                    self.preview = None;
+                    if let Some(k) = self.selected_key() {
+                        self.loading = true;
+                        return ModalKey::Submit(RewindAction::Preview { key: k, files: self.files_mode });
+                    }
+                }
+                ModalKey::Consumed
+            }
+            MouseEventKind::ScrollDown if list.contains(point) => {
+                if self.selected + 1 < self.points.len() {
+                    self.selected += 1;
+                    self.confirming = false;
+                    self.preview = None;
+                    if let Some(k) = self.selected_key() {
+                        self.loading = true;
+                        return ModalKey::Submit(RewindAction::Preview { key: k, files: self.files_mode });
                     }
                 }
                 ModalKey::Consumed
@@ -987,14 +1152,26 @@ impl McpModal {
 pub enum ApprovalDecision {
     Approve(String),
     Deny(String),
+    ApproveCapability(String),
+    DenyCapability(String),
 }
 
 pub struct ApprovalDetail {
+    pub kind: ApprovalKind,
     pub approval_id: String,
     pub scroll: usize,
 }
 
 impl ApprovalDetail {
+    fn decide(&self, approve: bool) -> ApprovalDecision {
+        match (self.kind, approve) {
+            (ApprovalKind::Operation, true) => ApprovalDecision::Approve(self.approval_id.clone()),
+            (ApprovalKind::Operation, false) => ApprovalDecision::Deny(self.approval_id.clone()),
+            (ApprovalKind::Capability, true) => ApprovalDecision::ApproveCapability(self.approval_id.clone()),
+            (ApprovalKind::Capability, false) => ApprovalDecision::DenyCapability(self.approval_id.clone()),
+        }
+    }
+
     pub fn key(&mut self, key: KeyEvent) -> ModalKey<ApprovalDecision> {
         if key.kind == KeyEventKind::Release {
             return ModalKey::Ignored;
@@ -1023,8 +1200,8 @@ impl ApprovalDetail {
                 self.scroll = self.scroll.saturating_add(6);
                 ModalKey::Consumed
             }
-            KeyCode::Char('a') => ModalKey::Submit(ApprovalDecision::Approve(self.approval_id.clone())),
-            KeyCode::Char('d') => ModalKey::Submit(ApprovalDecision::Deny(self.approval_id.clone())),
+            KeyCode::Char('a') => ModalKey::Submit(self.decide(true)),
+            KeyCode::Char('d') => ModalKey::Submit(self.decide(false)),
             _ => ModalKey::Consumed,
         }
     }
@@ -1037,19 +1214,50 @@ impl ApprovalDetail {
         (popup, body, footer)
     }
 
+    fn footer_layout(kind: ApprovalKind, footer: Rect) -> (String, Option<Rect>, Option<Rect>, Option<Rect>) {
+        let approve = match kind {
+            ApprovalKind::Operation => "[a Approve once]",
+            ApprovalKind::Capability => "[a Approve grant]",
+        };
+        let deny = "[d Deny]";
+        let back = "Esc back";
+        let sep = " · ";
+        let text = format!("{approve}{sep}{deny}{sep}{back}{sep}Up/Down scroll");
+        if footer.is_empty() {
+            return (text, None, None, None);
+        }
+        let span_rect = |offset: u16, label: &str| -> Option<Rect> {
+            let w = unicode_width::UnicodeWidthStr::width(label) as u16;
+            let x = footer.x.saturating_add(offset);
+            let avail = footer.right().saturating_sub(x);
+            (avail >= w && w > 0).then(|| Rect::new(x, footer.y, w, 1))
+        };
+        let approve_w = unicode_width::UnicodeWidthStr::width(approve) as u16;
+        let deny_w = unicode_width::UnicodeWidthStr::width(deny) as u16;
+        let sep_w = unicode_width::UnicodeWidthStr::width(sep) as u16;
+        let approve_rect = span_rect(0, approve);
+        let deny_offset = approve_w + sep_w;
+        let deny_rect = span_rect(deny_offset, deny);
+        let back_offset = deny_offset + deny_w + sep_w;
+        let back_rect = span_rect(back_offset, back);
+        (text, approve_rect, deny_rect, back_rect)
+    }
+
     pub fn mouse(&mut self, area: Rect, mouse: MouseEvent) -> ModalKey<ApprovalDecision> {
         let (popup, _, footer) = Self::rects(area);
         let point = Position::new(mouse.column, mouse.row);
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if !popup.contains(point) => ModalKey::Close,
             MouseEventKind::Down(MouseButton::Left) if footer.contains(point) => {
-                let rel = point.x.saturating_sub(footer.x);
-                if rel < 16 {
-                    ModalKey::Submit(ApprovalDecision::Approve(self.approval_id.clone()))
-                } else if rel < 26 {
-                    ModalKey::Submit(ApprovalDecision::Deny(self.approval_id.clone()))
-                } else {
+                let (_, approve_rect, deny_rect, back_rect) = Self::footer_layout(self.kind, footer);
+                if approve_rect.is_some_and(|r| r.contains(point)) {
+                    ModalKey::Submit(self.decide(true))
+                } else if deny_rect.is_some_and(|r| r.contains(point)) {
+                    ModalKey::Submit(self.decide(false))
+                } else if back_rect.is_some_and(|r| r.contains(point)) {
                     ModalKey::Close
+                } else {
+                    ModalKey::Consumed
                 }
             }
             MouseEventKind::ScrollUp => {
@@ -1067,35 +1275,82 @@ impl ApprovalDetail {
     pub fn render(&self, frame: &mut Frame, approval: Option<&ApprovalInfo>, area: Rect) {
         let (popup, body, footer) = Self::rects(area);
         frame.render_widget(Clear, popup);
-        let block = panel("Approval details").border_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD));
+        let title =
+            if self.kind == ApprovalKind::Capability { "Capability request details" } else { "Approval details" };
+        let block = panel(title).border_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD));
         frame.render_widget(block, popup);
         let Some(approval) = approval else {
             frame.render_widget(Paragraph::new("This approval is no longer pending.").style(secondary()), body);
             return;
         };
         let w = body.width.saturating_sub(1) as usize;
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled("Tool: ", secondary()),
-                Span::styled(approval.tool.clone(), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
-            ]),
-            Line::from(vec![
-                Span::styled("Approval ID: ", secondary()),
-                Span::styled(approval.id.clone(), Style::default().fg(FG)),
-            ]),
-            Line::from(vec![
-                Span::styled("Operation ID: ", secondary()),
-                Span::styled(approval.operation_id.clone(), Style::default().fg(FG)),
-            ]),
-        ];
-        if !approval.instance_id.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("Instance: ", secondary()),
-                Span::styled(approval.instance_id.clone(), Style::default().fg(ACCENT)),
-            ]));
-        }
+        let mut lines = if approval.kind == ApprovalKind::Capability {
+            let mut rows = vec![
+                Line::from(vec![
+                    Span::styled("Capability: ", secondary()),
+                    Span::styled(
+                        format!("{}@{}", approval.action, approval.resource_scope),
+                        Style::default().fg(FG).add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Request ID: ", secondary()),
+                    Span::styled(approval.id.clone(), Style::default().fg(FG)),
+                ]),
+            ];
+            if !approval.requester.is_empty() {
+                rows.push(Line::from(vec![
+                    Span::styled("Requester: ", secondary()),
+                    Span::styled(approval.requester.clone(), Style::default().fg(FG)),
+                ]));
+            }
+            if !approval.instance_id.is_empty() {
+                rows.push(Line::from(vec![
+                    Span::styled("Subject: ", secondary()),
+                    Span::styled(approval.instance_id.clone(), Style::default().fg(ACCENT)),
+                ]));
+            }
+            if !approval.task_id.is_empty() {
+                rows.push(Line::from(vec![
+                    Span::styled("Task: ", secondary()),
+                    Span::styled(approval.task_id.clone(), Style::default().fg(FG)),
+                ]));
+            }
+            if !approval.parent_grant_id.is_empty() {
+                rows.push(Line::from(vec![
+                    Span::styled("Parent grant: ", secondary()),
+                    Span::styled(approval.parent_grant_id.clone(), Style::default().fg(FG)),
+                ]));
+            }
+            rows
+        } else {
+            let mut rows = vec![
+                Line::from(vec![
+                    Span::styled("Tool: ", secondary()),
+                    Span::styled(approval.tool.clone(), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Approval ID: ", secondary()),
+                    Span::styled(approval.id.clone(), Style::default().fg(FG)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Operation ID: ", secondary()),
+                    Span::styled(approval.operation_id.clone(), Style::default().fg(FG)),
+                ]),
+            ];
+            if !approval.instance_id.is_empty() {
+                rows.push(Line::from(vec![
+                    Span::styled("Instance: ", secondary()),
+                    Span::styled(approval.instance_id.clone(), Style::default().fg(ACCENT)),
+                ]));
+            }
+            rows
+        };
         lines.push(Line::default());
-        lines.push(Line::styled("Arguments / intent:", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)));
+        lines.push(Line::styled(
+            if approval.kind == ApprovalKind::Capability { "Details:" } else { "Arguments / intent:" },
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
         let args = if approval.args.is_empty() { &approval.preview } else { &approval.args };
         lines.extend(crate::markdown::plain(args, w, Style::default().fg(FG)));
         let max_scroll = lines.len().saturating_sub(body.height as usize);
@@ -1105,10 +1360,8 @@ impl ApprovalDetail {
             body,
         );
         render_scrollbar(frame, body, lines.len(), scroll);
-        frame.render_widget(
-            Paragraph::new(hint_line("[a Approve once] · [d Deny] · Esc back · Up/Down scroll")),
-            footer,
-        );
+        let (footer_text, _, _, _) = Self::footer_layout(approval.kind, footer);
+        frame.render_widget(Paragraph::new(hint_line(&footer_text)), footer);
     }
 }
 
@@ -1118,6 +1371,8 @@ pub enum ConfirmAction {
     ResumeMember(String),
     TerminateMember(String),
     CancelTask(String),
+    OpenNewWork,
+    CancelWork(String),
 }
 
 impl ConfirmAction {
@@ -1132,8 +1387,20 @@ impl ConfirmAction {
         }
     }
 
-    pub fn mouse(&self, area: Rect, mouse: MouseEvent) -> ModalKey<Self> {
+    fn footer_rects(area: Rect) -> (Rect, Option<Rect>, Option<Rect>) {
         let popup = centered(area, 68, 9);
+        let inner = popup.inner(Margin::new(1, 1));
+        if inner.is_empty() {
+            return (popup, None, None);
+        }
+        let y = inner.bottom().saturating_sub(1);
+        let confirm = (inner.width > 0).then(|| Rect::new(inner.x, y, inner.width.min(11), 1));
+        let cancel = (inner.width > 12).then(|| Rect::new(inner.x + 12, y, inner.width.saturating_sub(12).min(12), 1));
+        (popup, confirm, cancel)
+    }
+
+    pub fn mouse(&self, area: Rect, mouse: MouseEvent) -> ModalKey<Self> {
+        let (popup, confirm_rect, cancel_rect) = Self::footer_rects(area);
         let point = Position::new(mouse.column, mouse.row);
         if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
             return ModalKey::Consumed;
@@ -1141,37 +1408,47 @@ impl ConfirmAction {
         if !popup.contains(point) {
             return ModalKey::Close;
         }
-        let inner = popup.inner(Margin::new(1, 1));
-        if point.y == inner.bottom().saturating_sub(1) {
-            let rel = point.x.saturating_sub(inner.x);
-            if rel < 12 {
-                return ModalKey::Submit(self.clone());
-            }
+        if confirm_rect.is_some_and(|r| r.contains(point)) {
+            return ModalKey::Submit(self.clone());
+        }
+        if cancel_rect.is_some_and(|r| r.contains(point)) {
             return ModalKey::Close;
         }
         ModalKey::Consumed
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        let popup = centered(area, 68, 9);
+        let (popup, confirm_rect, cancel_rect) = Self::footer_rects(area);
         frame.render_widget(Clear, popup);
         let (title, summary, danger) = match self {
             Self::PauseMember(id) => (
                 format!("Pause {id}?"),
-                "Pauses new turns for this member. Already running tool jobs keep their own lifecycle.",
+                "Pauses new turns for this member. Any tool already running finishes on its own.",
                 false,
             ),
-            Self::ResumeMember(id) => {
-                (format!("Resume {id}?"), "Returns this member to ACTIVE so its driver can resume processing.", false)
-            }
+            Self::ResumeMember(id) => (
+                format!("Resume {id}?"),
+                "Switches this member back to ACTIVE so it can reply and pick up tasks again.",
+                false,
+            ),
             Self::TerminateMember(id) => (
-                format!("Terminate {id}?"),
-                "Permanent user-only stop: terminates this instance lifecycle. History and receipts stay readable.",
+                format!("Stop {id} permanently?"),
+                "Permanent user-only stop: ends this member instance (cannot be undone). History and logs stay readable.",
                 true,
             ),
             Self::CancelTask(id) => (
                 format!("Cancel task {id}?"),
-                "Marks the task CANCELLED for the delegator. This alone does not prove its runner process stopped.",
+                "Marks this task CANCELLED. Cancelling a task does not prove its running process has stopped.",
+                true,
+            ),
+            Self::OpenNewWork => (
+                "Start a new work scope?".to_string(),
+                "Opens a fresh active work scope on the Leader so new questions and tasks can run.",
+                false,
+            ),
+            Self::CancelWork(id) => (
+                format!("Cancel work {id}?"),
+                "Marks this active work scope CANCELLED. Commands already running keep their own process lifecycle.",
                 true,
             ),
         };
@@ -1183,10 +1460,10 @@ impl ConfirmAction {
             lines.push(Line::default());
         }
         frame.render_widget(Paragraph::new(lines), inner);
-        if !inner.is_empty() {
-            let [confirm_area, cancel_area] = Layout::horizontal([Constraint::Length(12), Constraint::Min(0)])
-                .areas(Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1));
+        if let Some(confirm_area) = confirm_rect {
             frame.render_widget(Paragraph::new("[y Confirm]").style(selection()), confirm_area);
+        }
+        if let Some(cancel_area) = cancel_rect {
             frame.render_widget(Paragraph::new("[Esc Cancel]").style(secondary()), cancel_area);
         }
     }

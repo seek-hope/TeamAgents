@@ -39,10 +39,10 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `artifacts_gc_claimed` | `""` | `claimed` | `core/src/v2/control.rs:6433` | `engine/tests/v2_daemon.rs` |
 | `attempt_recorded` | `request_id` | `attempt_id`, `selected`, `status`, `stream`, `usage` | `core/src/v2/control.rs:3476` | `engine/src/v2/exec/accounting.rs`, `engine/src/v2/exec.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
 | `budget_refused` | `instance_id` | `est`, `known`, `max`, `request_id`, `reserved`, `work_id` | `core/src/v2/control.rs:3368` | `engine/src/v2/driver.rs`, `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs` |
-| `capability_approved` | `&subject` | `approver`, `grant_id`, `request_id`, `subject`, `task_id` | `core/src/v2/control.rs:2229` | `tui/src/v2app.rs`, `tui/tests/minimal.rs` |
-| `capability_denied` | `&task_id` | `decided_by`, `request_id`, `status`, `task_id` | `core/src/v2/control.rs:2297` | `tui/src/v2app.rs` |
+| `capability_approved` | `&subject` | `approver`, `grant_id`, `request_id`, `subject`, `task_id` | `core/src/v2/control.rs:2229` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `tui/tests/workspace_ux.rs` |
+| `capability_denied` | `&task_id` | `decided_by`, `request_id`, `status`, `task_id` | `core/src/v2/control.rs:2297` | `tui/src/v2app.rs`, `tui/tests/workspace_ux.rs` |
 | `capability_grant_issued` | `subject` | `action`, `delegable`, `grant_id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `subject`, `task_id` | `core/src/v2/control.rs:948` | observability only |
-| `capability_requested` | `subject` | `action`, `parent_grant_id`, `request_id`, `requester`, `resource_scope`, `subject`, `task_id` | `core/src/v2/control.rs:1785` | `tui/src/v2app.rs` |
+| `capability_requested` | `subject` | `action`, `parent_grant_id`, `request_id`, `requester`, `resource_scope`, `subject`, `task_id` | `core/src/v2/control.rs:1785` | `tui/src/v2app.rs`, `tui/tests/workspace_ux.rs` |
 | `check_round_registered` | `work_id` | `checks`, `round`, `work_id` | `core/src/v2/control.rs:5733` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs` |
 | `completion_closed` | `instance_id` | `instance_id` | `core/src/v2/control.rs:6053` | `tui/src/v2app.rs`, `engine/tests/cases/rewind.rs`, `engine/tests/v2_driver.rs` |
 | `completion_repair` | `instance_id` | `failures`, `round`, `work_id` | `core/src/v2/control.rs:5814` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
@@ -74,7 +74,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `operation_cancelled` | `operation_id` | `reason` | `core/src/v2/control.rs:4874` | observability only |
 | `operation_completed` | `operation_id` | `status` | `core/src/v2/control.rs:4502` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `tui/tests/team.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs` |
 | `operation_dispatched` | `operation_id` | `operation_id` | `core/src/v2/control.rs:4844` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs` |
-| `operation_stop_observed` | `operation` | — | `core/src/v2/control/work/takeover.rs:231` | observability only |
+| `operation_stop_observed` | `operation` | — | `core/src/v2/control/work/takeover.rs:241` | observability only |
 | `operation_unauthorized` | `operation_id` | `reason` | `core/src/v2/control.rs:1267` | observability only |
 | `request_began` | `instance_id` | `context_head`, `epoch`, `request_id`, `work_id` | `core/src/v2/control.rs:3268` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/exec/accounting.rs`, `engine/tests/cases/event_pages.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs` |
 | `request_cancelled` | `&instance` / `instance_id` | `reason`, `request_id` | `core/src/v2/control.rs:5461`, `core/src/v2/control.rs:5523` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/exec/accounting.rs` |
@@ -96,9 +96,9 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `wait_satisfied` | `&instance_id` | `wait_id` | `core/src/v2/control.rs:4146` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `engine/tests/v2_driver.rs` |
 | `work_admission_refused` | `instance` | `reason` | `core/src/v2/control/work.rs:51` | observability only |
 | `work_attention` | `instance` / `leader_id` | `reason`, `waits` | `core/src/v2/control.rs:732`, `core/src/v2/control/work.rs:890` | observability only |
-| `work_blocked` | `instance` / `work_id` | `detached`, `reason`, `status`, `work_id` | `core/src/v2/control.rs:5882`, `core/src/v2/control/work.rs:1125`, `core/src/v2/control/work.rs:469` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/diagnostics.rs`, `engine/src/v2/exec.rs`, `engine/tests/cases/autonomy.rs`, `engine/tests/v2_driver.rs` |
+| `work_blocked` | `instance` / `work_id` | `detached`, `reason`, `status`, `work_id` | `core/src/v2/control.rs:5882`, `core/src/v2/control/work.rs:1125`, `core/src/v2/control/work.rs:469` | `tui/src/overlays.rs`, `tui/src/v2app.rs`, `tui/src/v2ui.rs`, `tui/tests/minimal.rs`, `tui/tests/v2app_tests.rs`, `tui/tests/workspace_ux.rs`, `engine/src/v2/diagnostics.rs`, `engine/src/v2/exec.rs`, `engine/tests/cases/autonomy.rs`, `engine/tests/v2_driver.rs` |
 | `work_cancelled` | `work_id` | `released`, `work_id` | `core/src/v2/control.rs:6150` | `engine/src/v2/exec/accounting.rs`, `engine/src/v2/exec.rs` |
-| `work_checkpoint` | `instance` | `action`, `decision_id`, `work_id` | `core/src/v2/control/work.rs:635` | `engine/src/v2/exec.rs`, `engine/tests/cases/autonomy.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
+| `work_checkpoint` | `instance` | `action`, `decision_id`, `work_id` | `core/src/v2/control/work.rs:635` | `engine/src/v2/exec.rs`, `engine/tests/cases/autonomy.rs` |
 | `work_checks_briefed` | `work_id` | `checks` | `core/src/v2/control.rs:5962` | `engine/tests/v2_driver.rs` |
 | `work_checks_required` | `work_id` | `added`, `checks`, `work_id` | `core/src/v2/control.rs:2732` | observability only |
 | `work_completed` | `work_id` | `blocked_by`, `completion`, `detached`, `reason`, `status`, `work_id` | `core/src/v2/control.rs:5874`, `core/src/v2/control.rs:6310` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/daemon.rs`, `engine/src/v2/exec/accounting.rs`, `engine/src/v2/exec.rs`, `engine/tests/cases/event_pages.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs`, `engine/tests/v2_supervisor.rs` |
@@ -111,6 +111,6 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `work_input_pending` | `instance` | `envelope_id` | `core/src/v2/control/work/admission.rs:32` | `engine/src/v2/exec.rs` |
 | `work_policy_configured` | `leader` | `version` | `core/src/v2/control/work.rs:118` | observability only |
 | `work_started` | `instance` | `billed_requests`, `input_ref`, `intent_provenance`, `work_id` | `core/src/v2/control/work/admission.rs:298` | observability only |
-| `workspace_takeover_blocked` | `operation` | — | `core/src/v2/control/work/takeover.rs:152` | observability only |
+| `workspace_takeover_blocked` | `operation` | — | `core/src/v2/control/work/takeover.rs:162` | observability only |
 
 <!-- generated: end -->

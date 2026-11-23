@@ -13,7 +13,7 @@ teamagents doctor environment        # read-only host tool discovery
 teamagents                           # open or join the TUI session
 ```
 
-For your first chat, type `What does this project do?` and press Enter. Read the answer and ask a follow-up. Type `/model` and press Enter whenever you want to choose another model.
+For your first chat, click one of the welcome starter prompts (or type `What does this project do?`) and press Enter. Read the answer and ask a follow-up. Click `[Menu]`, `[?]`, or `[Model]` on the input box border (or type `/model`) whenever you want commands, help, or another model.
 
 Use `teamagents --help` for the overview, `teamagents sessions --help` for a command family, and
 `teamagents sessions delete --help` for its exact options. Options from another subcommand are refused before
@@ -221,8 +221,8 @@ Narrow terminals use one content pane. The composer always names its Leader reci
   team sidebar, Alt+Z (or `z`) zooms the active pane, and Alt+N (or `!`) jumps to the next member needing
   attention. In Activity, `f` filters events to the selected member. The task view includes recorded terminal
   outcomes; a task result or cancellation does not establish process termination.
-- Ctrl+K opens a fuzzy command/member/task/tree/session palette. Ctrl+F searches the Leader conversation (`n`/`N` jump
-  between matches, Esc clears). Clicking a code block copies it via OSC 52; clicking a tool entry toggles its
+- Ctrl+K opens a fuzzy command/member/task/tree/session/work-recovery palette matching plain-English keywords. Ctrl+F searches the Leader conversation (`n`/`N` jump
+  between matches, `Ctrl+U` clears, Esc closes). Clicking a code block copies it via OSC 52; clicking a tool entry toggles its
   expanded output; `Enter` on a focused approval row opens its full-argument detail drawer.
 - Top status shows session/workspace identity, recorded token usage, provider-reported cache hit rate (`cache 72%`,
   omitted when unreported) and active deadline. Live runtime phase (with elapsed busy seconds), pending-approval alerts
@@ -238,8 +238,8 @@ Narrow terminals use one content pane. The composer always names its Leader reci
 In the composer:
 
 - Enter submits; Shift+Enter inserts a newline. Up/Down recalls input. PageUp/PageDown and the mouse wheel scroll.
-- Ctrl+Left/Right or Alt+Left/Right moves by word; Ctrl+B/F moves by character. Ctrl+W or Alt+Backspace deletes
-  a word. Ctrl+U/K deletes to line start/end, and Ctrl+Y restores the last deletion.
+- Ctrl+Left/Right or Alt+Left/Right moves by word; Left/Right moves by character. Ctrl+W or Alt+Backspace deletes
+  a word. Ctrl+U deletes to line start, and Ctrl+Y restores the last deletion.
 - Ctrl+E opens the current draft in `VISUAL`, falling back to `EDITOR`. Saving with exit 0 replaces the draft;
   cancellation, nonzero exit or read failure restores it. `/edit [TEXT]` opens the editor with optional exact
   text; `/edit` alone starts an empty draft. Text or paths ending in `/edit` have no special meaning.
@@ -277,12 +277,12 @@ or select `persistent` to keep a reusable Worker. Cancellation or a blocked task
 
 ## 4. Approvals and lifecycle
 
-Ctrl+A focuses pending approvals. `a` approves once, `d` denies, and `Esc` returns to the draft. By default
-(`D-537`), Worker capability grants within the Leader's scope are attenuated directly at delegation, and pending
-Worker operation approvals or capability requests wake the Leader to decide within its own live grants via
-`decide_approval`; the user retains override authority in the TUI (`Ctrl+A`) and CLI (`teamagents approvals` /
-`teamagents authority`), and Leader self-approvals, out-of-scope capabilities and `request_self_update` still require
-the user. Approval arrival
+Ctrl+A focuses pending operation approvals and capability requests (`a` approves once, `d` denies, and `Esc` returns
+to the draft). By default (`D-537`), Worker capability grants within the Leader's scope are attenuated directly at
+delegation, and pending Worker operation approvals or capability requests wake the Leader to decide within its own
+live grants via `decide` (formerly `decide_approval`); the user retains override authority in the TUI (`Ctrl+A`)
+and CLI (`teamagents approvals` / `teamagents authority`), and Leader self-approvals, out-of-scope capabilities
+and `request_self_update` still require the user. Approval arrival
 does not steal typing focus. Selection follows the approval ID across refreshes; if that approval disappears,
 focus returns to the draft. Decision keys require a plain press. Repeat events cannot confirm approvals, apply
 profiles or switch modes. Ctrl+M and Ctrl+Enter both toggle the model menu; plain Enter applies the selection.
@@ -457,10 +457,10 @@ api_key_env = "EXA_API_KEY"
 With both fetch bindings, the default tries Exa first. A transient transport failure, HTTP 408, 429 or 5xx
 allows one attempt through DeepSeek. An explicit provider never falls back. The result names the provider and
 reports any fallback reason. Each member caches up to 32 successful pages for ten minutes, with an 8 MiB total text budget and least-recently-used eviction. Cache hits still check the binding, credential and URL policy. For long pages,
-pass `full_path` and `next_byte_offset` to `read_file` as `path` and `byte_offset`; no second fetch is needed.
-In codemode, `tools.web_fetch({url})` returns the provider's full extracted `content` to the script. Pass
+pass `full_path` and `next_byte_offset` to `read` as `path` and `byte_offset`; no second fetch is needed.
+In codemode, `tools.fetch({url})` returns the provider's full extracted `content` to the script. Pass
 `max_bytes` for a shorter preview. For example,
-`text((await tools.web_fetch({url})).content.split('\n').filter(line => line.includes('confidence interval')))`
+`text((await tools.fetch({url})).content.split('\n').filter(line => line.includes('confidence interval')))`
 returns matching lines from anywhere in the response.
 
 If local DNS returns

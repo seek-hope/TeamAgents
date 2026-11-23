@@ -143,7 +143,7 @@ fn tool_results_pair_by_member_epoch_and_id_without_guessing_success() {
     assert!(shown.contains("result received") && shown.contains("FAILED"), "{shown}");
     assert!(shown.contains("worker-only") && shown.contains("different epoch"), "{shown}");
     assert!(!shown.contains("succeeded"), "a receipt is not a successful outcome");
-    let calls = json!([{"kind":"assistant", "message":{"tool_calls":[{"id":"x", "function":{"name":"edit_file",
+    let calls = json!([{"kind":"assistant", "message":{"tool_calls":[{"id":"x", "function":{"name":"edit",
         "arguments":"{\"path\":\"a.rs\",\"old_string\":\"before\",\"new_string\":\"after\"}"}}]}}]);
     let full = transcript::project(calls.as_array().unwrap(), "i-leader", false);
     let shown = text(cache.lines(&full, 80, None));
@@ -192,7 +192,7 @@ fn compact_conversation_groups_tools_and_preserves_full_details() {
     let rows = json!([
         {"kind":"user","message":{"content":"Fix the tests"}},
         {"kind":"assistant","message":{"content":"I will inspect the failure.","tool_calls":[
-            {"id":"read","function":{"name":"read_file","arguments":"{\"path\":\"src/main.rs\",\"offset\":42}"}},
+            {"id":"read","function":{"name":"read","arguments":"{\"path\":\"src/main.rs\",\"offset\":42}"}},
             {"id":"test","function":{"name":"shell","arguments":"{\"command\":\"cargo test\"}"}}
         ]}},
         {"kind":"tool_result","message":{"tool_call_id":"read","content":"source"}},
@@ -220,13 +220,17 @@ fn compact_conversation_groups_tools_and_preserves_full_details() {
 #[test]
 fn activity_groups_name_the_operations_without_claiming_success() {
     for (names, expected) in [
-        (vec!["read_file", "grep"], "Explored · 2 tools"),
+        (vec!["read", "history", "image", "grep"], "Explored · 4 tools"),
+        (vec!["read_file", "read_history", "view_image", "grep"], "Explored · 4 tools"),
+        (vec!["edit", "write"], "Edited · 2 operations"),
         (vec!["edit_file", "write_file"], "Edited · 2 operations"),
         (vec!["shell", "shell"], "Ran 2 commands"),
+        (vec!["search", "fetch"], "Searched · 2 tools"),
         (vec!["web_search", "web_fetch"], "Searched · 2 tools"),
         (vec!["spawn", "delegate"], "Coordinated · 2 actions"),
         (vec!["send", "wait"], "Coordinated · 2 actions"),
-        (vec!["verify_work", "wait"], "Coordinated · 2 actions"),
+        (vec!["verify", "cancel", "decide"], "Coordinated · 3 actions"),
+        (vec!["verify_work", "cancel_task", "decide_approval", "wait"], "Coordinated · 4 actions"),
     ] {
         let calls = names
             .iter()

@@ -288,7 +288,7 @@ mod tests {
         let tool_msg = &request.messages[1];
         let content = tool_msg["content"].as_str().unwrap();
         assert!(content.contains("tool output hidden"), "content was: {content}");
-        assert!(content.contains("read_history"));
+        assert!(content.contains("history"));
         assert!(content.contains("c1"));
         // originals stay in the store; only the wire copy is masked
         assert_eq!(entries[0].message["content"].as_str().unwrap().len(), 40_000);
@@ -335,7 +335,7 @@ mod tests {
         let tight = kernel.prepare_request(&entries(&kernel), "req");
         let tight_content = tight.messages[1]["content"].as_str().unwrap();
         assert!(tight_content.len() < default_content.len(), "the cap lowered the view");
-        assert!(tight_content.contains("read_history") && tight_content.contains("c1"));
+        assert!(tight_content.contains("history") && tight_content.contains("c1"));
         // a keep budget of zero hides it entirely (the oldest output) — the model is told how to get it back
         let kernel = KernelInstance::new("inst-1", 0, profile(Some(2_000), Some(0)));
         let hidden = kernel.prepare_request(&entries(&kernel), "req");
@@ -544,14 +544,14 @@ mod tests {
         let cancel = schemas
             .iter()
             .find(|t| t["function"]["name"].as_str() == Some(CANCEL_TOOL))
-            .expect("cancel_task is offered when asked for")["function"]["description"]
+            .expect("cancel is offered when asked for")["function"]["description"]
             .as_str()
             .expect("a description")
             .to_string();
         for clause in ["and only one you delegated", "satisfies a wait on that task", "is not undone"] {
-            assert!(cancel.contains(clause), "cancel_task must say {clause:?}: {cancel}");
+            assert!(cancel.contains(clause), "cancel must say {clause:?}: {cancel}");
         }
-        let schema = schemas.iter().find(|t| t["function"]["name"].as_str() == Some(CANCEL_TOOL)).expect("cancel_task");
+        let schema = schemas.iter().find(|t| t["function"]["name"].as_str() == Some(CANCEL_TOOL)).expect("cancel");
         let required: Vec<&str> = schema["function"]["parameters"]["required"]
             .as_array()
             .expect("required list")
@@ -567,6 +567,14 @@ mod tests {
         let names: Vec<&str> = schemas.iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec![WAIT_TOOL, SEND_TOOL]);
         assert!(collaboration_tool_schemas(&[]).is_empty());
+
+        let legacy = collaboration_tool_schemas(&["work_checkpoint", "cancel_task", "verify_work", "decide_approval"]);
+        let legacy_names: Vec<&str> = legacy.iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
+        assert_eq!(legacy_names, vec![WORK_TOOL, CANCEL_TOOL, VERIFY_TOOL, APPROVAL_TOOL]);
+        assert_eq!(
+            (READBACK_TOOL, WORK_TOOL, CANCEL_TOOL, VERIFY_TOOL, APPROVAL_TOOL, SEARCH_TREE_TOOL),
+            ("history", "checkpoint", "cancel", "verify", "decide", "tree")
+        );
     }
 
     /// The descriptions must name the condition a delegator has to use (D-255):

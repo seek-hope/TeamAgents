@@ -235,7 +235,7 @@ pub(crate) fn schema_with_native(tools: &BoundTools, native: &[Json]) -> Json {
     let description = format!(
         "Run JavaScript that calls the listed tools as `await tools.<name>(args)`.\n\
          - The code is evaluated in a fresh QuickJS sandbox as the body of an async function: top-level `await` and `return` work.\n\
-         - Use parallelReads([{{name, args}}, ...]) for independent bound file reads, eight at a time (read_file, ls, grep, glob). It returns ordered success or error results. Shell and writes are separate top-level operations. A bound web_fetch returns all extracted text to the script by default. Filter it before emitting output.\n\
+         - Use parallelReads([{{name, args}}, ...]) for independent bound file reads, eight at a time (read, ls, grep, glob). It returns ordered success or error results. Shell and writes are separate top-level operations. A bound fetch returns all extracted text to the script by default. Filter it before emitting output.\n\
          - Tool names are normalized to JavaScript identifiers (`my-tool` is `tools.my_tool`); `ALL_TOOLS` lists every tool, `searchTools(query)` finds one by name or description, `describeTool(name)` returns its declaration and `describeNamespace(service)` lists one service's tools.\n\
          - A nested call that fails, is vetoed by the user's `pre_tool` hook, or gets invalid arguments rejects with an `Error` carrying the reason. Calls are real and have side effects; earlier calls are not undone when a later one fails.\n\
          - Only what the script emits with `text(...)`/`console.log(...)` and what it returns reaches you — nested tool output does NOT. Filter and aggregate in the script instead of returning raw payloads.\n\
@@ -299,16 +299,23 @@ fn prelude(meta: &[Meta]) -> String {
         r#"
 globalThis.__names = {names};
 globalThis.__catalogue = {catalogue};
+globalThis.__aliases = {{"read_file": "read", "web_search": "search", "web_fetch": "fetch"}};
 globalThis.ALL_TOOLS = __catalogue.map((entry) => ({{ name: entry.name, description: entry.description }}));
 {unknown_help}
 globalThis.tools = new Proxy({{}}, {{
   get: (_target, property) => {{
     const key = String(property);
-    const real = Object.prototype.hasOwnProperty.call(__names, key) ? __names[key] : key;
+    const resolved = __catalogue.some((entry) => entry.name === key)
+      ? key
+      : (Object.prototype.hasOwnProperty.call(__aliases, key) &&
+         __catalogue.some((entry) => entry.name === __aliases[key]))
+        ? __aliases[key]
+        : null;
     /// The model-visible normalized name is checked first; the host receives the original remote name.
-    if (!__catalogue.some((entry) => entry.name === key)) {{
+    if (!resolved) {{
       throw new Error(__unknownTool(key));
     }}
+    const real = Object.prototype.hasOwnProperty.call(__names, resolved) ? __names[resolved] : resolved;
     return (args) => {{
       const reply = JSON.parse(__call(real, JSON.stringify(args === undefined ? {{}} : args)));
       if (!reply.ok) {{ throw new Error(reply.error); }}
@@ -554,7 +561,15 @@ pub(crate) fn run_with_native(
             let control = control.clone();
             let veto = context.veto.clone();
             let call_log = calls.clone();
-            let readable: Vec<String> = native_names.iter().filter(|n| matches!(n.as_str(),"read_file"|"ls"|"grep"|"glob")).cloned().collect();
+            fn canonical_native_alias(name: &str) -> &str {
+                match name {
+                    "read_file" => "read",
+                    "web_search" => "search",
+                    "web_fetch" => "fetch",
+                    _ => name,
+                }
+            }
+            let readable: Vec<String> = native_names.iter().filter(|n| matches!(n.as_str(),"read"|"read_file"|"ls"|"grep"|"glob")).cloned().collect();
             let invoke = Arc::new(move |name: String, parsed: Json| {
                 let args_hash = teamagents_core::kernel::args_hash(&parsed);
                 let mut status = "error";
@@ -565,7 +580,9 @@ pub(crate) fn run_with_native(
                         return Err(format!("denied by the user's pre_tool hook or operation policy: {reason}"));
                     }
                     if Instant::now() >= deadline {return Err("codemode deadline passed".into());}
-                    if native_names.contains(&name) {return execute(&name,&parsed);}
+                    if native_names.iter().any(|n| n == &name || canonical_native_alias(n) == canonical_native_alias(&name)) {
+                        return execute(&name, &parsed);
+                    }
                     host.call(&name,&parsed).unwrap_or_else(||Err(format!("unknown tool {name:?}")))
                 });
                 if result.is_ok() {status="ok";}
@@ -577,8 +594,9 @@ pub(crate) fn run_with_native(
                 one(name,serde_json::from_str(&args).unwrap_or(Json::Null)).to_string()
             }).map_err(|e|e.to_string())?;
             let batch = Function::new(ctx.clone(),move |raw:String| -> String {
+                let batch_allowed = |name: &str| readable.iter().any(|n| n == name || canonical_native_alias(n) == canonical_native_alias(name));
                 let calls = match serde_json::from_str::<Vec<Json>>(&raw) {
-                    Ok(c) if c.len()<=8 && c.iter().all(|v| readable.iter().any(|n|v["name"]==*n) && v["args"].is_object()) => c,
+                    Ok(c) if c.len()<=8 && c.iter().all(|v| v["name"].as_str().is_some_and(batch_allowed) && v["args"].is_object()) => c,
                     _ => return json!({"error":"parallelReads expects at most eight bound native file reads with object args"}).to_string()
                 };
                 let results = std::thread::scope(|scope| {
@@ -966,5 +984,45 @@ for line in sys.stdin:
         assert_eq!(identifier("my-tool"), "my_tool");
         assert_eq!(identifier("mcp__ologs__get-profile"), "mcp__ologs__get_profile");
         assert_eq!(identifier("2fast"), "_2fast");
+    }
+
+    #[test]
+    fn native_parallel_reads_and_tools_accept_new_and_legacy_read_names() {
+        let native = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "read",
+                "description": "Read a file",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+            }
+        })];
+        let outcome = run_with_native(
+            r#"
+            const batch = parallelReads([
+                {name: "read", args: {path: "a.txt"}},
+                {name: "read_file", args: {path: "b.txt"}}
+            ]);
+            const direct = await tools.read({path: "c.txt"});
+            const legacy = await tools.read_file({path: "d.txt"});
+            return {batch, direct, legacy};
+            "#,
+            Codemode {
+                tools: Arc::new(BoundTools { services: Default::default(), tools: vec![] }),
+                store: store(),
+                veto: None,
+                timeout_ms: DEFAULT_TIMEOUT_MS,
+                max_output_tokens: FALLBACK_MAX_OUTPUT_TOKENS,
+                aborted: false,
+            },
+            &native,
+            |name, args| Ok(json!(format!("{name}:{}", args["path"].as_str().unwrap_or("")))),
+            crate::tools::TurnControl::default(),
+        );
+        assert_eq!(outcome.kind, Kind::Completed, "{:?}", outcome.error);
+        let parsed: Json = serde_json::from_str(&outcome.output).unwrap();
+        assert_eq!(parsed["batch"][0]["value"], json!("read:a.txt"));
+        assert_eq!(parsed["batch"][1]["value"], json!("read_file:b.txt"));
+        assert_eq!(parsed["direct"], json!("read:c.txt"));
+        assert_eq!(parsed["legacy"], json!("read:d.txt"));
     }
 }

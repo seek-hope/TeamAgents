@@ -65,6 +65,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Damaged state | Unreadable stored wait conditions never satisfy a wait and are reported | D-534 |
 | Idle polls | A poll that changed nothing keeps no receipt, for every poll command | D-535 |
 | Driver failure | A driver that ends in error is parked with its reason, never silently respawned | D-536 |
+| Tool surface & onboarding UX | Concise single-word native tool names with legacy aliases; unified Ctrl+A capability approvals, Ctrl+K recovery/search, and clickable beginner onboarding | D-538 |
 
 ## Authority and runtime
 
@@ -333,7 +334,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 910 Rust tests: core 212, engine 562 and TUI 136.
+- Current source contains 926 Rust tests: core 212, engine 566 and TUI 148.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified
@@ -377,3 +378,11 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   parent cascade revocation for capabilities; `capability_gap` for operations), may never approve or deny its own
   requests/operations or `request_self_update`, and Workers may never decide approvals. User overrides via `Ctrl+A`
   or the CLI remain unconditionally available.
+- D-538: Model-facing native tool schemas use concise single-word names (`read`, `write`, `edit`, `image`, `search`,
+  `fetch`, `history`, `checkpoint`, `cancel`, `verify`, `decide`, `tree`) while retaining silent legacy aliases
+  across execution, kernel parsing, takeover read-only checks, file rewind SQL, codemode, and transcript
+  rendering; TOML `[tools.*] kind`, internal daemon RPC methods, SQLite event kinds, CLI subcommands, and the 21
+  slash-command names remain unchanged. Interactive onboarding and UX unify `WAITING_CAPABILITY` capability requests
+  into the `Ctrl+A` approval drawer (`approvals` snapshot + `capability_requests`), add `Ctrl+K` work-scope
+  recovery actions (`snapshot.work.id`), add plain-English palette keyword search and beginner onboarding prompts
+  (`[Menu]`, `[?]`, `[Model]`, clickable starter cards, and `init`/`doctor`/`ensure_daemon` quick-start hints).

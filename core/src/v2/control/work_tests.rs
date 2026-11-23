@@ -178,7 +178,7 @@ fn autonomy_old_response_cannot_replace_a_new_assignments_checkpoint_or_recovery
         if checkpoint {
             let claim = json!({"action":"ask_user","question":"An obsolete question","remaining":["Old requirement"]});
             params["checkpoint"] = claim.clone();
-            params["entry"] = json!({"role":"assistant","tool_calls":[{"id":"q-old","function":{"name":"work_checkpoint","arguments":claim.to_string()}}]});
+            params["entry"] = json!({"role":"assistant","tool_calls":[{"id":"q-old","function":{"name":"checkpoint","arguments":claim.to_string()}}]});
         }
         ctl.submit(cmd("late-response", "import_response", params), Identity::System).unwrap();
         assert_eq!(work_state(ctl.connection(), "i2").unwrap(), before);
@@ -1434,7 +1434,7 @@ fn work_turn(ctl: &mut Control, tag: &str, instance: &str, extra: Json) -> Json 
         "entry":{"role":"assistant","content":"Progress so far"}});
     if let Some(checkpoint) = extra.get("checkpoint") {
         params["entry"] = json!({"role":"assistant","content":"","tool_calls":[{"id":format!("call-{tag}"),"type":"function",
-            "function":{"name":"work_checkpoint","arguments":checkpoint.to_string()}}]});
+            "function":{"name":"checkpoint","arguments":checkpoint.to_string()}}]});
     }
     for (key, value) in extra.as_object().unwrap() {
         params[key] = value.clone();

@@ -14,6 +14,11 @@ mod interface;
 
 const HELP: &str = "TeamAgents: work with a Leader in your terminal
 
+Quick start:
+  1. teamagents init                Create config and session storage
+  2. export DEEPSEEK_API_KEY=\"key\"  Set your API key
+  3. teamagents                     Start chatting in this folder
+
 usage: teamagents [--cwd DIR] [--session ID] [--model KEY] [-c key=value]...
 
   teamagents                 Open the TUI; resume this workspace's latest session
@@ -2811,8 +2816,17 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
         match child.try_wait() {
             Ok(Some(status)) if !status.success() => {
                 let detail = tail_from(&log_path, log_start, 600);
+                let lower = detail.to_ascii_lowercase();
+                let hint = if lower.contains("missing api key")
+                    || lower.contains("no model")
+                    || lower.contains("api_key")
+                {
+                    "\nQuick fix: run `teamagents doctor` to check config and API keys, or `teamagents init` on a first run."
+                } else {
+                    ""
+                };
                 return Err(format!(
-                    "the daemon exited while starting ({status}): {detail}\nsee {} or run teamagents daemon --state-root {} by hand",
+                    "the daemon exited while starting ({status}): {detail}\nsee {} or run teamagents daemon --state-root {} by hand{hint}",
                     log_path.display(),
                     state_root.display()
                 ));

@@ -153,7 +153,7 @@ const DEFAULT_MAX_CHECK_ROUNDS: i64 = 3;
 /// client's own bound), and a claim it cannot compute is worse than a fixed one it can.
 const DEADLINE_WARNING_SECS: f64 = 120.0;
 
-/// The names of the kernel's built-in tools (`finish`, `read_history`), which `team_kernel` does not carry in
+/// The names of the kernel's built-in tools (`finish`, `history`), which `team_kernel` does not carry in
 /// `profile.tools` but a dispatch or an error message must still know (D-402).
 fn builtin_names() -> impl Iterator<Item = String> {
     teamagents_core::kernel::builtin_tool_schemas()
@@ -1268,7 +1268,7 @@ impl<P: Provider> Driver<P> {
             .call(move |control| teamagents_core::v2::control::search_tree_prompt(control.connection(), &session))
             .await??;
         request.messages.push(json!({"role":"user","content":format!(
-            "[Session search tree. Derived navigation claims, not authority or completion evidence. Focus guides attention only; no side effect is rewound. The full tree is available through search_tree.show.]\n{tree}"
+            "[Session search tree. Derived navigation claims, not authority or completion evidence. Focus guides attention only; no side effect is rewound. The full tree is available through tree.show.]\n{tree}"
         )}));
         request.est_prompt_tokens =
             teamagents_core::kernel::estimated_request_tokens(&request.messages, &request.tools);
@@ -1461,7 +1461,7 @@ impl<P: Provider> Driver<P> {
         }
         // the receipt index keeps covered calls discoverable even when the
         // model omits ids from its prose or the middle was elided
-        let mut index = String::from("Tool output index (read_history tool_call_id):\n");
+        let mut index = String::from("Tool output index (history tool_call_id):\n");
         for entry in &covered {
             if let Some(id) = entry.message["tool_call_id"].as_str() {
                 let refs = if entry.refs.is_empty() { String::new() } else { format!(" [{}]", entry.refs.join(" ")) };
@@ -2710,7 +2710,8 @@ that delegated it learns the outcome only from a settlement.";
     /// D-469: independent read-only calls in one model batch. Dispatch and receipt writes stay sequential and in
     /// order; only the tool work runs concurrently. Returns true when the whole batch was handled here.
     async fn step_read_batch(&mut self, ops: &[(String, String, String, bool)]) -> Result<bool, String> {
-        const READ_ONLY: &[&str] = &["read_file", "read_artifact", "grep", "glob", "skill"];
+        const READ_ONLY: &[&str] =
+            &["read", "read_file", "read_artifact", "image", "view_image", "grep", "glob", "skill"];
         if ops.len() < 2 || ops.iter().any(|(_, status, _, _)| status != "PREPARED") {
             return Ok(false);
         }
@@ -2920,8 +2921,10 @@ that delegated it learns the outcome only from a settlement.";
             match name {
                 "shell" => self.execute_shell(&operation_id, &intent, !recovered, TimeoutSource::Model).await?,
                 "request_self_update" => self.execute_update_request(&operation_id, &intent, recovered).await?,
-                "read_history" => self.execute_readback(&operation_id, &intent, snapshot).await?,
-                teamagents_core::kernel::SEARCH_TREE_TOOL => {
+                teamagents_core::kernel::READBACK_TOOL | "read_history" => {
+                    self.execute_readback(&operation_id, &intent, snapshot).await?
+                }
+                teamagents_core::kernel::SEARCH_TREE_TOOL | "search_tree" => {
                     self.execute_search_tree(&operation_id, &intent, recovered).await?
                 }
                 // A `finish` that stated no usable outcome arrives here as an
@@ -2940,12 +2943,15 @@ that delegated it learns the outcome only from a settlement.";
                 | teamagents_core::kernel::DELEGATE_TOOL
                 | teamagents_core::kernel::SPAWN_TOOL
                 | teamagents_core::kernel::VERIFY_TOOL
+                | "verify_work"
                 | teamagents_core::kernel::CANCEL_TOOL
-                | teamagents_core::kernel::APPROVAL_TOOL => self.execute_collaboration(&operation_id, &intent).await?,
+                | "cancel_task"
+                | teamagents_core::kernel::APPROVAL_TOOL
+                | "decide_approval" => self.execute_collaboration(&operation_id, &intent).await?,
                 _ if recovered
                     && (intent["remote_dispatch"] == true
                         || self.toolkit.is_mcp_tool(name)
-                        || matches!(name, "write_file" | "edit_file" | "edit_files" | "delete")) =>
+                        || matches!(name, "write" | "write_file" | "edit" | "edit_file" | "edit_files" | "delete")) =>
                 {
                     // The mutation may already have reached disk or the remote peer. Only a
                     // terminal receipt establishes its result, even when current bytes match.
@@ -3251,7 +3257,7 @@ that delegated it learns the outcome only from a settlement.";
                         operation_id,
                         intent,
                         "search_tree_arguments",
-                        &format!("unknown search_tree action {other:?}"),
+                        &format!("unknown tree action {other:?}"),
                     )
                     .await
             }
@@ -3422,22 +3428,19 @@ that delegated it learns the outcome only from a settlement.";
             teamagents_core::kernel::SEND_TOOL => {
                 ("send_message", json!({"recipient": args["recipient"], "text": args["text"]}))
             }
-            teamagents_core::kernel::CANCEL_TOOL => {
+            teamagents_core::kernel::CANCEL_TOOL | "cancel_task" => {
                 let mut params = json!({"task_id": args["task_id"]});
                 if let Some(reason) = args.get("reason") {
                     params["reason"] = reason.clone();
                 }
                 ("cancel_task", params)
             }
-            teamagents_core::kernel::VERIFY_TOOL => {
+            teamagents_core::kernel::VERIFY_TOOL | "verify_work" => {
                 // D-393: run the target work's user-pre-authorized checks as *this* instance and answer the model
                 // with the verdict. The round is registered under this instance id, which is exactly what a work
                 // requiring independent verification settles on — the producer's own round cannot.
-                let target = args["work_id"]
-                    .as_str()
-                    .filter(|id| !id.is_empty())
-                    .ok_or("verify_work.work_id required")?
-                    .to_string();
+                let target =
+                    args["work_id"].as_str().filter(|id| !id.is_empty()).ok_or("verify.work_id required")?.to_string();
                 let (checks, _max_rounds) = self.required_checks(&target).await?;
                 if checks.is_empty() {
                     return Err(format!("work {target} carries no required checks: there is nothing to verify"));
@@ -3535,7 +3538,7 @@ that delegated it learns the outcome only from a settlement.";
                 }
                 ("spawn_instance", params)
             }
-            teamagents_core::kernel::APPROVAL_TOOL => match args["action"].as_str().unwrap_or("") {
+            teamagents_core::kernel::APPROVAL_TOOL | "decide_approval" => match args["action"].as_str().unwrap_or("") {
                 "list" => {
                     let leader_id = self.config.leader_id.clone();
                     let snapshot = self
@@ -3637,7 +3640,7 @@ that delegated it learns the outcome only from a settlement.";
                                     operation_id,
                                     intent,
                                     "collaboration",
-                                    "decide_approval approve/deny requires exactly one of approval_id or request_id",
+                                    "decide approve/deny requires exactly one of approval_id or request_id",
                                 )
                                 .await;
                         }
@@ -3649,7 +3652,7 @@ that delegated it learns the outcome only from a settlement.";
                             operation_id,
                             intent,
                             "collaboration",
-                            "decide_approval.action must be list, approve, or deny",
+                            "decide.action must be list, approve, or deny",
                         )
                         .await;
                 }
@@ -3759,7 +3762,7 @@ that delegated it learns the outcome only from a settlement.";
         // allowing every host (the inverted behaviour this replaced).
         let scopes = self.web_grant_scopes().await?;
         let mut control = crate::tools::TurnControl::with_web_scopes(scopes);
-        let edit_record = (name == "edit_file").then(|| control.record_native_edit());
+        let edit_record = matches!(name.as_str(), "edit" | "edit_file").then(|| control.record_native_edit());
         let receipt = tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &control))
             .await
             .map_err(|e| format!("tool worker join: {e}"))?;
@@ -4201,7 +4204,7 @@ that delegated it learns the outcome only from a settlement.";
             // D-393: the checks may pass and the work still not be settleable — when it *requires* independent
             // verification and the round that passed is this instance's own. The synthetic failure rides the
             // ordinary bounded repair path, so the model is told exactly what is missing and what resolves it
-            // (another instance calling `verify_work`), and an unwilling or unable producer parks BLOCKED.
+            // (another instance calling `verify`), and an unwilling or unable producer parks BLOCKED.
             if failures.is_empty()
                 && self.requires_independent(work).await?
                 && !self.verifier_round_is_green(work).await?
@@ -4209,7 +4212,7 @@ that delegated it learns the outcome only from a settlement.";
                 failures.push(json!({
                     "check_id": "independent-verification",
                     "class": "not_independent",
-                    "reason": format!("work {work} requires independent verification and {} produced this claim;                                        have another instance run `verify_work {work}`", self.config.instance_id),
+                    "reason": format!("work {work} requires independent verification and {} produced this claim;                                        have another instance run `verify {work}`", self.config.instance_id),
                 }));
             }
             if failures.is_empty() {

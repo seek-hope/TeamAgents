@@ -138,7 +138,12 @@ fn probe_session(root: &str) -> (bool, usize, usize, usize) {
                 && matches!(row["phase"].as_str(), Some("MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING"))
         })
         .count();
-    let approvals =
-        client.call("approvals", json!({})).ok().and_then(|r| r["approvals"].as_array().map(Vec::len)).unwrap_or(0);
+    let approvals = client
+        .call("approvals", json!({}))
+        .ok()
+        .map(|r| {
+            r["approvals"].as_array().map_or(0, Vec::len) + r["capability_requests"].as_array().map_or(0, Vec::len)
+        })
+        .unwrap_or(0);
     (true, attention, approvals, busy)
 }

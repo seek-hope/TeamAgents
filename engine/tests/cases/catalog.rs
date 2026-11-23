@@ -153,8 +153,7 @@ fn directory_refresh_changes_only_new_requests_and_rollback_restores_metadata() 
     };
     let first = send(&mut client, 1);
     assert_eq!(first["model"], "a");
-    let has_view =
-        |body: &Value| body["tools"].as_array().unwrap().iter().any(|t| t["function"]["name"] == "view_image");
+    let has_view = |body: &Value| body["tools"].as_array().unwrap().iter().any(|t| t["function"]["name"] == "image");
     assert!(!has_view(&first));
     *directory.lock().unwrap() = changed;
     let report = catalog("refresh", true);

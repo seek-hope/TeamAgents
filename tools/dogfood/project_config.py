@@ -40,7 +40,8 @@ sys.path.insert(0, str(REPO / "tools"))   # shared pid-based stop (D-148)
 import leak_guard  # noqa: E402
 BIN = REPO / "engine/target/debug/teamagents"
 KEY_VAR = "TEAMAGENTS_PROJECT_PROBE_KEY"
-PROJECT_TOOL = "web_search"
+PROJECT_KIND = "web_search"
+PROJECT_TOOL = "search"
 
 HEAD = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n"
 FINISH = json.dumps({"status": "success", "summary": "settled without a model"})
@@ -101,7 +102,7 @@ base_url = "https://repo.invalid/v1"
 api_key_env = "{KEY_VAR}"
 
 [tools.repo_tool]
-kind = "{PROJECT_TOOL}"
+kind = "{PROJECT_KIND}"
 """
 
 
@@ -186,8 +187,8 @@ def judgement(runs: list) -> list:
 def self_check() -> int:
     """Exercise `judgement` on the measured shapes, including the one a broken gate would produce."""
     findings = []
-    trusted = "driver: surface i-leader shell=yes tools=ls,read_file," + PROJECT_TOOL + ",skill"
-    untrusted = "driver: surface i-leader shell=yes tools=ls,read_file,skill"
+    trusted = "driver: surface i-leader shell=yes tools=ls,read," + PROJECT_TOOL + ",skill"
+    untrusted = "driver: surface i-leader shell=yes tools=ls,read,skill"
     refused = "teamagents: project config /repo/.teamagents/config.toml (untrusted): accepted nothing"
     accepted = "teamagents: project config /repo/.teamagents/config.toml (trusted via trust_project): accepted tool:repo_tool"
     if judgement([("trusted", 0, trusted, accepted, True, "trust_project"),

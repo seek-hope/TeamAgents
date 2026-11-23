@@ -214,7 +214,7 @@ pub async fn run_reference<P: Provider>(
                         "tool_dispatch",
                         json!({"operation_id": operation_id, "tool": intent.name, "args_hash": intent.args_hash}),
                     )?;
-                    let receipt = if intent.name == READBACK_TOOL {
+                    let receipt = if intent.name == READBACK_TOOL || intent.name == "read_history" {
                         readback_receipt(&operation_id, &intent, &entries)
                     } else {
                         let toolkit = toolkit.clone();
@@ -308,7 +308,7 @@ impl WireBytes for ModelRequest {
 /// follows the declared capability instead of the build.
 pub fn view_image_schema() -> Json {
     let wrap = |name: &str, description: &str, parameters: Json| json!({"type": "function", "function": {"name": name, "description": description, "parameters": parameters}});
-    wrap("view_image", "Look at an image: loads a workspace image (png/jpeg/gif/webp, at most 5 MiB) so you can see it. The runtime turns the returned reference into the picture itself when the model accepts images; otherwise the call reports that the image was omitted, which is not an error. Read pixels only when the picture is still needed after that.",
+    wrap("image", "Look at an image: loads a workspace image (png/jpeg/gif/webp, at most 5 MiB) so you can see it. The runtime turns the returned reference into the picture itself when the model accepts images; otherwise the call reports that the image was omitted, which is not an error. Read pixels only when the picture is still needed after that.",
         json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}))
 }
 
@@ -317,11 +317,11 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
     let mut schemas = vec![
         wrap("ls", "List files in your workspace (path defaults to '.').",
             json!({"type":"object","properties":{"path":{"type":"string"}}})),
-        wrap("read_file", "Read UTF-8 workspace text, your own /artifacts/ files, or your private /tool-output/ logs in bounded pages. offset is a 1-based line; byte_offset is an absolute byte continuation. Follow next_byte_offset until eof. include_sha256 returns a revision for safe edits.",
+        wrap("read", "Read UTF-8 workspace text, your own /artifacts/ files, or your private /tool-output/ logs in bounded pages. offset is a 1-based line; byte_offset is an absolute byte continuation. Follow next_byte_offset until eof. include_sha256 returns a revision for safe edits.",
             json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1},"byte_offset":{"type":"integer","minimum":0},"include_sha256":{"type":"boolean"}},"required":["path"]})),
-        wrap("write_file", "Write a text file in your workspace, creating parent directories. /artifacts/ is this member's own deliverable directory — teammates cannot read it, so put work the team shares in the workspace. /tool-output/ is private and read-only.",
+        wrap("write", "Write a text file in your workspace, creating parent directories. /artifacts/ is this member's own deliverable directory — teammates cannot read it, so put work the team shares in the workspace. /tool-output/ is private and read-only.",
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path","content"]})),
-        wrap("edit_file", "Replace one occurrence of old_string, or apply several disjoint edits with `edits`. Ambiguous or overlapping matches fail the whole call unchanged. Pass expected_sha256 (or per-edit expected_sha256) from read_file to reject concurrent changes.",
+        wrap("edit", "Replace one occurrence of old_string, or apply several disjoint edits with `edits`. Ambiguous or overlapping matches fail the whole call unchanged. Pass expected_sha256 (or per-edit expected_sha256) from read to reject concurrent changes.",
             json!({"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"expected_sha256":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path","old_string","new_string"]}}}})),
         wrap("delete", "Delete a file (a directory when recursive=true) from your workspace.",
             json!({"type":"object","properties":{"path":{"type":"string"},"recursive":{"type":"boolean"}},"required":["path"]})),
@@ -329,19 +329,19 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
             json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]})),
         wrap("grep", "Search workspace files for a pattern; returns matching lines (max 100).",
             json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]})),
-        wrap("shell", "Run Bash on the host filesystem and network without per-command approval. Services may survive CLI exit; redirect service stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist per member; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.",
+        wrap("shell", "Run Bash on the host filesystem and network without per-command approval. Services may survive CLI exit; redirect service stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist per member; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.",
             json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]})),
     ];
     if web {
-        schemas.push(wrap("web_search", "Search the web through the bound DeepSeek and/or Exa providers and return ranked, deduplicated results (title, URL, snippet, site, date and authority). provider=auto uses every bound provider; both requires both; deepseek/exa selects one. Partial provider failures are reported in warnings. Use include_content=false first and web_fetch for pages that matter. Identical searches share a 300-second cache.",
+        schemas.push(wrap("search", "Search the web through the bound DeepSeek and/or Exa providers and return ranked, deduplicated results (title, URL, snippet, site, date and authority). provider=auto uses every bound provider; both requires both; deepseek/exa selects one. Partial provider failures are reported in warnings. Use include_content=false first and fetch for pages that matter. Identical searches share a 300-second cache.",
             json!({"type":"object","additionalProperties":false,"properties":{
                 "query":{"type":"string","minLength":1,"maxLength":128,"description":"Short search query (1-128 characters); site:, -site: and quoted phrases are supported."},
                 "max_results":{"type":"integer","minimum":1,"maximum":50,"default":10,"description":"Number of results to return (1-50, default 10)."},
-                "include_content":{"type":"boolean","default":false,"description":"Include extracted page content; costs more tokens, so prefer web_fetch for selected pages."},
+                "include_content":{"type":"boolean","default":false,"description":"Include extracted page content; costs more tokens, so prefer fetch for selected pages."},
                 "ori_question":{"type":"string","maxLength":128,"description":"The user's original question, which helps the search engine understand intent."},
                 "provider":{"type":"string","enum":["auto","deepseek","exa","both"],"default":"auto","description":"auto uses every bound provider; both requires DeepSeek and Exa; deepseek/exa restricts the source."}
             },"required":["query"]})));
-        schemas.push(wrap("web_fetch", "Fetch readable page text through bound providers. auto prefers Exa and falls back to DeepSeek on transient errors only. For truncated content, read full_path with read_file starting at next_byte_offset.",
+        schemas.push(wrap("fetch", "Fetch readable page text through bound providers. auto prefers Exa and falls back to DeepSeek on transient errors only. For truncated content, read full_path with read starting at next_byte_offset.",
             json!({"type":"object","properties":{"url":{"type":"string"},"provider":{"type":"string","enum":["auto","exa","deepseek"],"default":"auto"},"max_bytes":{"type":"integer","minimum":0,"description":"UTF-8 preview bytes. Direct calls return up to 32000 bytes; codemode defaults to all extracted text."}},"required":["url"]})));
     }
     if skills {
@@ -380,8 +380,8 @@ pub fn session_tool_schemas(catalog: &UserConfig) -> Vec<Json> {
     let declares = |kind: &str| catalog.tools.values().any(|binding| binding.kind == kind);
     let mut schemas = basic_tool_schemas(true, true);
     schemas.retain(|tool| match tool["function"]["name"].as_str().unwrap_or_default() {
-        "web_search" => declares("web_search"),
-        "web_fetch" => declares("web_fetch"),
+        "search" => declares("web_search"),
+        "fetch" => declares("web_fetch"),
         _ => true,
     });
     // D-405: durable memory is a session capability, so it rides the session's profile
@@ -411,20 +411,20 @@ mod tests {
 
         // nothing declared: neither web tool, but the rest of the basics and `skill` are offered
         let without = names(&UserConfig::default());
-        assert!(!has(&without, "web_search") && !has(&without, "web_fetch"), "{without:?}");
+        assert!(!has(&without, "search") && !has(&without, "fetch"), "{without:?}");
         assert!(has(&without, "skill"), "skills stay offered: {without:?}");
-        assert!(has(&without, "shell") && has(&without, "write_file"), "{without:?}");
+        assert!(has(&without, "shell") && has(&without, "write"), "{without:?}");
 
         // exactly one kind declared: exactly that tool is offered
         let mut fetch_only = UserConfig::default();
         fetch_only.tools.insert("fetch".into(), binding("web_fetch"));
         let fetch_only = names(&fetch_only);
-        assert!(has(&fetch_only, "web_fetch") && !has(&fetch_only, "web_search"), "{fetch_only:?}");
+        assert!(has(&fetch_only, "fetch") && !has(&fetch_only, "search"), "{fetch_only:?}");
 
         let mut both = UserConfig::default();
         both.tools.insert("fetch".into(), binding("web_fetch"));
         both.tools.insert("search".into(), binding("web_search"));
         let both = names(&both);
-        assert!(has(&both, "web_fetch") && has(&both, "web_search"), "{both:?}");
+        assert!(has(&both, "fetch") && has(&both, "search"), "{both:?}");
     }
 }

@@ -97,7 +97,7 @@ fn reply(text: &str) -> Json {
 
 fn search_tree_call(id: &str, args: Json) -> Json {
     json!({"role":"assistant","content":"",
-           "tool_calls":[{"id":id,"type":"function","function":{"name":"search_tree","arguments":args.to_string()}}]})
+           "tool_calls":[{"id":id,"type":"function","function":{"name":"tree","arguments":args.to_string()}}]})
 }
 
 fn shell_call(id: &str, command: &str) -> Json {
@@ -531,7 +531,7 @@ async fn view_image_reaches_the_wire_as_a_part_only_for_a_model_that_declares_im
             vec![
                 json!({"role": "assistant", "content": "",
                        "tool_calls": [{"id": "img-1", "type": "function",
-                                       "function": {"name": "view_image", "arguments": json!({"path": "shot.png"}).to_string()}}]}),
+                                       "function": {"name": "image", "arguments": json!({"path": "shot.png"}).to_string()}}]}),
                 finish_call("looked at the picture"),
             ],
         )]);
@@ -639,7 +639,7 @@ async fn the_surface_record_follows_the_grants_and_is_written_once_per_request()
     let first = records(&mut client).await;
     let first_leader = first.iter().find(|row| row["instance_id"] == json!("i-leader")).cloned().unwrap_or_default();
     let offered = names(&first_leader);
-    for gated in ["wait", "send", "delegate", "spawn", "cancel_task", "decide_approval"] {
+    for gated in ["wait", "send", "delegate", "spawn", "cancel", "decide"] {
         assert!(offered.iter().any(|name| name == gated), "{gated} was not offered: {offered:?}");
     }
     assert!(!offered.iter().any(|name| name == "shell"), "no shell grant exists yet: {offered:?}");
@@ -1429,7 +1429,7 @@ async fn autonomy_headless_question_answer_and_successor_acceptance() {
     let root = root("autonomy-exec");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let question = json!({"role":"assistant","content":"Which API target?","tool_calls":[{"id":"ask","type":"function",
-        "function":{"name":"work_checkpoint","arguments":json!({"action":"ask_user","question":"Which API target?"}).to_string()}}]});
+        "function":{"name":"checkpoint","arguments":json!({"action":"ask_user","question":"Which API target?"}).to_string()}}]});
     let scripts = HashMap::from([(
         "i-leader".to_string(),
         vec![
@@ -1471,7 +1471,7 @@ async fn autonomy_headless_distinguishes_information_from_new_work() {
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     std::fs::write(root.dir.join("ws/answer.txt"), "Second result.").unwrap();
     let read = json!({"role":"assistant","content":"","tool_calls":[{"id":"answer","type":"function",
-        "function":{"name":"read_file","arguments":json!({"path":"answer.txt"}).to_string()}}]});
+        "function":{"name":"read","arguments":json!({"path":"answer.txt"}).to_string()}}]});
     let finish = json!({"role":"assistant","content":"","tool_calls":[{"id":"done","type":"function",
         "function":{"name":"finish","arguments":json!({"status":"success","summary":"Second result.","evidence":["tool:answer"]}).to_string()}}]});
     let scripts = HashMap::from([(
@@ -1790,7 +1790,7 @@ async fn an_independent_work_does_not_settle_on_its_producers_own_passing_round(
         .filter_map(|event| event["payload"]["failures"][0]["reason"].as_str().map(str::to_string))
         .collect();
     assert!(
-        reasons.iter().any(|reason| reason.contains("verify_work")),
+        reasons.iter().any(|reason| reason.contains("`verify ")),
         "the producer must be told how another instance can verify it: {reasons:?}"
     );
     handle.shutdown().await.expect("shutdown");
@@ -2754,5 +2754,213 @@ async fn terminating_an_enrolled_inflight_run_reports_failed_not_unsettled() {
     assert_eq!(run.end.exit_code(run.checks_ok), 1);
     assert!(run.report["failure"].as_str().is_some_and(|s| s.contains("is terminated")), "{}", run.report);
     assert!(!workspace.join("should-not-run").exists(), "terminated turn must not run acceptance checks");
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn approvals_surface_lists_and_decides_pending_capability_requests() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let leader = vec![
+        json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "sp-1", "type": "function", "function": {
+                "name": "spawn",
+                "arguments": json!({"instance_id": "i-cap-approve", "instructions": "do work"}).to_string()
+            }},
+            {"id": "sp-2", "type": "function", "function": {
+                "name": "spawn",
+                "arguments": json!({"instance_id": "i-cap-deny", "instructions": "do work"}).to_string()
+            }}
+        ]}),
+        json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "del-1", "type": "function", "function": {
+                "name": "delegate",
+                "arguments": json!({
+                    "assignee": "i-cap-approve",
+                    "task_id": "t-cap-approve",
+                    "description": "fetch approved domain",
+                    "capabilities": ["web@domain:withparent.invalid"]
+                }).to_string()
+            }},
+            {"id": "del-2", "type": "function", "function": {
+                "name": "delegate",
+                "arguments": json!({
+                    "assignee": "i-cap-deny",
+                    "task_id": "t-cap-deny",
+                    "description": "fetch denied domain",
+                    "capabilities": ["web@domain:noparent.invalid"]
+                }).to_string()
+            }}
+        ]}),
+        shell_call("c1", "true"),
+        finish_call("all approvals handled"),
+    ];
+    let scripts = HashMap::from([
+        ("i-leader".to_string(), leader),
+        ("i-cap-approve".to_string(), vec![finish_call("approved worker finished")]),
+        ("i-cap-deny".to_string(), vec![finish_call("should not run")]),
+    ]);
+    let root = root("approvals-cap-requests");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.require_shell_approval = true;
+    let handle = serve(cfg).await.expect("daemon");
+    let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
+    let since = client.call("checkpoint", json!({})).await["result"]["watermark"].as_i64().unwrap();
+    let initial_grants = client.call("grants", json!({})).await;
+    assert_eq!(initial_grants["ok"], json!(true), "{initial_grants}");
+    let boot_web_grant = initial_grants["result"]["grants"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().find(|row| row["subject"] == json!("i-leader") && row["action"] == json!("web")).cloned()
+        })
+        .unwrap_or_else(|| panic!("missing leader boot web grant: {initial_grants}"));
+    let revoked =
+        client.command("cmd-revoke-leader-web", "revoke_grant", json!({"grant_id": boot_web_grant["id"]})).await;
+    assert_eq!(revoked["ok"], json!(true), "{revoked}");
+
+    let issued = client
+        .command(
+            "cmd-grant-leader-web",
+            "issue_grant",
+            json!({
+                "subject": "i-leader",
+                "action": "web",
+                "resource_scope": "domain:withparent.invalid",
+                "delegable": false
+            }),
+        )
+        .await;
+    assert_eq!(issued["ok"], json!(true), "{issued}");
+    let parent_grant_id = issued["result"]["grant_id"].as_str().unwrap().to_string();
+
+    let submitted = client.command("cmd-cap-input", "submit_input", input_params("run approvals")).await;
+    assert_eq!(submitted["ok"], json!(true), "{submitted}");
+
+    let mut listed = Json::Null;
+    for _ in 0..400 {
+        let reply = client.call("approvals", json!({})).await;
+        assert_eq!(reply["ok"], json!(true), "{reply}");
+        let op_count = reply["result"]["approvals"].as_array().map_or(0, Vec::len);
+        let cap_count = reply["result"]["capability_requests"].as_array().map_or(0, Vec::len);
+        if op_count == 1 && cap_count == 2 {
+            listed = reply;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!listed.is_null(), "expected 1 pending approval and 2 pending capability requests");
+
+    let pending_ops = listed["result"]["approvals"].as_array().unwrap();
+    assert_eq!(pending_ops.len(), 1, "{listed}");
+    let approval_id = pending_ops[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(pending_ops[0]["tool"], json!("shell"));
+    assert_eq!(pending_ops[0]["preview"], json!("true"));
+
+    let pending_caps = listed["result"]["capability_requests"].as_array().unwrap();
+    assert_eq!(pending_caps.len(), 2, "{listed}");
+    let grants = client.call("grants", json!({})).await;
+    assert_eq!(grants["ok"], json!(true), "{grants}");
+    assert_eq!(
+        listed["result"]["capability_requests"], grants["result"]["capability_requests"],
+        "approvals and grants must report the exact same pending capability_requests shape"
+    );
+
+    let approve_req = pending_caps
+        .iter()
+        .find(|row| row["task_id"] == json!("t-cap-approve"))
+        .unwrap_or_else(|| panic!("missing t-cap-approve request: {listed}"));
+    assert!(approve_req["id"].as_str().is_some_and(|id| !id.is_empty()), "{approve_req}");
+    assert_eq!(approve_req["requester"], json!("i-leader"));
+    assert_eq!(approve_req["subject"], json!("i-cap-approve"));
+    assert_eq!(approve_req["action"], json!("web"));
+    assert_eq!(approve_req["resource_scope"], json!("domain:withparent.invalid"));
+    assert_eq!(approve_req["task_id"], json!("t-cap-approve"));
+    assert_eq!(approve_req["parent_grant_id"], json!(parent_grant_id));
+    assert_eq!(approve_req["status"], json!("PENDING"));
+    let approve_req_id = approve_req["id"].as_str().unwrap().to_string();
+
+    let deny_req = pending_caps
+        .iter()
+        .find(|row| row["task_id"] == json!("t-cap-deny"))
+        .unwrap_or_else(|| panic!("missing t-cap-deny request: {listed}"));
+    assert!(deny_req["id"].as_str().is_some_and(|id| !id.is_empty()), "{deny_req}");
+    assert_eq!(deny_req["requester"], json!("i-leader"));
+    assert_eq!(deny_req["subject"], json!("i-cap-deny"));
+    assert_eq!(deny_req["action"], json!("web"));
+    assert_eq!(deny_req["resource_scope"], json!("domain:noparent.invalid"));
+    assert_eq!(deny_req["task_id"], json!("t-cap-deny"));
+    assert_eq!(deny_req["parent_grant_id"], Json::Null);
+    assert_eq!(deny_req["status"], json!("PENDING"));
+    let deny_req_id = deny_req["id"].as_str().unwrap().to_string();
+
+    let approved = client.command("cmd-approve-cap", "approve_capability", json!({"request_id": approve_req_id})).await;
+    assert_eq!(approved["ok"], json!(true), "{approved}");
+    let after_approve = client.call("approvals", json!({})).await;
+    assert_eq!(after_approve["ok"], json!(true), "{after_approve}");
+    let remaining_after_approve = after_approve["result"]["capability_requests"].as_array().unwrap();
+    assert_eq!(remaining_after_approve.len(), 1, "{after_approve}");
+    assert_eq!(remaining_after_approve[0]["id"], json!(deny_req_id));
+    assert_eq!(after_approve["result"]["approvals"].as_array().unwrap().len(), 1);
+
+    let denied = client.command("cmd-deny-cap", "deny_capability", json!({"request_id": deny_req_id})).await;
+    assert_eq!(denied["ok"], json!(true), "{denied}");
+    let after_deny = client.call("approvals", json!({})).await;
+    assert_eq!(after_deny["ok"], json!(true), "{after_deny}");
+    assert!(after_deny["result"]["capability_requests"].as_array().unwrap().is_empty(), "{after_deny}");
+    assert_eq!(after_deny["result"]["approvals"].as_array().unwrap().len(), 1);
+
+    let approved_op = client.command("cmd-approve-shell", "approve", json!({"approval_id": approval_id})).await;
+    assert_eq!(approved_op["ok"], json!(true), "{approved_op}");
+    let (status, _) = wait_work(&mut client, since).await;
+    assert_eq!(status, "SUCCEEDED");
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn checkpoint_snapshot_work_includes_active_or_latest_work_id() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("settled")])]);
+    let (root, handle) = boot("checkpoint-work-id", scripts).await;
+    let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
+    let db = rusqlite::Connection::open_with_flags(
+        root.dir.join("session.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("open session db");
+    let latest_work_id = || -> String {
+        db.query_row("SELECT id FROM work_scopes ORDER BY (status = 'ACTIVE') DESC, rowid DESC LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .expect("read latest work_scopes id")
+    };
+
+    let initial = client.call("checkpoint", json!({})).await;
+    assert_eq!(initial["ok"], json!(true), "{initial}");
+    assert_eq!(initial["result"]["snapshot"]["work"]["id"], json!(latest_work_id()), "{initial}");
+    assert_eq!(initial["result"]["snapshot"]["work"]["status"], json!("ACTIVE"), "{initial}");
+
+    let since = initial["result"]["watermark"].as_i64().unwrap();
+    let submitted = client.command("cmd-settle-boot-work", "submit_input", input_params("finish")).await;
+    assert_eq!(submitted["ok"], json!(true), "{submitted}");
+    let (status, _) = wait_work(&mut client, since).await;
+    assert_eq!(status, "SUCCEEDED");
+    let settled = client.call("checkpoint", json!({})).await;
+    assert_eq!(settled["result"]["snapshot"]["work"]["id"], json!(latest_work_id()), "{settled}");
+    assert_eq!(settled["result"]["snapshot"]["work"]["status"], json!("SUCCEEDED"), "{settled}");
+
+    let opened = client.command("cmd-open-second-work", "create_work", json!({"id": "work-second"})).await;
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    let active_second = client.call("checkpoint", json!({})).await;
+    assert_eq!(active_second["result"]["snapshot"]["work"]["id"], json!("work-second"), "{active_second}");
+    assert_eq!(active_second["result"]["snapshot"]["work"]["id"], json!(latest_work_id()), "{active_second}");
+    assert_eq!(active_second["result"]["snapshot"]["work"]["status"], json!("ACTIVE"), "{active_second}");
+
+    let cancelled = client.command("cmd-cancel-second-work", "cancel_work", json!({"work_id": "work-second"})).await;
+    assert_eq!(cancelled["ok"], json!(true), "{cancelled}");
+    let after_cancel = client.call("checkpoint", json!({})).await;
+    assert_eq!(after_cancel["result"]["snapshot"]["work"]["id"], json!("work-second"), "{after_cancel}");
+    assert_eq!(after_cancel["result"]["snapshot"]["work"]["id"], json!(latest_work_id()), "{after_cancel}");
+    assert_eq!(after_cancel["result"]["snapshot"]["work"]["status"], json!("CANCELLED"), "{after_cancel}");
+
     handle.shutdown().await.expect("shutdown");
 }

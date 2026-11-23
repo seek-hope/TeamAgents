@@ -229,6 +229,7 @@ impl SessionBrowser {
                     key.code,
                     KeyCode::Up
                         | KeyCode::Down
+                        | KeyCode::Char('j' | 'k')
                         | KeyCode::PageUp
                         | KeyCode::PageDown
                         | KeyCode::Left
@@ -275,6 +276,10 @@ impl SessionBrowser {
                         });
                     }
                 }
+                KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.search_query.clear();
+                    self.error = None;
+                }
                 KeyCode::Char(character)
                     if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                         && !character.is_control()
@@ -313,10 +318,10 @@ impl SessionBrowser {
             KeyCode::Char('/') if key.modifiers.is_empty() => self.begin_search(),
             KeyCode::Char('d') | KeyCode::Delete if self.search_active() => {}
             KeyCode::Char('[') | KeyCode::Char(']') if self.search_active() => {}
-            KeyCode::Up if self.search_active() => {
+            KeyCode::Up | KeyCode::Char('k') if self.search_active() => {
                 self.search_selected = self.search_selected.saturating_sub(1);
             }
-            KeyCode::Down if self.search_active() => {
+            KeyCode::Down | KeyCode::Char('j') if self.search_active() => {
                 self.search_selected = (self.search_selected + 1).min(self.search_hits.len().saturating_sub(1));
             }
             KeyCode::Home if self.search_active() => self.search_selected = 0,
@@ -353,8 +358,10 @@ impl SessionBrowser {
             KeyCode::PageDown if self.search_active() => {
                 self.search_selected = (self.search_selected + 10).min(self.search_hits.len().saturating_sub(1));
             }
-            KeyCode::Up => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Down => self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1)),
+            KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1))
+            }
             KeyCode::Home => self.selected = 0,
             KeyCode::End => self.selected = self.rows.len().saturating_sub(1),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(self.last_height),

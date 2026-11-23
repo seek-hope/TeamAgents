@@ -8,28 +8,28 @@ use serde_json::{json, Value as Json};
 /// Built-in completion tool: the single CompletionCandidate entry point (§8).
 pub const FINISH_TOOL: &str = "finish";
 /// Built-in readback tool: pages the full stored output of an earlier call.
-pub const READBACK_TOOL: &str = "read_history";
+pub const READBACK_TOOL: &str = "history";
 /// Leader-only session exploration navigation (D-504).
-pub const SEARCH_TREE_TOOL: &str = "search_tree";
+pub const SEARCH_TREE_TOOL: &str = "tree";
 /// Collaboration tools (§5.2): wait is a control-flow action (sole call,
 /// like finish); send/delegate/spawn are ordinary tool intents whose grants
 /// are re-checked at the dispatch linearization point (§6.1).
 pub const WAIT_TOOL: &str = "wait";
 /// Durable work checkpoint; a sole control action, offered only for enrolled work.
-pub const WORK_TOOL: &str = "work_checkpoint";
+pub const WORK_TOOL: &str = "checkpoint";
 pub const SEND_TOOL: &str = "send";
 pub const DELEGATE_TOOL: &str = "delegate";
 pub const SPAWN_TOOL: &str = "spawn";
 /// D-265: the requester's own exit from a task it delegated (§5.3 says "the requester or the user closes
 /// it"); the control plane re-checks that the caller *is* the requester at dispatch.
-pub const CANCEL_TOOL: &str = "cancel_task";
+pub const CANCEL_TOOL: &str = "cancel";
 /// D-393: the independent-verification tool. An instance runs *another* work's user-pre-authorized checks and the
 /// round is recorded under its own instance, which is what a work requiring independent verification settles on.
-pub const VERIFY_TOOL: &str = "verify_work";
+pub const VERIFY_TOOL: &str = "verify";
 /// Leader-only Worker approval tool (D-537): inspects and decides pending
 /// Worker operation approvals and capability requests within the Leader's
 /// own granted authority (never self-approval, never self-update).
-pub const APPROVAL_TOOL: &str = "decide_approval";
+pub const APPROVAL_TOOL: &str = "decide";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -437,7 +437,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
     let mut schemas = Vec::new();
     for action in actions {
         let schema = match *action {
-            WORK_TOOL => json!({
+            WORK_TOOL | "work_checkpoint" => json!({
                 "type":"function", "function": {
                     "name":WORK_TOOL,
                     "description":"Save durable work progress or ask a material user question. Must be the sole tool call. start_work admits a new actionable user request only during input admission and requires objective. continue requires next_step; ask_user requires question; blocked requires reason. Checkpoints are model claims, not new authority. Record remaining items honestly; clear them only after appropriate evidence. Use wait for tool/member events and finish for completion. Routine short tasks within admitted work need no progress checkpoint; during input admission a tool call can start the new work directly.",
@@ -467,7 +467,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                     }
                 }
             }),
-            VERIFY_TOOL => json!({
+            VERIFY_TOOL | "verify_work" => json!({
                 "type": "function",
                 "function": {
                     "name": VERIFY_TOOL,
@@ -481,7 +481,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                     }
                 }
             }),
-            APPROVAL_TOOL => json!({
+            APPROVAL_TOOL | "decide_approval" => json!({
                 "type": "function",
                 "function": {
                     "name": APPROVAL_TOOL,
@@ -536,7 +536,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                     }
                 }
             }),
-            CANCEL_TOOL => json!({
+            CANCEL_TOOL | "cancel_task" => json!({
                 "type": "function",
                 "function": {
                     "name": CANCEL_TOOL,

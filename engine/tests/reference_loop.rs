@@ -150,26 +150,29 @@ fn readback_pages_masked_outputs() {
     let big = "0123456789".repeat(3_000); // 30k chars > per-call cap
     let provider = ScriptedProvider::new(vec![
         Ok(tool_call("call1", "shell", &json!({"command": format!("printf %s {big}"), "timeout": 10}).to_string())),
-        Ok(tool_call("call2", "read_history", r#"{"tool_call_id":"call1","offset":29990,"limit":20}"#)),
+        Ok(tool_call("call2", "history", r#"{"tool_call_id":"call1","offset":29990,"limit":20}"#)),
+        Ok(tool_call("call3", "read_history", r#"{"tool_call_id":"call1","offset":29990,"limit":20}"#)),
         Ok(finish("success", "paged the output")),
     ]);
     let outcome = run(&provider, config(&workspace, &trace), "big output");
     assert!(matches!(outcome.end, ReferenceEnd::Completed(_)));
     let trace_text = std::fs::read_to_string(&outcome.trace_path).unwrap();
-    let readback = trace_text
-        .lines()
-        .filter(|l| l.contains("tool_receipt"))
-        .map(|l| serde_json::from_str::<Json>(l).unwrap())
-        .find(|r| r["receipt"]["tool"] == "read_history")
-        .expect("readback receipt");
-    assert_eq!(readback["receipt"]["ok"], true);
-    // the receipt carries the model-facing envelope {"output": <page>}
-    let envelope: Json = serde_json::from_str(readback["receipt"]["content"].as_str().unwrap()).unwrap();
-    let page = &envelope["output"];
-    // the stored shell result is the {"output": ...} envelope: 30_000 + 13
-    assert_eq!(page["total_chars"], json!(30_013));
-    assert_eq!(page["offset"], json!(29_990));
-    assert_eq!(page["output"].as_str().unwrap().len(), 20);
+    for expected_tool in ["history", "read_history"] {
+        let readback = trace_text
+            .lines()
+            .filter(|l| l.contains("tool_receipt"))
+            .map(|l| serde_json::from_str::<Json>(l).unwrap())
+            .find(|r| r["receipt"]["tool"] == expected_tool)
+            .expect("readback receipt");
+        assert_eq!(readback["receipt"]["ok"], true);
+        // the receipt carries the model-facing envelope {"output": <page>}
+        let envelope: Json = serde_json::from_str(readback["receipt"]["content"].as_str().unwrap()).unwrap();
+        let page = &envelope["output"];
+        // the stored shell result is the {"output": ...} envelope: 30_000 + 13
+        assert_eq!(page["total_chars"], json!(30_013));
+        assert_eq!(page["offset"], json!(29_990));
+        assert_eq!(page["output"].as_str().unwrap().len(), 20);
+    }
 }
 
 #[test]

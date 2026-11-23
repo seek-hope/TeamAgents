@@ -589,8 +589,8 @@ async fn explicit_profile_switch_routes_a_shared_wire_name_to_the_selected_endpo
     let two: Json = serde_json::from_str(&second.bodies.lock().unwrap()[0]).unwrap();
     assert_eq!(one["model"], "shared-wire");
     assert_eq!(one["temperature"], 0.1);
-    assert!(one.to_string().contains("view_image"));
-    assert!(!two["tools"].to_string().contains("view_image"));
+    assert!(one["tools"].to_string().contains("\"name\":\"image\""));
+    assert!(!two["tools"].to_string().contains("\"name\":\"image\""));
     assert!(two["contents"].to_string().contains("second question"));
     assert_eq!(two["generationConfig"]["temperature"], 0.9);
     assert_eq!(first.bodies().len(), 1);
@@ -1682,7 +1682,7 @@ async fn a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task() {
 /// D-265: the **delegator's** own exit from a task it delegated. The design says "the requester or the user
 /// closes it" (§5.3), and until now only the user had a path to it (`teamagents tasks cancel`, the test above):
 /// a leader whose worker had abandoned its part could only wait out a timer, redo the work, and settle with the
-/// task still open (D-65's ceiling). This drives the new `cancel_task` tool through a scripted leader: delegate,
+/// task still open (D-65's ceiling). This drives the `cancel` tool through a scripted leader: delegate,
 /// cancel, then wait on that task id — which the cancellation satisfies at registration.
 #[tokio::test]
 async fn the_delegator_cancels_its_own_abandoned_task_and_its_wait_resolves() {
@@ -1694,7 +1694,7 @@ async fn the_delegator_cancels_its_own_abandoned_task_and_its_wait_resolves() {
              "arguments": json!({"assignee": "i-worker", "task_id": "t-abandoned", "description": "write the file"}).to_string()}}
         ]})),
         Step::Message(json!({"role": "assistant", "content": "the worker stopped; closing my own task",
-            "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "cancel_task",
+            "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "cancel",
              "arguments": json!({"task_id": "t-abandoned", "reason": "the assignee ended its turn unsettled"}).to_string()}}]})),
         Step::Message(wait_call(
             "c4",
@@ -1739,7 +1739,7 @@ async fn the_delegator_cancels_its_own_abandoned_task_and_its_wait_resolves() {
     let offered =
         seen.lock().unwrap().get("i-leader").and_then(|requests| requests.first()).cloned().unwrap_or_default();
     assert!(
-        offered.contains(&"cancel_task".to_string()),
+        offered.contains(&"cancel".to_string()),
         "the leader is offered the cancel tool (it holds `delegate`): {offered:?}"
     );
     handle.shutdown().await.expect("shutdown");
@@ -1857,7 +1857,7 @@ async fn leader_approves_worker_shell_and_delegates_capabilities_end_to_end() {
         ]})),
         Step::Message(wait_call("c3", json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t-shell"}]}))),
         Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
-            {"id": "c4", "type": "function", "function": {"name": "decide_approval",
+            {"id": "c4", "type": "function", "function": {"name": "decide",
              "arguments": json!({"action": "list"}).to_string()}}
         ]})),
         Step::Dynamic(Box::new(|request: &ModelRequest| {
@@ -1873,10 +1873,10 @@ async fn leader_approves_worker_shell_and_delegates_capabilities_end_to_end() {
                         .as_array()
                         .and_then(|rows| rows.first().and_then(|row| row["approval_id"].as_str()).map(str::to_string))
                 })
-                .expect("decide_approval list returned pending worker approval");
+                .expect("decide list returned pending worker approval");
             assert!(approval_id.starts_with("ap-"), "{approval_id}");
             json!({"role": "assistant", "content": "", "tool_calls": [
-                {"id": "c5", "type": "function", "function": {"name": "decide_approval",
+                {"id": "c5", "type": "function", "function": {"name": "decide",
                  "arguments": json!({"action": "approve", "approval_id": approval_id}).to_string()}}
             ]})
         })),
@@ -1941,6 +1941,6 @@ async fn leader_approves_worker_shell_and_delegates_capabilities_end_to_end() {
     let log = seen.lock().unwrap();
     let leader_tools = log.get("i-leader").and_then(|reqs| reqs.first()).cloned().unwrap_or_default();
     let worker_tools = log.get("i-worker").and_then(|reqs| reqs.first()).cloned().unwrap_or_default();
-    assert!(leader_tools.contains(&"decide_approval".to_string()), "{leader_tools:?}");
-    assert!(!worker_tools.contains(&"decide_approval".to_string()), "{worker_tools:?}");
+    assert!(leader_tools.contains(&"decide".to_string()), "{leader_tools:?}");
+    assert!(!worker_tools.contains(&"decide".to_string()), "{worker_tools:?}");
 }

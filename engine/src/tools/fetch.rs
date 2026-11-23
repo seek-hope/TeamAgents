@@ -133,7 +133,7 @@ impl Fetcher {
         output: OutputLocation<'_>,
     ) -> Result<Json, String> {
         if bindings.is_empty() {
-            return Err("tool web_fetch is not bound to this member".into());
+            return Err("tool fetch is not bound to this member".into());
         }
         let selected = args
             .get("provider")
@@ -156,10 +156,10 @@ impl Fetcher {
         // §5.1: `web` is a capability. Refuse outright when the member holds no web grant, and
         // otherwise require the host to be covered. Neither branch can widen access.
         if !control.web_permitted() {
-            return Err("web_fetch: this member holds no web grant".into());
+            return Err("fetch: this member holds no web grant".into());
         }
         if !control.domain_allowed(host) {
-            return Err(format!("web_fetch: {host} is not in this member's allowed domains"));
+            return Err(format!("fetch: {host} is not in this member's allowed domains"));
         }
         let mut warnings = Vec::new();
         let mut verified = false;
@@ -234,7 +234,7 @@ impl Fetcher {
             return Ok(result);
         }
         if warnings.is_empty() {
-            Err(format!("no {selected} web_fetch binding for this member"))
+            Err(format!("no {selected} fetch binding for this member"))
         } else {
             Err(warnings.join("; "))
         }
@@ -318,7 +318,7 @@ mod tests {
         let exec = executor(&endpoint, Some(root.join("member")));
         let control = TurnControl::with_web_scopes(vec!["session".to_string()]);
         let args = json!({"url":format!("{URL}#fragment"),"max_bytes":3});
-        let first = exec("web_fetch", &args, &control).unwrap();
+        let first = exec("fetch", &args, &control).unwrap();
         let requests = server.join().unwrap();
         let wire = &requests[0];
         assert!(
@@ -345,7 +345,7 @@ mod tests {
         let mut actual = first["content"].as_str().unwrap().to_owned();
         let mut offset = first["next_byte_offset"].clone();
         loop {
-            let page = exec("read_file", &json!({"path":path,"byte_offset":offset}), &control).unwrap();
+            let page = exec("read", &json!({"path":path,"byte_offset":offset}), &control).unwrap();
             actual.push_str(page["content"].as_str().unwrap());
             if page["eof"] == true {
                 break;
@@ -354,15 +354,16 @@ mod tests {
         }
         assert_eq!(actual, content);
         let script = TurnControl { script_output: true, ..control.clone() };
-        let full = exec("web_fetch", &json!({"url":URL}), &script).unwrap();
+        let full = exec("fetch", &json!({"url":URL}), &script).unwrap();
         assert_eq!(full["content"], content);
         assert_eq!(full["truncated"], false);
         assert_eq!(full["from_cache"], true);
         assert!(full.get("full_path").is_none());
-        assert_eq!(exec("web_fetch", &args, &script).unwrap()["next_byte_offset"], 2);
-        assert!(executor(&endpoint, Some(root.join("peer")))("read_file", &json!({"path":path}), &control).is_err());
-        assert_eq!(exec("web_fetch", &args, &control).unwrap()["from_cache"], true);
-        assert!(exec("web_fetch", &args, &TurnControl::with_web_scopes(vec!["domain:other.example".into()]))
+        assert_eq!(exec("fetch", &args, &script).unwrap()["next_byte_offset"], 2);
+        assert_eq!(exec("web_fetch", &args, &script).unwrap()["from_cache"], true);
+        assert!(executor(&endpoint, Some(root.join("peer")))("read", &json!({"path":path}), &control).is_err());
+        assert_eq!(exec("fetch", &args, &control).unwrap()["from_cache"], true);
+        assert!(exec("fetch", &args, &TurnControl::with_web_scopes(vec!["domain:other.example".into()]))
             .unwrap_err()
             .contains("allowed domains"));
         std::fs::remove_dir_all(root).unwrap();
@@ -397,7 +398,7 @@ mod tests {
         let body = json!({"content":"result"}).to_string();
         for status in [408, 429, 503] {
             let (endpoint, server) = serve(vec![(status, "reason".into()), (200, body.clone())]);
-            let result = executor(&endpoint, None)("web_fetch", &json!({"url":URL}), &control).unwrap();
+            let result = executor(&endpoint, None)("fetch", &json!({"url":URL}), &control).unwrap();
             let wire = server.join().unwrap();
             assert!(wire[0].starts_with("POST /exa "));
             assert!(wire[1].starts_with("POST /deepseek "));
@@ -417,18 +418,15 @@ mod tests {
         {
             let (endpoint, server) = serve(vec![(status, "invalid".into())]);
             let error =
-                executor(&endpoint, None)("web_fetch", &json!({"url":URL,"provider":selection}), &control).unwrap_err();
+                executor(&endpoint, None)("fetch", &json!({"url":URL,"provider":selection}), &control).unwrap_err();
             assert!(error.contains("exa:") && !error.contains("deepseek"), "{error}");
             assert!(server.join().unwrap()[0].starts_with("POST /exa "));
         }
         let (endpoint, server) = serve(vec![(200, body)]);
         let exec = executor(&endpoint, None);
-        assert!(exec("web_fetch", &json!({"url":"http://127.0.0.1/"}), &control).unwrap_err().contains("private"));
-        assert!(exec("web_fetch", &json!({"url":URL,"provider":"both"}), &control).is_err());
-        assert_eq!(
-            exec("web_fetch", &json!({"url":URL,"provider":"deepseek"}), &control).unwrap()["provider"],
-            "deepseek"
-        );
+        assert!(exec("fetch", &json!({"url":"http://127.0.0.1/"}), &control).unwrap_err().contains("private"));
+        assert!(exec("fetch", &json!({"url":URL,"provider":"both"}), &control).is_err());
+        assert_eq!(exec("fetch", &json!({"url":URL,"provider":"deepseek"}), &control).unwrap()["provider"], "deepseek");
         assert!(server.join().unwrap()[0].starts_with("POST /deepseek "));
     }
 }

@@ -135,18 +135,18 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `previews` | — | `previews` | `engine/src/v2/daemon.rs:835` |
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:841` |
-| `events` | — | — | `engine/src/v2/daemon.rs:848` |
-| `rewind_points` | — | — | `engine/src/v2/daemon.rs:852` |
-| `search_tree` | — | — | `engine/src/v2/daemon.rs:861` |
-| `history` | `before`, `instance_id` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `next_before`, `work_work_id`, `workspace` | `engine/src/v2/daemon.rs:869` |
-| `surfaces` | `instance_id` | `epoch`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces`, `work_id` | `engine/src/v2/daemon.rs:958` |
-| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence`, `state` | `engine/src/v2/daemon.rs:990` |
-| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:1042` |
-| `approvals` | — | `approvals`, `args`, `id`, `instance_id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:1051` |
-| `work_scopes` | — | `attached_instances`, `deadline`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage`, `work_scopes` | `engine/src/v2/daemon.rs:1095` |
-| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:1144` |
+| `previews` | — | `previews` | `engine/src/v2/daemon.rs:856` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:862` |
+| `events` | — | — | `engine/src/v2/daemon.rs:869` |
+| `rewind_points` | — | — | `engine/src/v2/daemon.rs:873` |
+| `search_tree` | — | — | `engine/src/v2/daemon.rs:882` |
+| `history` | `before`, `instance_id` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `next_before`, `work_work_id`, `workspace` | `engine/src/v2/daemon.rs:890` |
+| `surfaces` | `instance_id` | `epoch`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces`, `work_id` | `engine/src/v2/daemon.rs:979` |
+| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence`, `state` | `engine/src/v2/daemon.rs:1011` |
+| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:1063` |
+| `approvals` | — | `approvals`, `args`, `capability_requests`, `id`, `instance_id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:1072` |
+| `work_scopes` | — | `attached_instances`, `deadline`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage`, `work_scopes` | `engine/src/v2/daemon.rs:1117` |
+| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject`, `task_id` | `engine/src/v2/daemon.rs:1166` |
 
 ### Commands (executed by the control plane)
 
@@ -243,13 +243,14 @@ work projections, are outside this scan; consult their linked source contracts a
 | `handle` | `workspace`, `execution`, `permissions`, `sources`, `leader_instruction_load`, `configuration` |
 | `input_paths` arm | `stopping`, `state_root` |
 | `read_snapshot` | `id`, `lifecycle`, `phase`, `model`, `reason`, `lifetime`, `effort`, `can_run_shell`, `diagnosis` |
-| `read_snapshot` | `status`, `known_usage`, `summary`, `unknown_usage`, `limits`, `deadline` |
+| `read_snapshot` | `id`, `status`, `known_usage`, `summary`, `unknown_usage`, `limits`, `deadline` |
 | `read_snapshot` | `id`, `state` |
 | `read_snapshot` | `instances`, `tasks`, `work`, `input_delivery`, `role_models`, `work_policy_version`, `mcp`, `mcp_policy`, `sessions`, `models` |
 | `read_events` | `events`, `watermark`, `head_watermark`, `has_more`, `resync_required`, `resync_reason`, `blocked_sequence` |
 | `read_events` | `sequence`, `kind`, `scope`, `payload` |
 | `read_events` | `events`, `watermark`, `head_watermark`, `has_more`, `resync_required` |
 | `apply_session_work_limits` | — |
+| `read_pending_capability_requests` | `id`, `requester`, `subject`, `action`, `resource_scope`, `task_id`, `parent_grant_id`, `status` |
 | `previews` arm | `previews` |
 | `checkpoint` arm | `snapshot`, `watermark` |
 | `history` arm | `epoch`, `idx`, `kind`, `envelope_id`, `workspace`, `work_work_id`, `message` |
@@ -261,13 +262,12 @@ work projections, are outside this scan; consult their linked source contracts a
 | `inputs` arm | `instance_id`, `inputs`, `next_after` |
 | `tasks` arm | `tasks` |
 | `approvals` arm | `id`, `operation_id`, `instance_id`, `tool`, `preview`, `args` |
-| `approvals` arm | `approvals` |
+| `approvals` arm | `approvals`, `capability_requests` |
 | `work_scopes` arm | `id`, `summary`, `status`, `deadline`, `limits`, `known_usage`, `unknown_usage`, `attached_instances` |
 | `work_scopes` arm | — |
 | `work_scopes` arm | — |
 | `work_scopes` arm | `work_scopes` |
 | `grants` arm | `id`, `issuer`, `subject`, `action`, `resource_scope`, `parent_grant_id`, `delegable`, `task_id`, `revoked` |
-| `grants` arm | `id`, `requester`, `subject`, `action`, `resource_scope`, `task_id`, `parent_grant_id`, `status` |
 | `grants` arm | `grants`, `capability_requests`, `revision` |
 | diagnostics: `diagnosis` | `code`, `summary`, `attention`, `next_steps`, `reason`, `waits`, `operations` |
 | diagnostics: `read_sql` | `id`, `mode`, `conditions`, `timer_at` |

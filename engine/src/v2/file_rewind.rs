@@ -89,7 +89,7 @@ fn changes(conn: &Connection, point: &Json) -> Result<(BTreeMap<String, Change>,
         FROM instances i JOIN context_entries c ON c.instance_id=i.id AND c.epoch=i.context_epoch
         JOIN operations o ON o.operation_id=c.envelope_id
         WHERE i.is_leader=1 AND c.epoch=?1 AND c.idx>?2 AND c.kind='tool_result'
-        AND json_extract(o.intent_json,'$.name') IN ('edit_file','edit_files','write_file','delete')
+        AND json_extract(o.intent_json,'$.name') IN ('edit','edit_file','edit_files','write','write_file','delete')
         AND o.status='SUCCEEDED' ORDER BY c.idx LIMIT ?3",
         )
         .map_err(|e| e.to_string())?;

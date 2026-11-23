@@ -8,10 +8,10 @@ async fn file_preview_checks_committed_edits_against_workspace_bytes() {
     std::fs::create_dir_all(&workspace).unwrap();
     let path = workspace.join("fact.txt");
     std::fs::write(&path, "prefix αα").unwrap();
-    let edit = |id: &str, old: &str, new: &str| json!({"role":"assistant","content":"","tool_calls":[{"id":id,"type":"function","function":{"name":"edit_file","arguments":json!({"path":"fact.txt","old_string":old,"new_string":new}).to_string()}}]});
+    let edit = |tool: &str, id: &str, old: &str, new: &str| json!({"role":"assistant","content":"","tool_calls":[{"id":id,"type":"function","function":{"name":tool,"arguments":json!({"path":"fact.txt","old_string":old,"new_string":new}).to_string()}}]});
     let scripts = HashMap::from([(
         "i-leader".into(),
-        vec![edit("first", "αα", "beta"), edit("second", "beta", ""), finish_call("edited")],
+        vec![edit("edit", "first", "αα", "beta"), edit("edit_file", "second", "beta", ""), finish_call("edited")],
     )]);
     let seen = Default::default();
     let handle = serve(config_recording(&root, scripts, UserConfig::default(), vec!["files".into()], json!({}), &seen))

@@ -153,6 +153,9 @@ pub struct Transcript {
     pub code_blocks: Vec<(Range<usize>, String)>,
 }
 impl Transcript {
+    pub fn cached_document(&self) -> (&Document, &[(usize, Range<usize>)]) {
+        (&self.document, &self.entry_ranges)
+    }
     pub fn lines(&mut self, entries: &[ChatEntry], width: usize, tool_limit: Option<usize>) -> &[Line<'static>] {
         &self.document(entries, width, tool_limit, None, "").lines
     }
@@ -257,7 +260,7 @@ impl Transcript {
                     self.document.lines.extend(render_entry(entry, width, entry_limit));
                 }
                 let entry_end = self.document.lines.len();
-                if entry.tool.is_some() && entry_end > entry_start {
+                if entry_end > entry_start {
                     self.entry_ranges.push((position, entry_start..entry_end));
                 }
                 if matches!(entry.kind, ChatKind::Assistant | ChatKind::Summary) && entry_end > entry_start {
@@ -380,13 +383,35 @@ fn activity_heading(entries: &[ChatEntry]) -> String {
     let all = |allowed: &[&str]| names.iter().all(|name| allowed.contains(name));
     if all(&["shell"]) {
         format!("Ran {count} commands")
-    } else if all(&["edit_file", "edit_files", "write_file"]) {
+    } else if all(&["edit", "write", "edit_file", "edit_files", "write_file"]) {
         format!("Edited · {count} operations")
-    } else if all(&["read_file", "read_artifact", "read_history", "grep", "glob", "skill"]) {
+    } else if all(&[
+        "read",
+        "history",
+        "image",
+        "read_file",
+        "read_artifact",
+        "read_history",
+        "view_image",
+        "grep",
+        "glob",
+        "skill",
+    ]) {
         format!("Explored · {count} tools")
-    } else if all(&["web_search", "web_fetch"]) {
+    } else if all(&["search", "fetch", "web_search", "web_fetch"]) {
         format!("Searched · {count} tools")
-    } else if all(&["spawn", "delegate", "send", "cancel_task", "verify_work", "wait", "decide_approval"]) {
+    } else if all(&[
+        "spawn",
+        "delegate",
+        "send",
+        "cancel",
+        "verify",
+        "decide",
+        "cancel_task",
+        "verify_work",
+        "decide_approval",
+        "wait",
+    ]) {
         format!("Coordinated · {count} actions")
     } else {
         format!("Worked · {count} tools")
@@ -509,7 +534,7 @@ fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<
             })
             .unwrap_or_else(|| tool.arguments.clone())
     };
-    let diff_stats = if matches!(tool.name.as_str(), "edit_file" | "edit_files") {
+    let diff_stats = if matches!(tool.name.as_str(), "edit" | "edit_file" | "edit_files") {
         tool.output
             .as_deref()
             .and_then(|out| {
@@ -567,7 +592,7 @@ fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<
             output.clone()
         };
         let mut rows = markdown::plain(&display, width.saturating_sub(2).max(1), Style::default().fg(NOTICE));
-        if matches!(tool.name.as_str(), "edit_file" | "edit_files") {
+        if matches!(tool.name.as_str(), "edit" | "edit_file" | "edit_files") {
             for line in &mut rows {
                 let first = line.spans.first().and_then(|s| s.content.chars().next());
                 let color = match first {

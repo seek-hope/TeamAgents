@@ -26,7 +26,10 @@ pub fn init(state_root: Option<PathBuf>) -> i32 {
                 eprintln!("could not prepare the state root: {error}");
                 return 1;
             }
-            println!("next: teamagents doctor, then run teamagents in your project directory.");
+            println!("Quick start:");
+            println!("  1. Set your API key: export DEEPSEEK_API_KEY=\"your-key\"");
+            println!("  2. Check your setup: teamagents doctor");
+            println!("  3. Start chatting:   teamagents");
             0
         }
         Err(error) => {
@@ -709,8 +712,10 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
     }
     println!("doctor checks the local machine only and never calls a model API; WARN marks optional capabilities.");
     if failed > 0 {
+        println!("Fix the [FAIL] item(s) above, then run `teamagents doctor` again.");
         1
     } else {
+        println!("Ready! Run `teamagents` in any project folder to start chatting.");
         0
     }
 }

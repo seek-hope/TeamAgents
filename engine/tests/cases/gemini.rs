@@ -13,7 +13,7 @@ fn gemini(base: &str) -> AnyProvider {
 #[test]
 fn gemini_native_tool_roundtrip_preserves_signatures_images_and_known_usage() {
     let rt = runtime();
-    let parts = json!([{"thought":true,"text":"private"},{"functionCall":{"name":"read_file","args":{"path":"doc"},"id":"wire-id"},"thoughtSignature":"signed"}]);
+    let parts = json!([{"thought":true,"text":"private"},{"functionCall":{"name":"read","args":{"path":"doc"},"id":"wire-id"},"thoughtSignature":"signed"}]);
     let frame = json!({"candidates":[{"content":{"parts":parts},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":22,"candidatesTokenCount":3,"thoughtsTokenCount":4,"totalTokenCount":29,"cachedContentTokenCount":5}});
     let done = json!({"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]});
     let server = rt
@@ -22,7 +22,7 @@ fn gemini_native_tool_roundtrip_preserves_signatures_images_and_known_usage() {
     let mut r = request();
     r.messages.insert(0, json!({"role":"system","content":"policy"}));
     r.tools = vec![
-        json!({"type":"function","function":{"name":"read_file","parameters":{"type":"object","additionalProperties":false}}}),
+        json!({"type":"function","function":{"name":"read","parameters":{"type":"object","additionalProperties":false}}}),
     ];
     r.options = json!({"max_tokens":10000});
     let a = run(&rt, &p, &r).unwrap();
@@ -41,7 +41,7 @@ fn gemini_native_tool_roundtrip_preserves_signatures_images_and_known_usage() {
     assert_eq!(body["contents"][1]["parts"], parts);
     assert_eq!(
         body["contents"][2]["parts"][0]["functionResponse"],
-        json!({"id":"wire-id","name":"read_file","response":{"output":"a"},"parts":[{"inlineData":{"mimeType":"image/png","data":"YQ=="}}]})
+        json!({"id":"wire-id","name":"read","response":{"output":"a"},"parts":[{"inlineData":{"mimeType":"image/png","data":"YQ=="}}]})
     );
     assert_eq!(body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["additionalProperties"], false);
     assert_eq!(body["generationConfig"]["maxOutputTokens"], 1899);

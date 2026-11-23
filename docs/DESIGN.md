@@ -154,7 +154,7 @@ not automatically inherited by tool processes.
 Dispatch is the authorization linearization point: operation identity, argument hash, grant revision and any
 approval are rechecked before an effect starts. A stale schema never authorizes an operation. Pending Worker
 operation approvals (excluding `request_self_update`) and Worker capability requests wake and notify the active
-session Leader, which may approve or deny them within its own live grants via `decide_approval` (`D-537`); Leader
+session Leader, which may approve or deny them within its own live grants via `decide` (formerly `decide_approval`, `D-537`, `D-538`); Leader
 self-approvals, out-of-scope requests and self-updates remain user-only, and the user retains override authority.
 Ordinary tool intents with malformed supplied argument encodings or non-object arguments are refused before
 approval and execution. The raw call remains in history; a failed, not-started receipt allows correction.
@@ -266,7 +266,7 @@ JSON export are read-only projections, not second business stores.
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current source has 910 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
+The current source has 926 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
 configurations, 323 controls and one separate wide configuration, evaluated in 60 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 

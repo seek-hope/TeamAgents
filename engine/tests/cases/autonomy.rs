@@ -19,7 +19,7 @@ fn autonomy_runner_child(name: &str) -> bool {
 
 fn work_checkpoint(id: &str, value: Json) -> Json {
     json!({"role":"assistant","content":"","tool_calls":[{"id":id,"type":"function",
-        "function":{"name":"work_checkpoint","arguments":value.to_string()}}]})
+        "function":{"name":"checkpoint","arguments":value.to_string()}}]})
 }
 
 fn autonomous_config<P: Provider + 'static>(root: &Root, provider: P) -> DriverConfig<P> {
@@ -178,7 +178,7 @@ async fn autonomy_continues_after_prose_and_verifies_the_written_result() {
             && prompt.contains("data leakage")
             && prompt.contains("measure a baseline")
     }));
-    assert!(requests.iter().all(|r| r["tool_names"].as_array().unwrap().iter().any(|t| t == "work_checkpoint")));
+    assert!(requests.iter().all(|r| r["tool_names"].as_array().unwrap().iter().any(|t| t == "checkpoint")));
     assert!(!request_text(&requests[0]).contains("never end a turn leaving it open"));
     assert!(request_text(&requests[4]).contains("result.txt verified by the shell check"));
     handle.shutdown().await.unwrap();
