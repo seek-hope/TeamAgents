@@ -369,6 +369,15 @@ impl Stage {
                 cmd.arg("--ro-bind").arg(fs::canonicalize(path).map_err(err)?).arg(path);
             }
         }
+        // Debian-family compiler drivers go through /etc/alternatives. Recreate only
+        // the selected links whose binaries are already visible in the sandbox.
+        for link in ["/etc/alternatives/cc", "/etc/alternatives/c++"] {
+            if let Ok(target) = fs::canonicalize(link) {
+                if target.starts_with("/usr/bin") && target.is_file() {
+                    cmd.arg("--symlink").arg(target).arg(link);
+                }
+            }
+        }
         let cert = Path::new("/etc/ssl/certs/ca-certificates.crt");
         if cert.is_file() {
             cmd.arg("--ro-bind").arg(cert.canonicalize().map_err(err)?).arg(cert);
