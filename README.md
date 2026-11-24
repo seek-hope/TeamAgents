@@ -1,208 +1,76 @@
 # TeamAgents
 
-[Chinese README](README.zh-CN.md) · [User guide](docs/USER-GUIDE.md) · [Design](docs/DESIGN.md) · [Acceptance](docs/ACCEPTANCE.md)
+[中文](README.zh-CN.md) · [Design decisions](docs/DECISIONS.md) · [0.5.0 architecture](docs/teamagents-0.5.0.canvas)
 
-TeamAgents is a Rust-native, local-first agent runtime. A Leader works with the user, can delegate scoped tasks
-to other instances, and persists execution, approvals, context, costs and evidence in one authoritative SQLite
-store per session. The TUI and headless clients share the same daemon and phase machine.
+TeamAgents 0.5.0 runs coding tasks in a local workspace. A new task starts with one agent, `default` unless you select another. A stage can do the work itself or hand off to new child stages. Work flows down the tree. When the leaves finish, a summarizer outside the tree prepares the report for the user.
 
-The current format is **database schema 14**, **socket protocol 2** and **work policy 1**.
+## Install and start
 
-## Current capabilities
+The shell sandbox supports native x86-64 and little-endian AArch64 Linux. Install `bubblewrap` and `slirp4netns` with your distribution's package manager (on Ubuntu, `sudo apt install bubblewrap slirp4netns`). The runtime uses `/usr/bin/bwrap` and defaults to `/usr/bin/slirp4netns`. For a helper installed elsewhere, set `TEAMAGENTS_SLIRP4NETNS` to its trusted absolute executable path before starting the daemon. The host must permit unprivileged user and network namespaces. The binary archive and source installer require these prerequisites to be installed separately.
 
-- Durable work across turns, compaction and restart, with bounded continuation, budgets, deadlines and required
-  acceptance checks.
-- Scoped collaboration through `spawn`, `delegate`, `send` and `wait`, with shared, isolated or Git-worktree
-  workspaces and attenuated capability grants.
-- Files, host Shell, web search/fetch, Skills, stdio/HTTP MCP resources and restricted JavaScript `codemode`.
-- Chat Completions, DeepSeek, Responses and Anthropic profiles with per-model native context windows and
-  configurable reasoning effort.
-- One Leader conversation with Markdown/code/media rendering, conditional approvals, pending-input editing,
-  session history/search/switch/delete and local attachments.
-- One **session-level exploration tree** beside compaction, with revisioned nodes, source references and focus.
-- Current executable development and verification tools under `tools/`.
+Before replacing the binary, let in-flight work settle and run `teamagents stop` in each running session with its matching client. Session migration preserves each root's routing, approval policy and pending operations. Schema 1 roots keep per-operation review. New submissions in the same session use the one-way tree.
 
-Host Shell, acceptance commands and local MCP are not an OS sandbox. Logical grants and private-history rules
-still apply. Unknown effects are recorded as `OUTCOME_UNKNOWN` and never replayed on a guess.
+To build from source, use the pinned Rust toolchain and a C compiler for bundled SQLite. From the checkout, run `cargo install --locked --path .` or `./install.sh`. Put Cargo's installation directory (usually `~/.cargo/bin`) on `PATH` and check `teamagents version` for `0.5.0`.
 
-## Build and start
+Set the provider environment before the session daemon starts. Then run the client in the project directory you want it to use.
 
-If TeamAgents is already set up, open a terminal in your project folder and run `teamagents`. Type `What does this project do?` and press Enter. To change models, click **Model**, type `astra byteseek`, select `gpt-6.2-astra(byteseek)` and click **Save**.
-
-To build from source, install the pinned Rust toolchain from `rust-toolchain.toml`, then:
-
-```bash
-make check CARGO_FLAGS=--locked   # first run may download dependencies
-make build
-engine/target/debug/teamagents init
-export DEEPSEEK_API_KEY=...       # the environment variable named by your config
-engine/target/debug/teamagents doctor
-engine/target/debug/teamagents
+```sh
+export OPENAI_BASE_URL=https://api.openai.com/v1  # default
+export TEAMAGENTS_MODEL='your-provider-model-id'
+# Set OPENAI_API_KEY in this environment using your secret manager.
+teamagents chat
 ```
 
-`teamagents` starts or joins the session daemon and opens the TUI. `init` never overwrites an existing config;
-the default config path is `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`.
-Use `teamagents exec` for a headless turn:
+The daemon sends non-streaming Chat Completions to the configured provider, separately from the shell network. Non-loopback endpoints require HTTPS and `OPENAI_API_KEY`. A loopback provider may use HTTP without a key. Requests time out after 120 seconds and do not follow redirects or retry HTTP errors.
 
-```bash
-engine/target/debug/teamagents exec --json --timeout 180 "Inspect this repository and summarize the current state"
+## Submit work and verify the result
+
+By default, new tasks run unattended. `exec` waits for a final report or a clarification question, with no client deadline. This example asks the team to fix a script and defines how to check its output.
+
+```sh
+teamagents exec --check 'test "$(sh greet.sh Ada)" = "Hello, Ada!"' \
+  'Fix greet.sh so it greets its argument by name.'
 ```
 
-The starter config uses `leader_main`. Set `default_model` in the user config for new sessions, or select a profile with `--model`.
-See [installation and upgrades](docs/INSTALL.md) and [configuration](docs/CONFIG.md) for custom providers,
-permissions and storage locations.
+**How work moves.** A `handoff` closes the current stage and creates 1–16 children in one transaction. Each child receives the sender's stage summary and its own assignment. The handoff can add new named workers up to the session's member limit, or use existing members who have not yet worked on this root. Each member takes at most one stage per tree. Children can use workspace tools, finish as leaves, or hand off again. No child can wake its parent or send work to a sibling.
 
-## Session exploration tree
+**What counts as verified.** `--check` authorizes the exact shell command you supplied. Once the execution leaves have finished, a checked root must pass that command before the summarizer can issue a successful report. A failed check can start a new repair stage with the diagnostics, even when the session's member slots are full. The limit is **three check attempts total**, including the first, and the shared model-call budget can run out sooner. Without `--check`, even a successful model-requested shell command leaves `verification` set to `not_requested`.
 
-The exploration tree records questions, hypotheses, attempts, findings, decisions, obstacles and next steps as a
-model-maintained navigation view. It is not verified fact, completion evidence, authority or a way to rewind
-side effects.
+The summarizer receives the original request, any clarifications, leaf results and the runtime's outcome and verification status. Private agent histories and raw tool output stay outside its input. It cannot run tools, reopen stages or change verification. If it cannot produce a usable report, the runtime returns a partial report from recorded leaves and marks an otherwise successful run `failed`.
 
-- One tree per session, persisted with append-only revisions and a head pointer.
-- Leader compaction advances the previous cumulative tree through the retained recent turn.
-- Member-private history is not copied into the shared tree.
-- Nodes carry source references and freshness is compared using the full `(instance, epoch, entry)` watermark.
-- `add`, `update`, `move`, `merge` and `focus` use revisioned atomic patches. Ordered operations roll back as a
-  unit and replay without creating duplicate revisions.
-- Invalid compaction patches leave the old tree stale without blocking the summary or current work.
+**Follow a root or answer a question.** Use `exec --detach --json` to get the root ID immediately. `exec --timeout SECONDS` limits only the client's wait. To reconnect, use the same session and workspace. The first stage can ask for a missing decision before it uses tools or hands off. `exec` prints the question and exits with a nonzero status. Work resumes when you answer. For example, if the agent asks which greeting to implement, inspect the root and reply.
 
-In the TUI, type `/tree`. In a terminal, run:
-
-```bash
-engine/target/debug/teamagents search_tree
-engine/target/debug/teamagents search_tree --json
+```sh
+teamagents status ROOT_ID --json
+teamagents answer ROOT_ID 'Use the long greeting.'
 ```
 
-Ask the Leader in natural language to merge duplicate branches, abandon a dead end, reorganize the tree or focus
-a particular branch. The complete stored history remains separate and readable.
+`teamagents status ROOT_ID` shows the whole run, including a tree outline with stage statuses and task IDs once it branches. In JSON, `status` is the aggregate outcome and `stage_status` tracks the first stage, which may already be `done`. `tree_nodes` lists the stages, `leaf_results` contains leaf statuses and reports, and `subtree_receipts` indexes observed operations. Inspect `teamagents status TASK_ID` for an individual stage's full `evidence`.
 
-## Everyday operation
+When root status is `input`, read `question` and reply to that root ID. In chat, use `/status ROOT_ID` and `/answer ROOT_ID TEXT`. Plain text answers a question when it is the only pending question and belongs to the selected agent. Use `/new TEXT` to start a separate task while a question is open.
 
-Common TUI keys:
+`/members` lists agents and `/to NAME` selects the recipient of the next chat submission. `/tasks` lists work in the session. Leaving chat or timing out keeps work running. `cancel TASK_ID` requests cancellation. `stop` closes an idle daemon and keeps the session.
 
-- `Enter` sends; `Shift+Enter` inserts a newline. `Up`/`Down` recalls input; `PageUp`/`PageDown` and the wheel
-  scroll. `Ctrl+W` deletes a word and `Ctrl+Left`/`Ctrl+Right` moves by word.
-- `Ctrl+A` focuses approvals (`a` approves, `d` denies, `Esc` returns). `Ctrl+C` interrupts the current model
-  request, not running tools or delegated work. `Ctrl+Q` or `/quit` detaches without stopping the daemon.
-- `Ctrl+M` or `/model` opens model/effort selection. `Ctrl+P` or `/queue` opens pending input.
-  `Ctrl+S` or `/sessions` opens session history and switching. `Ctrl+E` opens the external editor.
-- `F6` moves focus between the composer, team list and inspection pane. Use `Up`/`Down` to select a member,
-  `Enter` to inspect, `h` for its history and `d` for details; `Esc` returns to the draft. `Alt+1`…`Alt+4`
-  switches Chat, Tasks, Activity and Inspect. Browsing preserves the draft and keeps messages addressed to Leader.
-- `Ctrl+O` expands or folds tool previews. `Ctrl+G` switches previews and source.
+**To review each model-requested shell command or edit**, submit with `teamagents exec --review '…'` or start `teamagents chat --review`. Children inherit the root's policy. In the same session, use `teamagents tasks` to find pending work, then `teamagents status TASK_ID` to read the proposed operation. Pass its `approval_id` to `teamagents approve APPROVAL_ID` or `teamagents deny APPROVAL_ID`. The exact `--check` command was authorized at submission.
 
-Slash commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue`, `/tree`,
-`/edit`, `/shell`, `/codegraph`, `/mcp`, `/rewind`, `/compact`, `/later`, `/team`, `/chat`, `/tasks`, `/activity` and `/inspect`. Completion fills a command but submits only after
-a separate Enter. For file references, type
-`@PATH` and Tab, then accept a candidate; files are sent only with your message.
+## What the workspace can access
 
-The default state root is `${XDG_STATE_HOME:-$HOME/.local/state}/teamagents/v2`.
+Shell commands and checks work under `/workspace`, a staged copy. The sandbox home and `/tmp` are private to each command. Network installs into those directories, including Cargo caches, do not persist across commands. Staging supports directories and single-link regular files, up to 256 MiB, 32,768 entries and 64 directory levels. Symlinks, hard-linked files, special files and nested mounts are refused. Git metadata and Cargo `target` caches marked with `CACHEDIR.TAG` are excluded. Use a smaller project directory if staging hits a limit.
 
-Useful CLI commands:
+A completed command can publish changes even if its exit code is nonzero. The runtime checks for conflicts with host edits before applying the changes one entry at a time. A crash or I/O error partway through publication can leave partial changes. Commands have a 60-second runtime limit and a 64 KiB limit per output stream.
 
-```bash
-teamagents status --json
-teamagents history --id INSTANCE --limit 400 --json
-teamagents search_tree --json
-teamagents instances
-teamagents tasks
-teamagents work_scopes
-teamagents sessions
-teamagents mcp list
-teamagents version
-```
+**Choose the workspace with care.** Shells have outbound network access and can send workspace files, including any secrets you placed there, to external services. The sandbox does not mount the host home, credential stores or the daemon socket. Loopback belongs to the sandbox, but other services on your LAN may still be reachable.
 
-Run `teamagents` from a directory to restore its most recently opened session, or create one if none exists.
-`--cwd DIR` selects another workspace. `--session ID`, `--state-root PATH` and switching through `/sessions`
-select an exact session and keep its saved workspace. Cancelling a task does not prove that its process stopped;
-instance termination and shared-workspace takeover use separate stop evidence.
+## Sessions and limits
 
-## Architecture
+`--workspace DIR` selects the project (default: current directory). Its canonical path selects a session under `${XDG_STATE_HOME:-$HOME/.local/state}/teamagents-swarm/sessions/<workspace-hash>`. `--session DIR` overrides that location. Use the same pair of paths to reconnect. The session directory must be owned by you, must not be group- or world-writable, and cannot overlap the workspace.
 
-```text
-TUI / exec / CLI
-       |
-       v
-daemon + supervisor + per-instance drivers
-       |
-       v
-bounded storage worker -> Control::submit -> SQLite
-       |
-       +--> model providers
-       +--> tools / Shell runners / MCP
-       +--> summaries and session exploration tree
-```
+| Daemon setting | Default | Limit |
+|---|---:|---|
+| `TEAMAGENTS_MAX_AGENTS` | 8 | Persistent members, including `default`. Set at session creation. |
+| `TEAMAGENTS_TURN_BUDGET` | 32 | Model calls for the whole root, including execution, repair and summarization. Set at session creation. A budget greater than one reserves one call for the report. |
+| `TEAMAGENTS_CONCURRENCY` | 4 | In-flight model and tool work across the session. Set at daemon startup. |
 
-The control plane owns identity, permission revisions and atomic team transactions. The engine owns I/O and the
-phase machine. SQLite owns authoritative facts with WAL and `synchronous=FULL`. Model and tool waits happen
-outside transactions. The TUI owns presentation only.
+One daemon writes each session's SQLite database with WAL and `synchronous=FULL`. If a started tool lacks a durable result, its outcome is unknown. Inspect the workspace and any external effects before starting new work. The daemon never replays an unknown operation. Cancellation cannot undo effects or prove that a command stopped. Call counts and concurrency do not bound token charges.
 
-See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data relationships.
-
-## Current evidence
-
-The source contains **926 Rust tests** (core 212, engine 566, TUI 148).
-Formal material contains **387 configurations across 47 modules**:
-
-- **63 positive configurations in 60 traversals**;
-- **323 negative controls**;
-- **79 normal-path witnesses**;
-- **9 Kani harnesses**.
-
-Search-tree verification includes ordered pair transitions, 23 controls covering every non-`TypeOK` tree claim
-and 11 witnesses. Witnesses demonstrate reachability, not safety. PTY covers five terminal profiles and both
-forced graphics modes.
-
-Reproduce with:
-
-```bash
-make check
-make verify-model-all
-make verify-model-counterexamples
-make verify-witnesses
-make verify-kani
-make pty
-```
-
-## Current limits
-
-[ACCEPTANCE.md](docs/ACCEPTANCE.md) maps requirements to checks for the source, terminal and release package.
-
-Full Rust/SQLite refinement, whole-system composition, wide exhaustive completion and Policy B source-bound
-equivalence remain open. Current real-model quality, independent Reviewer evaluation, tree usefulness, external
-OAuth, public hosts/graphical terminals, clean-host installation/update/rollback, schema transitions, native ARM
-and broader distributions need separate acceptance. General long-horizon and matched priced-cost comparisons
-remain open. Runnable checks include `make probe-offline` and separately authorized `make probe-models`.
-
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [User guide](docs/USER-GUIDE.md) | Operation, shortcuts, collaboration, tools and recovery |
-| [Design](docs/DESIGN.md) | Requirements and architecture constraints |
-| [Acceptance](docs/ACCEPTANCE.md) | Q1–Q19 and A01–A36 evidence/open obligations |
-| [Current decisions](docs/DECISIONS.md) | Rules currently in force |
-| [Development](docs/DEVELOPMENT.md) | Build, test, formal checks and maintenance |
-| [Architecture](docs/ARCHITECTURE.md) | State machines, data and recovery diagrams |
-| [Capabilities](docs/CAPABILITIES.md) | Current capability/evidence matrix |
-| [Verification](verification/REPORT.md) | Formal results and abstraction limits |
-| [Verification guide](verification/README.md) | Current formal material and module index |
-| [Product comparison](docs/PRODUCT-COMPARISON.md) | Current open work and comparison obligations |
-| [Maintenance team](docs/MAINTENANCE.md) | Roles, ownership, evidence per change and escalation |
-| [Tools](tools/README.md) | Current development and verification utilities |
-
-Code, documentation and commit messages are English, except `README.zh-CN.md`. Never put credentials in source,
-prompts, events or logs.
-
-<!-- maps: docs/USER-GUIDE.md reader=user -->
-<!-- maps: docs/DESIGN.md reader=user -->
-<!-- maps: docs/ACCEPTANCE.md reader=user -->
-<!-- maps: docs/DECISIONS.md reader=user -->
-<!-- maps: docs/ARCHITECTURE.md reader=user -->
-<!-- maps: docs/CAPABILITIES.md reader=user -->
-<!-- maps: docs/INSTALL.md reader=user -->
-<!-- maps: docs/PRODUCT-COMPARISON.md reader=user -->
-<!-- maps: docs/MAINTENANCE.md reader=developer -->
-<!-- maps: docs/DEVELOPMENT.md reader=developer -->
-<!-- maps: tools/README.md reader=developer -->
-<!-- maps: verification/README.md reader=evidence -->
+For development, `make build` builds `target/debug/teamagents`, `make fmt` formats the crate, and `make check` runs format checks, Clippy and tests. `make package` writes a host binary archive and `SHA256SUMS` under `target/dist/`.

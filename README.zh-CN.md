@@ -1,183 +1,76 @@
 # TeamAgents
 
-[English](README.md) · [使用指南](docs/USER-GUIDE.md) · [设计](docs/DESIGN.md) · [验收](docs/ACCEPTANCE.md)
+[English](README.md) · [设计决策](docs/DECISIONS.md) · [0.5.0 架构图](docs/teamagents-0.5.0.canvas)
 
-TeamAgents 是一个 Rust 原生、本地优先的智能体运行时。Leader 与用户协作，可以把受限任务委派给其他
-实例，并在每个会话的权威 SQLite 存储中持久化执行状态、审批、上下文、用量和证据。TUI 与无界面客户端
-共享同一个 daemon 和阶段机。
+TeamAgents 0.5.0 在本地工作区中执行编程任务。每个新任务先交给一个智能体，未指定时由 `default` 接手。当前阶段可以自行完成工作，也可以把工作分给新的子阶段。任务沿树向下传递。叶子阶段结束后，由树外的汇总智能体向用户报告结果。
 
-当前格式为 **数据库 schema 14**、**socket protocol 2** 和 **work policy 1**。
+## 安装与启动
 
-## 当前能力
+Shell 沙箱支持原生 x86-64 和小端 AArch64 Linux。先用系统包管理器安装 `bubblewrap` 和 `slirp4netns`。Ubuntu 可运行 `sudo apt install bubblewrap slirp4netns`。运行时使用 `/usr/bin/bwrap`，联网助手默认为 `/usr/bin/slirp4netns`。如助手安装在其他位置，请在守护进程启动前，将 `TEAMAGENTS_SLIRP4NETNS` 设为可信助手可执行文件的绝对路径。系统须允许普通用户使用用户命名空间和网络命名空间。使用二进制压缩包或源码安装脚本均需单独安装这些依赖。
 
-- 工作可跨轮次、compact 和重启持续进行，支持有界续跑、预算、截止时间和必须的验收检查。
-- 通过 `spawn`、`delegate`、`send`、`wait` 进行受限协作，支持共享目录、隔离目录或 Git worktree。
-- 文件、宿主 Shell、Web 搜索/抓取、Skills、stdio/HTTP MCP resources，以及受限的 JavaScript `codemode`。
-- Chat Completions、DeepSeek、Responses 和 Anthropic 配置；每个模型使用其原生上下文窗口，并可配置推理档位。
-- 单一 Leader 对话，支持 Markdown/代码/媒体渲染、条件审批、待处理输入编辑、会话历史/搜索/切换/删除
-  和本地附件。
-- 与 compact 配合的**会话级探索树**，具有修订记录、来源引用和 focus。
-- 当前开发与验证工具位于 `tools/`。
+更换二进制文件前，先等正在执行的操作结束，再用与守护进程匹配的客户端在每个运行中的会话里执行 `teamagents stop`。会话迁移会保留每个根任务的派发方式、审批策略和待处理操作。数据库模式版本为 1 的根任务仍需逐项审批。在同一会话中新提交的任务使用单向执行树。
 
-宿主 Shell、验收命令和本地 MCP 不构成操作系统沙箱。逻辑授权与私有历史规则仍然有效。未知副作用记为
-`OUTCOME_UNKNOWN`，绝不凭猜测重放。
+从源码安装需要 `rust-toolchain.toml` 指定的 Rust 工具链和 C 编译器（用于编译随包提供的 SQLite）。在源码目录运行 `cargo install --locked --path .` 或 `./install.sh`，把 Cargo 安装目录（通常是 `~/.cargo/bin`）加入 `PATH`，然后用 `teamagents version` 确认版本为 `0.5.0`。
 
-## 构建与启动
+在会话守护进程启动前设置模型服务环境变量，然后在你选定的项目目录运行客户端。
 
-本机已配置好 TeamAgents 时，在项目文件夹打开终端，运行 `teamagents`。输入「这个项目是做什么的？」并按回车。想换模型就点输入框上的 **Model**，输入 `astra byteseek`，点选 `gpt-6.2-astra(byteseek)`，再点 **Save** 保存。
-
-从源码构建时，先按照 `rust-toolchain.toml` 安装固定 Rust 工具链，然后运行：
-
-```bash
-make check CARGO_FLAGS=--locked   # 首次运行可能下载依赖
-make build
-engine/target/debug/teamagents init
-export DEEPSEEK_API_KEY=...       # 使用配置中 api_key_env 指定的环境变量
-engine/target/debug/teamagents doctor
-engine/target/debug/teamagents
+```sh
+export OPENAI_BASE_URL=https://api.openai.com/v1  # 默认地址
+export TEAMAGENTS_MODEL='your-provider-model-id'
+# 通过密钥管理工具在当前环境设置 OPENAI_API_KEY。
+teamagents chat
 ```
 
-`teamagents` 会启动或加入会话 daemon，并打开 TUI。`init` 保留已有配置。初始配置使用 `leader_main`。
-可在用户配置中用 `default_model` 指定新会话的默认模型，也可以在启动时用 `--model` 选定模型。
+守护进程直接向配置的模型服务发送非流式 Chat Completions 请求，与 shell 沙箱的网络通道独立。非回环地址需要 HTTPS 和 `OPENAI_API_KEY`。回环地址可使用 HTTP，也可不提供密钥。请求在 120 秒后超时，不跟随重定向，也不重试 HTTP 错误。
 
-无界面运行一轮：
+## 提交任务并验证结果
 
-```bash
-engine/target/debug/teamagents exec --json --timeout 180 "检查此仓库并概述当前状态"
+新任务默认无人值守。`exec` 默认等到最终报告或澄清问题，没有客户端等待时限。下面的示例要求修复脚本，并指定如何检验其输出。
+
+```sh
+teamagents exec --check 'test "$(sh greet.sh Ada)" = "Hello, Ada!"' \
+  '修复 greet.sh，让它按传入的名字问候用户。'
 ```
 
-自定义 provider、权限和存储位置见[安装与升级](docs/INSTALL.md)和[配置](docs/CONFIG.md)。
+**任务如何流转。** `handoff` 在同一笔事务中结束当前阶段，创建 1 至 16 个子阶段。每个子阶段都收到发送方的阶段小结和分给自己的任务。分派时可以在会话成员数上限内新增具名智能体，也可以选择尚未参与本次任务的已有成员。一个成员在同一棵树中最多承担一个阶段。子阶段可使用工作区工具、自行完成并提交叶子报告，或再次向下分派。子阶段不能唤醒父阶段，也不能把工作转给其他同级阶段。
 
-## 会话探索树
+**怎样判定验收成功。** `--check` 授权执行你指定的原样命令。所有执行分支结束后，带检查的根任务须通过该命令，汇总智能体才能给出成功报告。检查失败时，运行时可以把诊断交给新的阶段来修复问题，即使会话的成员名额已满也可以。**包括首次执行在内，检查最多运行三次**，共享的模型调用预算可能提前耗尽。未指定 `--check` 时，即使模型主动运行的命令成功，`verification` 仍为 `not_requested`。
 
-探索树以模型维护的导航视图记录问题、假设、尝试、发现、决策、阻碍和下一步。它不是已验证事实、完成证据、
-权限，也不是撤销副作用的机制。
+汇总智能体收到原始请求、澄清问答、叶子结果，以及运行时判定的整体结果和验收状态。各智能体的私有对话历史和工具原始输出不在汇总输入内。它只能编写报告，无权运行工具、重启阶段或更改验收结论。若无法生成可用的模型报告，运行时将根据已记录的叶子结果返回部分报告。即使此前执行成功，整次运行也会标为 `failed`。
 
-- 每个会话一棵树，以 append-only 修订和 head 指针持久化。
-- Leader 的 compact 在上一棵累积树的基础上，一直梳理到最近保留的一轮对话。
-- 成员的私有历史不会复制进共享树。
-- 节点携带来源引用；freshness 使用完整 `(instance, epoch, entry)` watermark 比较。
-- `add`、`update`、`move`、`merge`、`focus` 使用带 revision 的原子 patch。有序操作整体回滚，重放不会
-  产生重复 revision。
-- compact 的树 patch 无效时保留旧树为 stale，但不会阻断摘要或当前工作。
+**跟踪根任务并回答问题。** `exec --detach --json` 立即返回根任务 ID。`exec --timeout SECONDS` 只限制客户端等待时间。重新连接时使用同一会话和工作区。如果缺少必要信息，首个执行阶段可以在调用工具或分派前向你提问。`exec` 会打印问题并以非零状态码退出，收到答复后任务才会继续。例如，它询问该实现哪种问候语时，可以用根任务 ID 查看问题并作答。
 
-在 TUI 中输入 `/tree`。在终端中运行：
-
-```bash
-engine/target/debug/teamagents search_tree
-engine/target/debug/teamagents search_tree --json
+```sh
+teamagents status ROOT_ID --json
+teamagents answer ROOT_ID '请使用完整的问候语。'
 ```
 
-可以用自然语言让 Leader 合并重复分支、放弃死路、重新整理或 focus 某个分支。完整原始历史仍独立保留并可读取。
+`teamagents status ROOT_ID` 显示整次运行的状况。有分支时，它会用树形结构列出各阶段的状态和任务 ID。在 JSON 中，`status` 表示整体状态，`stage_status` 表示首个阶段的状态，可能已是 `done`。`tree_nodes` 列出各阶段，`leaf_results` 包含叶子状态及报告，`subtree_receipts` 列出实际操作的回执摘要。用 `teamagents status TASK_ID` 查看单个阶段的完整 `evidence`。
 
-## 日常操作
+根任务状态为 `input` 时，先读 `question`，再用该根任务的 ID 作答。在对话中可用 `/status ROOT_ID` 和 `/answer ROOT_ID TEXT`。当会话中只有一个待答问题、且问题属于当前选定的智能体时，直接输入文字即可作答。有待答问题时，用 `/new TEXT` 另开任务。
 
-常用 TUI 按键：
+`/members` 列出智能体，`/to NAME` 选择下次提交对话任务时的接收者，`/tasks` 列出会话任务。离开对话或等待超时都不会取消任务。`cancel TASK_ID` 请求取消任务，`stop` 关闭空闲的守护进程并保留会话。
 
-- `Enter` 发送，`Shift+Enter` 换行。`↑`/`↓` 回顾输入；`PageUp`/`PageDown` 和鼠标滚轮翻页。
-  `Ctrl+W` 删除单词，`Ctrl+Left`/`Ctrl+Right` 按单词移动。
-- `Ctrl+A` 聚焦审批列表（`a` 批准、`d` 拒绝、`Esc` 返回）。`Ctrl+C` 中断当前模型请求，不会停止
-  正在运行的工具或已委派工作。`Ctrl+Q` 或 `/quit` 关闭 TUI，daemon 继续运行。
-- `Ctrl+M` 或 `/model` 打开模型与推理档位菜单。`Ctrl+P` 或 `/queue` 查看待处理输入。
-  `Ctrl+S` 或 `/sessions` 打开会话历史与切换。`Ctrl+E` 使用 `VISUAL` 或 `EDITOR` 编辑草稿。
-- `F6` 在输入框、成员列表和详情面板之间切换焦点。用 `↑`/`↓` 选择成员，`Enter` 查看详情，`h` 查看历史，
-  `d` 返回详情，`Esc` 回到草稿。`Alt+1`…`Alt+4` 切换对话、任务、活动和详情页。浏览成员不会改变草稿或消息收件人；输入仍发给 Leader。
-- `Ctrl+O` 展开或折叠工具预览。`Ctrl+G` 在预览和源码之间切换。
+**如需逐项审批模型请求的 shell 命令或文件编辑**，使用 `teamagents exec --review '…'` 或 `teamagents chat --review`。子任务继承根任务的策略。在同一会话中用 `teamagents tasks` 查找待审批任务，用 `teamagents status TASK_ID` 阅读具体操作，再将该操作的 `approval_id` 传给 `teamagents approve APPROVAL_ID` 或 `teamagents deny APPROVAL_ID`。`--check` 指定的原样命令已在提交时获得授权。
 
-斜杠命令包括 `/help`、`/sessions`、`/interrupt`、`/quit`、`/model`、`/attach`、`/detach`、
-`/queue`、`/tree`、`/edit`、`/shell`、`/codegraph`、`/mcp`、`/rewind`、`/compact`、`/later`、`/team`、`/chat`、`/tasks`、`/activity` 和 `/inspect`。补全只填入命令，仍需按 Enter 才会提交。
-输入 `@PATH` 后按 Tab 并选择候选，
-可以暂存文件引用；文件只会随你之后发送的消息一起提交。
+## 工作区的访问范围
 
-默认状态根为 `${XDG_STATE_HOME:-$HOME/.local/state}/teamagents/v2`。
+Shell 命令和验收检查都在工作区的暂存副本 `/workspace` 中运行。每条命令都有独立的沙箱家目录和 `/tmp`，通过网络安装到这两个目录的依赖和 Cargo 缓存不会保留到下一条命令。暂存支持目录和只有一个硬链接的普通文件，上限为 256 MiB、32,768 个条目、64 层目录。不支持符号链接、多硬链接文件、特殊文件和嵌套挂载。Git 元数据和用 `CACHEDIR.TAG` 标记的 Cargo `target` 缓存不进入副本。如果超过上限，可选择一个较小的项目目录。
 
-常用 CLI：
+命令正常退出后，即使退出码非零，也可能写回改动。运行时先检查改动是否与宿主机上的编辑冲突，再逐项写回。因此崩溃或 I/O 错误可能造成部分改动已经写回。命令的执行时限为 60 秒，标准输出和标准错误各限 64 KiB。
 
-```bash
-teamagents status --json
-teamagents history --id INSTANCE --limit 400 --json
-teamagents search_tree --json
-teamagents instances
-teamagents tasks
-teamagents work_scopes
-teamagents sessions
-teamagents mcp list
-teamagents version
-```
+**请仔细选择工作区。** Shell 能对外联网，也能把工作区内的文件（包括你放进去的密钥）发送给外部服务。沙箱不挂载宿主机的家目录、凭据存储或守护进程套接字。回环地址指向沙箱自身，但局域网中的其他服务仍可能可达。
 
-在某个目录运行 `teamagents`，会恢复该目录最近打开的会话，没有则新建。`--cwd DIR` 可指定其他工作区。
-`--session ID`、`--state-root PATH` 或 `/sessions` 切换会选择具体会话，并使用它保存的工作区。取消任务
-并不能证明进程已经停止；实例终止和共享工作区接管使用独立的停止证据。
+## 会话与限制
 
-## 架构
+`--workspace DIR` 选择工作区，默认使用当前目录。其规范路径决定会话位置 `${XDG_STATE_HOME:-$HOME/.local/state}/teamagents-swarm/sessions/<workspace-hash>`，也可以用 `--session DIR` 指定会话目录。重新连接时沿用同一对路径。会话目录必须由当前用户所有，不允许组或其他用户写入，也不能与工作区重叠。
 
-```text
-TUI / exec / CLI
-       |
-       v
-daemon + supervisor + 每个实例的 driver
-       |
-       v
-有界存储 worker -> Control::submit -> SQLite
-       |
-       +--> 模型 provider
-       +--> 工具 / Shell runner / MCP
-       +--> 摘要和会话探索树
-```
+| 守护进程环境变量 | 默认值 | 限制范围 |
+|---|---:|---|
+| `TEAMAGENTS_MAX_AGENTS` | 8 | 会话内的持久成员总数，含 `default`。创建会话时确定。 |
+| `TEAMAGENTS_TURN_BUDGET` | 32 | 整次运行的模型调用次数，包括执行、修复和最终汇总。创建会话时确定。预算大于 1 时，为汇总预留一次调用。 |
+| `TEAMAGENTS_CONCURRENCY` | 4 | 会话内同时进行的模型或工具调用数。守护进程启动时确定。 |
 
-控制面负责身份、权限 revision 和原子团队事务。engine 负责 I/O 与阶段机。SQLite 通过 WAL 和
-`synchronous=FULL` 保存权威事实。模型与工具等待发生在事务之外。TUI 只负责呈现。
+每个会话只有一个守护进程写 SQLite，使用 WAL 和 `synchronous=FULL`。已启动的工具如果没有持久化结果，其效果未知，守护进程不会自动重放。开始新任务前请检查工作区及可能发生的外部操作。取消任务不会撤销已有操作，也不能证明命令已经停止。模型调用次数和并发数都不等同于 token 费用上限。
 
-状态机和数据关系见[架构指南](docs/ARCHITECTURE.md)。
-
-## 当前证据
-
-源码中包含 **926 项 Rust 测试**（core 212、engine 566、TUI 148）。
-形式化材料包含 **47 个模块、387 个配置**：
-
-- **63 个正向配置，60 次遍历**；
-- **323 个负向控制**；
-- **79 条正常路径 witness**；
-- **9 个 Kani harness**。
-
-探索树验证包含有序双操作 patch、23 个覆盖所有非 `TypeOK` 性质的控制，以及 11 条 witness。witness 证明
-可达性，而不是安全性。PTY 覆盖五种终端 profile 和两种强制图形模式。
-
-复现命令：
-
-```bash
-make check
-make verify-model-all
-make verify-model-counterexamples
-make verify-witnesses
-make verify-kani
-make pty
-```
-
-## 当前限制
-
-源码、终端和发布包各自的检查入口见[验收矩阵](docs/ACCEPTANCE.md)。
-
-完整 Rust/SQLite 实现与模型的一致性证明、全系统组合验证、wide 配置的穷尽检查，以及 Policy B 的源代码绑定
-等价性仍未完成。真实模型质量、独立 Reviewer 评估、探索树实用性、外部 OAuth、公网主机和图形终端、
-干净主机安装/升级/回滚、数据库格式迁移、原生 ARM 及更多发行版均需单独验收。长任务效果和同等条件下的
-按价成本比较也仍待验证。可运行 `make probe-offline`；`make probe-models` 需要另行授权。
-
-## 文档
-
-| 文档 | 内容 |
-|---|---|
-| [使用指南](docs/USER-GUIDE.md) | 操作、快捷键、协作、工具和恢复 |
-| [设计](docs/DESIGN.md) | 需求与架构约束 |
-| [验收](docs/ACCEPTANCE.md) | Q1–Q19、A01–A36 的证据和未解决项 |
-| [当前决策](docs/DECISIONS.md) | 当前有效规则 |
-| [开发](docs/DEVELOPMENT.md) | 构建、测试、形式化检查和维护 |
-| [架构](docs/ARCHITECTURE.md) | 状态机、数据和恢复图 |
-| [能力](docs/CAPABILITIES.md) | 当前能力与证据矩阵 |
-| [验证](verification/REPORT.md) | 形式化结果和抽象边界 |
-| [形式化指南](verification/README.md) | 当前形式化材料与模块索引 |
-| [产品比较](docs/PRODUCT-COMPARISON.md) | 当前未解决工作和比较义务 |
-| [维护团队](docs/MAINTENANCE.md) | 角色、归属、每次改动的证据和升级路径 |
-| [工具](tools/README.md) | 当前开发与验证工具 |
-
-除本文件外，代码、文档和提交信息均使用英文。不得把凭据写入源码、提示词、事件或日志。
+开发时，`make build` 生成 `target/debug/teamagents`，`make fmt` 格式化代码，`make check` 检查格式、运行 Clippy 和测试。`make package` 在 `target/dist/` 生成当前主机的二进制压缩包及 `SHA256SUMS`。

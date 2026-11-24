@@ -1,0 +1,35 @@
+{
+	"nodes":[
+		{"id":"1ac8e4203bad5600","type":"group","x":0,"y":0,"width":1440,"height":810,"color":"5","label":"Execution tree • one possible shape"},
+		{"id":"2ac8e4203bad5600","type":"group","x":1550,"y":0,"width":940,"height":810,"label":"Daemon • collection and acceptance"},
+		{"id":"3ac8e4203bad5600","type":"group","x":1550,"y":910,"width":940,"height":320,"color":"6","label":"Final report • outside the execution tree"},
+		{"id":"c40ac255312f1f01","type":"text","text":"# TeamAgents 0.5.0\n\nOne user request can grow into several branches. Blue arrows hand work down. Leaf results go to the daemon for collection.","x":0,"y":-290,"width":790,"height":180},
+		{"id":"c40ac255312f1f02","type":"text","text":"### Root stage\n\nStarts with the user's request. Before acting it can ask for a missing decision. Use `answer ROOT_ID TEXT` to continue.","x":50,"y":320,"width":350,"height":210,"color":"5"},
+		{"id":"c40ac255312f1f03","type":"text","text":"### Implementation stage\n\nCloses its stage and hands off two self-contained assignments in one transaction.","x":550,"y":140,"width":350,"height":180,"color":"5"},
+		{"id":"c40ac255312f1f04","type":"text","text":"### Leaf • code\n\nImplements the requested change and records its result.","x":1040,"y":60,"width":350,"height":170,"color":"4"},
+		{"id":"c40ac255312f1f07","type":"text","text":"### Collect terminal leaves\n\nKeep leaf reports, stage IDs and outcomes. Each task retains its own detailed tool receipts.","x":1610,"y":310,"width":360,"height":200},
+		{"id":"c40ac255312f1f0c","type":"text","text":"### Handoff and growth\n\nA handoff admits 1–16 children together. New workers count toward the session member limit. Children cannot route work to ancestors or siblings.","x":0,"y":930,"width":410,"height":250},
+		{"id":"c40ac255312f1f0d","type":"text","text":"### One root budget\n\nExecution, clarification, repair and reporting share a finite count of model calls. A budget greater than one reserves the last call for reporting.","x":510,"y":930,"width":410,"height":250},
+		{"id":"c40ac255312f1f0e","type":"text","text":"### Operation outcomes\n\nReview binds approvals to individual edits and shell commands. A started tool without a durable result has an unknown outcome and is never automatically replayed.","x":1020,"y":930,"width":410,"height":250},
+		{"id":"c40ac255312f1f05","type":"text","text":"### Leaf • tests\n\nAdds coverage and records its result. Its parent stays closed.","x":1040,"y":320,"width":350,"height":170,"color":"4"},
+		{"id":"c40ac255312f1f06","type":"text","text":"### Leaf • documentation\n\nUpdates the usage example and records its result independently.","x":1040,"y":580,"width":350,"height":170,"color":"4"},
+		{"id":"c40ac255312f1f08","type":"text","text":"### Apply the root check\n\nA checked run needs a passing receipt for the exact submitted command. An unchecked run records `not_requested`.","x":1610,"y":580,"width":360,"height":190,"color":"2"},
+		{"id":"c40ac255312f1f09","type":"text","text":"### Dispatch forward repair\n\nA failed check can start a fresh repair stage under the root. Its completion leads to another check. Three attempts total.","x":2110,"y":580,"width":330,"height":190,"color":"2"},
+		{"id":"c40ac255312f1f0a","type":"text","text":"### Summarizer\n\nReads clarified intent, leaf results, outcome and verification. Its only action is a final report. The runtime can supply a partial report.","x":1610,"y":970,"width":360,"height":200,"color":"6"},
+		{"id":"c40ac255312f1f0b","type":"text","text":"### User\n\n`status ROOT_ID` shows the aggregate outcome. Inspect leaf reports and receipts by task ID.","x":2110,"y":970,"width":330,"height":200}
+	],
+	"edges":[
+		{"id":"7ad01824cd153001","fromNode":"c40ac255312f1f02","fromSide":"right","toNode":"c40ac255312f1f03","toSide":"left","color":"5"},
+		{"id":"7ad01824cd153002","fromNode":"c40ac255312f1f02","fromSide":"right","toNode":"c40ac255312f1f06","toSide":"left","color":"5"},
+		{"id":"7ad01824cd153003","fromNode":"c40ac255312f1f03","fromSide":"right","toNode":"c40ac255312f1f04","toSide":"left","color":"5"},
+		{"id":"7ad01824cd153004","fromNode":"c40ac255312f1f03","fromSide":"right","toNode":"c40ac255312f1f05","toSide":"left","color":"5"},
+		{"id":"7ad01824cd153005","fromNode":"c40ac255312f1f04","fromSide":"right","toNode":"c40ac255312f1f07","toSide":"left"},
+		{"id":"7ad01824cd153006","fromNode":"c40ac255312f1f05","fromSide":"right","toNode":"c40ac255312f1f07","toSide":"left"},
+		{"id":"7ad01824cd153007","fromNode":"c40ac255312f1f06","fromSide":"right","toNode":"c40ac255312f1f07","toSide":"left"},
+		{"id":"7ad01824cd153008","fromNode":"c40ac255312f1f07","fromSide":"bottom","toNode":"c40ac255312f1f08","toSide":"top"},
+		{"id":"7ad01824cd153009","fromNode":"c40ac255312f1f08","fromSide":"right","toNode":"c40ac255312f1f09","toSide":"left","color":"2","label":"failed"},
+		{"id":"7ad01824cd15300a","fromNode":"c40ac255312f1f08","fromSide":"bottom","toNode":"c40ac255312f1f0a","toSide":"top","label":"report outcome"},
+		{"id":"7ad01824cd15300c","fromNode":"c40ac255312f1f09","fromSide":"top","toNode":"c40ac255312f1f07","toSide":"right","color":"2","label":"repair settles"},
+		{"id":"7ad01824cd15300b","fromNode":"c40ac255312f1f0a","fromSide":"right","toNode":"c40ac255312f1f0b","toSide":"left","color":"6"}
+	]
+}
