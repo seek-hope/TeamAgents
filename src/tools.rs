@@ -9,7 +9,7 @@ use std::{
     fs::{self, File, Metadata, OpenOptions},
     io::{self, Read, Write},
     os::{
-        fd::OwnedFd,
+        fd::{AsRawFd, OwnedFd, RawFd},
         unix::{
             fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
             net::UnixStream,
@@ -141,6 +141,29 @@ fn exited(child: &Child) -> io::Result<bool> {
     }
 }
 
+fn poll_streams(out: Option<RawFd>, err: Option<RawFd>, wait: Duration) -> Result<()> {
+    let mut fds = [libc::pollfd { fd: -1, events: 0, revents: 0 }; 2];
+    let mut len = 0;
+    for fd in [out, err].into_iter().flatten() {
+        fds[len] = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        len += 1;
+    }
+    if len == 0 {
+        thread::sleep(wait);
+        return Ok(());
+    }
+    let ms = wait.as_millis().clamp(1, i32::MAX as u128) as i32;
+    // SAFETY: `fds[..len]` holds valid open pipe fds for the duration of `poll`.
+    let rc = unsafe { libc::poll(fds.as_mut_ptr(), len as libc::nfds_t, ms) };
+    if rc == -1 {
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(format!("poll shell output: {e}"));
+        }
+    }
+    Ok(())
+}
+
 fn shell(workspace: &Path, command: &str, timeout: Duration) -> Result<String> {
     let (mut stdout, out_fd) = pipe().map_err(|e| format!("shell stdout: {e}"))?;
     let (mut stderr, err_fd) = pipe().map_err(|e| format!("shell stderr: {e}"))?;
@@ -162,16 +185,28 @@ fn shell(workspace: &Path, command: &str, timeout: Duration) -> Result<String> {
     let mut failure = (|| -> Result<()> {
         network.connect(&child)?;
         connected = true;
+        let (mut out_eof, mut err_eof) = (false, false);
         loop {
-            drain(&mut stdout, &mut out, "stdout")?;
-            drain(&mut stderr, &mut err, "stderr")?;
+            if !out_eof {
+                out_eof = drain(&mut stdout, &mut out, "stdout")?;
+            }
+            if !err_eof {
+                err_eof = drain(&mut stderr, &mut err, "stderr")?;
+            }
             if exited(&child).map_err(|e| format!("poll shell: {e}"))? {
                 return Ok(());
             }
-            if start.elapsed() >= timeout {
+            let Some(remaining) = timeout.checked_sub(start.elapsed()) else {
+                return Err(format!("shell timed out after {}ms", timeout.as_millis()));
+            };
+            if remaining.is_zero() {
                 return Err(format!("shell timed out after {}ms", timeout.as_millis()));
             }
-            thread::sleep(Duration::from_millis(10));
+            poll_streams(
+                (!out_eof).then_some(stdout.as_raw_fd()),
+                (!err_eof).then_some(stderr.as_raw_fd()),
+                remaining.min(Duration::from_millis(10)),
+            )?;
         }
     })()
     .err();

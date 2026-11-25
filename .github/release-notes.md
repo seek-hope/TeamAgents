@@ -1,8 +1,9 @@
-# TeamAgents 0.5.0
+## Linux package
 
-New roots use a one-way execution tree. An agent can complete a stage itself or hand it off to as many as 16 child stages. The handoff closes the sender and creates all children together. New workers can join as branches grow, within the session's member limit. Children work forward and submit leaf results. A separate summarizer reports to the user.
+Download the x86-64 GNU/Linux archive and `SHA256SUMS` into the same directory. Run `sha256sum --check SHA256SUMS`, extract `teamagents` and put it on `PATH`. The shell sandbox requires `bubblewrap`, `slirp4netns` and working unprivileged user and network namespaces. Before replacing a running installation, let in-flight work finish and run `teamagents stop` in each session.
 
-- **Clarification and status.** The first stage can ask a question before starting work. Use `teamagents status ROOT_ID` to read it and `teamagents answer ROOT_ID TEXT` to reply, or `/answer ROOT_ID TEXT` in chat. The same root ID tracks the whole run, including after the first stage hands off. JSON status includes the tree, leaf reports and observed operation receipts.
-- **Budget and checks.** Execution, repair and reporting share one finite root model-call budget. A checked root requires a passing run of the exact `exec --check COMMAND`. A failure can send diagnostics to a new repair stage. There are at most three check attempts total. If a model report is unavailable, the runtime reports the recorded outcomes.
-- **Existing sessions.** Before replacing the binary, run `teamagents stop` in each running session with its matching client. Migration preserves existing roots' routing, approval policies and pending operations. Schema 1 roots keep per-operation review. New submissions use the one-way tree.
-- **Linux archive.** Verify the archive with `sha256sum --check SHA256SUMS`. The x86_64 GNU archive contains `teamagents`. Install `bubblewrap` and `slirp4netns` separately and enable unprivileged namespaces. Shell commands and checks run in a staged workspace with outbound network access. See the [installation and usage guide](https://github.com/seek-hope/TeamAgents/blob/v0.5.0/README.md).
+## Start a session
+
+Run `teamagents auth login` to authorize a ChatGPT subscription, then start `teamagents chat` in the project directory. Use `/model list` to see the account's visible models and `/model MODEL [EFFORT]` to select one for new tasks. For an OpenAI-compatible Chat Completions service, configure the API provider as described in the [usage guide](https://github.com/seek-hope/TeamAgents#readme).
+
+For a scripted task, use `teamagents exec TEXT`. Add `--check COMMAND` to require a passing run of that exact command before success. `teamagents help` lists the commands and options available in the installed binary.

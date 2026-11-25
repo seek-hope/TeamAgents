@@ -548,7 +548,7 @@ fn handoff(s: &mut Store, task: &str, children: &[(&str, &str)]) -> Result<()> {
 }
 
 fn packet(reporter: &Turn) -> Value {
-    assert_eq!(reporter.kind, "reporter");
+    assert_eq!(reporter.kind, TurnKind::Reporter);
     assert_eq!(reporter.messages.len(), 1);
     serde_json::from_str(reporter.messages[0]["content"].as_str().unwrap()).unwrap()
 }
@@ -606,7 +606,7 @@ fn submitted_settings_survive_changes_and_restart_through_handoff_repair_and_rep
     assert_eq!(s.claim_tool().unwrap().unwrap().0, root);
     s.tool_result(&root, Ok("passed")).unwrap();
     let reporter = turn(&mut s);
-    assert_eq!(reporter.kind, "reporter");
+    assert_eq!(reporter.kind, TurnKind::Reporter);
     assert_eq!(reporter.settings.as_ref(), Some(&submitted));
     finish(&mut s, &reporter.task, "verified");
     assert_eq!(s.task(&root).unwrap()["status"], "done");
@@ -649,7 +649,7 @@ fn schema_three_tree_keeps_legacy_model_selection_alongside_an_empty_snapshot() 
     assert_eq!(claim(&mut s, &new).settings, Some(ModelSettings::default()));
     finish(&mut s, &new, "new result");
     let reporter = turn(&mut s);
-    assert_eq!(reporter.kind, "reporter");
+    assert_eq!(reporter.kind, TurnKind::Reporter);
     assert_eq!(reporter.settings, Some(ModelSettings::default()));
 }
 
@@ -671,18 +671,18 @@ fn schema_two_keeps_private_history_active_operations_and_legacy_actions() {
     assert_eq!(s.claim_tool().unwrap(), Some(("old".into(), json!({"op":"shell","command":"prior command"}))));
     s.tool_result("old", Ok("legacy receipt")).unwrap();
     let old = claim(&mut s, "old");
-    assert_eq!(old.kind, "legacy");
+    assert_eq!(old.kind, TurnKind::Legacy);
     assert_eq!(old.settings, None);
     assert!(chat(&old).contains("prior private history"));
     s.apply("old", &json!({"op":"delegate","agent":"peer","text":"legacy assignment"})).unwrap();
     let child = turn(&mut s);
-    assert_eq!(child.kind, "legacy");
+    assert_eq!(child.kind, TurnKind::Legacy);
     assert_eq!(child.settings, None);
     finish(&mut s, &child.task, "legacy result");
     assert!(chat(&claim(&mut s, "old")).contains("legacy result"));
     finish(&mut s, "old", "old finished");
     let root = s.submit("default", "fresh intent").unwrap();
-    assert_eq!(claim(&mut s, &root).kind, "root");
+    assert_eq!(claim(&mut s, &root).kind, TurnKind::Root);
     finish(&mut s, &root, "fresh public result");
     let reporter = turn(&mut s);
     assert!(!chat(&reporter).contains("legacy") && !chat(&reporter).contains("prior private history"));
@@ -706,7 +706,7 @@ fn handoff_is_atomic_and_sibling_stages_settle_concurrently_without_upward_messa
     handoff(&mut s, &root, &[("b", "only b"), ("c", "only c")]).unwrap();
     let b = turn(&mut s);
     let c = turn(&mut s);
-    assert_eq!((&b.kind, &c.kind), (&"node".into(), &"node".into()));
+    assert_eq!((b.kind, c.kind), (TurnKind::Node, TurnKind::Node));
     assert!(chat(&b).contains("shared forward brief") && chat(&b).contains("only b"));
     assert!(!chat(&b).contains("only c") && !chat(&b).contains("private original intent"));
     assert!(handoff(&mut s, &b.task, &[("c", "invalid sibling")]).is_err());
@@ -861,7 +861,7 @@ fn tree_checks_use_forward_private_repair_jobs_and_stop_after_three_attempts() {
             assert_eq!(status["status"], "waiting");
             if attempt < 3 {
                 let repair = turn(&mut s);
-                assert_eq!(repair.kind, "node");
+                assert_eq!(repair.kind, TurnKind::Node);
                 assert_ne!(repair.agent, "default");
                 assert!(chat(&repair).contains(&diag) && chat(&repair).contains("user intent"));
                 assert_eq!(s.task(&repair.task).unwrap()["policy"], "review");
@@ -1005,4 +1005,126 @@ fn tree_reports_have_one_durable_claim_shared_budget_and_deterministic_partial_r
         assert!(s.claim().unwrap().is_none());
         assert_eq!(s.task(&root).unwrap(), status);
     }
+}
+
+#[test]
+fn delete_removes_completed_and_idle_trees_while_preserving_siblings_and_refusing_inflight() {
+    let home = Session::new();
+    let mut s = home.open(4, 16);
+    let overrides = ModelSettings { model: Some("m1".into()), effort: Some("high".into()) };
+    let target = s.submit_with_model("default", "delete me", Some("cargo test"), true, &overrides).unwrap();
+
+    // Clarify and handoff target tree with child + repair stage + clarifications + operations + model settings.
+    claim(&mut s, &target);
+    s.apply(&target, &json!({"op":"ask","text":"Which module?"})).unwrap();
+    s.answer(&target, "parser").unwrap();
+    claim(&mut s, &target);
+    handoff(&mut s, &target, &[("worker", "build fix")]).unwrap();
+    let child = turn(&mut s);
+    assert_eq!(child.agent, "worker");
+    s.request_tool(&child.task, &json!({"op":"shell","command":"echo hi"})).unwrap();
+    let aid = s.task(&child.task).unwrap()["approval_id"].as_str().unwrap().to_owned();
+    s.approve(&aid, true).unwrap();
+    s.claim_tool().unwrap().unwrap();
+    s.tool_result(&child.task, Ok("hi")).unwrap();
+    claim(&mut s, &child.task);
+    finish(&mut s, &child.task, "built");
+    // Fail first check to spawn internal repair agent, then pass check and finish report.
+    assert_eq!(s.claim_tool().unwrap().unwrap().0, target);
+    s.tool_result(&target, Err("test failed")).unwrap();
+    let repair = turn(&mut s);
+    assert!(repair.agent.starts_with("repair-"));
+    let repair_agent = repair.agent.clone();
+    finish(&mut s, &repair.task, "repaired");
+    assert_eq!(s.claim_tool().unwrap().unwrap().0, target);
+    s.tool_result(&target, Ok("passed")).unwrap();
+    let reporter = turn(&mut s);
+    finish(&mut s, &reporter.task, "all green");
+
+    // Create a sibling root before deleting target.
+    let sibling = s.submit_with_model("default", "keep sibling", None, false, &overrides).unwrap();
+
+    // Delete by child ID resolves and deletes the entire root tree and its internal repair agent.
+    assert_eq!(s.delete(&child.task).unwrap(), target);
+    assert!(s.task(&target).is_err());
+    assert!(s.task(&child.task).is_err());
+    assert_eq!(
+        s.db.query_row("SELECT count(*) FROM agents WHERE name=?1", [&repair_agent], |r| r.get::<_, i64>(0)).unwrap(),
+        0
+    );
+    assert_eq!(
+        s.db.query_row("SELECT count(*) FROM clarifications WHERE root=?1", [&target], |r| r.get::<_, i64>(0)).unwrap(),
+        0
+    );
+    // Sibling root and persistent members ("default", "worker") remain intact.
+    assert_eq!(s.task(&sibling).unwrap()["prompt"], "keep sibling");
+    assert!(s.agents().unwrap().as_array().unwrap().iter().any(|m| m["name"] == "worker"));
+
+    // Idle waiting-input and approval roots on persistent member "worker" can be deleted safely.
+    let waiting = s.submit_with_model("worker", "ask me", None, false, &overrides).unwrap();
+    // Claim sibling off "default" so the next queued claim targets "worker" -> wait, submit sibling after or claim both:
+    claim(&mut s, &sibling); // model_reserved=1 on sibling ("default")
+    let w_turn = turn(&mut s);
+    assert_eq!(w_turn.task, waiting);
+    s.apply(&waiting, &json!({"op":"ask","text":"Need detail?"})).unwrap();
+    assert_eq!(s.delete(&waiting).unwrap(), waiting);
+
+    let approval_root = s.submit_with_model("worker", "review op", None, true, &overrides).unwrap();
+    let a_turn = turn(&mut s);
+    assert_eq!(a_turn.task, approval_root);
+    s.request_tool(&approval_root, &json!({"op":"shell","command":"ls"})).unwrap();
+    assert_eq!(s.delete(&approval_root).unwrap(), approval_root);
+
+    // Refuse deletion whenever a model turn, tool operation, or reporter turn is in flight on sibling.
+    assert!(s.delete(&sibling).unwrap_err().contains("in flight")); // model_reserved=1
+    assert_eq!(s.task(&sibling).unwrap()["id"], sibling);
+    s.request_tool(&sibling, &json!({"op":"shell","command":"ls"})).unwrap();
+    s.claim_tool().unwrap().unwrap(); // operations.reserved=1
+    assert!(s.delete(&sibling).unwrap_err().contains("in flight"));
+    s.tool_result(&sibling, Ok("ok")).unwrap();
+    claim(&mut s, &sibling);
+    finish(&mut s, &sibling, "done");
+    let _rep = turn(&mut s); // phase='reporting'
+    assert!(s.delete(&sibling).unwrap_err().contains("in flight"));
+    assert!(s.delete("nonexistent-id").unwrap_err().contains("unknown task"));
+}
+
+#[test]
+fn reject_action_queues_bounded_corrections_respects_budget_and_falls_back_for_reporter() {
+    let home = Session::new();
+    // Budget 4 allows root turn 1 + correction turn 2 + correction turn 3? No, turn 4 is reserved for reporter,
+    // so with budget 4 worker can run at most 3 turns total (turns_used = 1, 2 -> budget_left = true; turns_used = 3 -> false).
+    // Use budget 6 so MAX_ACTION_REJECTIONS (2) caps before budget runs out.
+    let mut s = home.open(2, 6);
+    let r = s.submit("default", "plain prompt with non-json text").unwrap();
+    claim(&mut s, &r);
+    s.reject_action(&r, "err-1").unwrap();
+    let t2 = claim(&mut s, &r);
+    assert!(chat(&t2).contains("err-1"));
+    let last_msg = t2.messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(last_msg.contains("Continue task") && last_msg.contains("protocol_error"));
+    s.reject_action(&r, "err-2").unwrap();
+    let t3 = claim(&mut s, &r);
+    assert!(chat(&t3).contains("err-2"));
+    // 3rd rejection exceeds MAX_ACTION_REJECTIONS (2) and fails the stage, queuing the reporter.
+    s.reject_action(&r, "err-3").unwrap();
+    let st = s.task(&r).unwrap();
+    assert_eq!(st["stage_status"], "failed");
+    assert_eq!(st["stage_error"], "err-3");
+    let rep = turn(&mut s);
+    assert_eq!(rep.kind, TurnKind::Reporter);
+    // Reporter rejection never retries; it falls back immediately to a partial failed report.
+    s.reject_action(&rep.task, "reporter err").unwrap();
+    let settled = s.task(&r).unwrap();
+    assert_eq!(settled["status"], "failed");
+    assert!(settled["result"].as_str().unwrap().contains("Partial report"));
+
+    // Worker rejection fails immediately when remaining budget only covers the reserved reporter call.
+    let tight_home = Session::new();
+    let mut tight = tight_home.open(1, 2);
+    let r2 = tight.submit("default", "tight budget").unwrap();
+    claim(&mut tight, &r2);
+    tight.reject_action(&r2, "no room for retry").unwrap();
+    assert_eq!(tight.task(&r2).unwrap()["stage_status"], "failed");
+    assert_eq!(tight.task(&r2).unwrap()["stage_error"], "no room for retry");
 }

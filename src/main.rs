@@ -3,10 +3,12 @@ mod daemon;
 mod model;
 mod net;
 mod oauth;
+mod protocol;
 mod sandbox;
 mod store;
 mod tools;
 mod tree_view;
+mod tui;
 
 type Result<T> = std::result::Result<T, String>;
 

@@ -7,7 +7,16 @@ const PREVIEW: usize = 24;
 
 fn label(value: &Value) -> String {
     let mut chars = value.as_str().unwrap_or("?").chars();
-    let mut out: String = chars.by_ref().take(70).map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let mut out = String::new();
+    for c in chars.by_ref().take(70) {
+        if matches!(c, '\n' | '\r' | '\t') {
+            out.push(' ');
+        } else if c.is_control() {
+            let _ = write!(out, "\\u{:04x}", u32::from(c));
+        } else {
+            out.push(c);
+        }
+    }
     if chars.next().is_some() {
         out.push('…');
     }

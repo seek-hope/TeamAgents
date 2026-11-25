@@ -1,6 +1,6 @@
 //! Sign in with ChatGPT token sharing. This transport has no configurable origin or billing fallback.
-use super::{body, decode_action, http_agent, valid_model_id, Kind, ModelSettings, Provider, LIMIT, TIMEOUT};
-use crate::Result;
+use super::{body, decode_action, http_agent, valid_model_id, ModelError, ModelSettings, Provider, LIMIT, TIMEOUT};
+use crate::{protocol::TurnKind, Result};
 use ring::digest::{digest, Digest, SHA256};
 use serde::Deserialize;
 use serde_json::Value;
@@ -10,6 +10,7 @@ const MODELS: &str = "https://api.openai.com/v1/models";
 const RESPONSES: &str = "https://api.openai.com/v1/responses";
 const INVALID: &str = "invalid or ambiguous ChatGPT event stream; no action accepted";
 const TEXT_ONLY: &str = "ChatGPT must return a single final assistant text action without tools or refusals";
+const STREAM_LIMIT: usize = 16 * 1024 * 1024;
 
 fn authorize(req: ureq::Request, token: &str) -> Result<ureq::Request> {
     if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
@@ -136,16 +137,19 @@ pub(super) fn complete(
     agent: &str,
     task: &str,
     history: &[Value],
-    kind: Kind,
-) -> Result<Value> {
+    kind: TurnKind,
+) -> std::result::Result<Value, ModelError> {
     static CACHE: ModelCache = ModelCache(Mutex::new(None));
-    let model = CACHE.select(token, settings.model.as_deref(), || models(token))?;
-    let bytes = body(&model, settings.effort.as_deref(), agent, task, history, kind, Provider::ChatGpt)?;
-    infer(authorize(http_agent(TIMEOUT).post(RESPONSES), token)?, &bytes, kind)
+    let model = CACHE.select(token, settings.model.as_deref(), || models(token)).map_err(ModelError::Fatal)?;
+    let bytes = body(&model, settings.effort.as_deref(), agent, task, history, kind, Provider::ChatGpt)
+        .map_err(ModelError::Fatal)?;
+    let req = authorize(http_agent(TIMEOUT).post(RESPONSES), token).map_err(ModelError::Fatal)?;
+    infer(req, &bytes, kind)
 }
 
-fn infer(req: ureq::Request, bytes: &[u8], kind: Kind) -> Result<Value> {
-    let r = checked(req.set("Content-Type", "application/json").set("Accept", "text/event-stream").send_bytes(bytes))?;
+fn infer(req: ureq::Request, bytes: &[u8], kind: TurnKind) -> std::result::Result<Value, ModelError> {
+    let r = checked(req.set("Content-Type", "application/json").set("Accept", "text/event-stream").send_bytes(bytes))
+        .map_err(ModelError::Fatal)?;
     // Some gateways omit the SSE media type. Only a validated terminal event authorizes an action.
     let media = match r.header("Content-Type").map(|_| r.content_type().trim().to_ascii_lowercase()).as_deref() {
         Some("text/event-stream") => "text/event-stream",
@@ -156,7 +160,7 @@ fn infer(req: ureq::Request, bytes: &[u8], kind: Kind) -> Result<Value> {
         None => "missing Content-Type",
         _ => "other Content-Type",
     };
-    let bytes = bounded(r, LIMIT)?;
+    let bytes = bounded(r, STREAM_LIMIT).map_err(ModelError::Fatal)?;
     let text = std::str::from_utf8(&bytes).ok().map(|s| s.strip_prefix('\u{feff}').unwrap_or(s));
     if let Some(text) = text {
         let first = text.lines().find(|line| !line.is_empty()).unwrap_or("");
@@ -166,12 +170,14 @@ fn infer(req: ureq::Request, bytes: &[u8], kind: Kind) -> Result<Value> {
         }
         if let Ok(json) = serde_json::from_str::<Value>(text) {
             if let Some(error) = json.get("error").filter(|e| !e.is_null()) {
-                return Err(recovery(Some(200), error.get("code").and_then(Value::as_str)));
+                return Err(ModelError::Fatal(recovery(Some(200), error.get("code").and_then(Value::as_str))));
             }
-            return Err(format!("ChatGPT HTTP 200 ({media}): received JSON instead of a completed event stream"));
+            return Err(ModelError::Fatal(format!(
+                "ChatGPT HTTP 200 ({media}): received JSON instead of a completed event stream"
+            )));
         }
     }
-    Err(format!("ChatGPT HTTP 200 ({media}): expected a ChatGPT event stream; no action accepted"))
+    Err(ModelError::Fatal(format!("ChatGPT HTTP 200 ({media}): expected a ChatGPT event stream; no action accepted")))
 }
 
 // Typed wire fields reject duplicates. Unknown metadata is never interpreted as an action.
@@ -334,26 +340,28 @@ fn final_text(response: &Response) -> Result<&str> {
 
 // The terminal response contains the authoritative output. Reconcile all observed deltas and
 // snapshots with it. A missing redundant snapshot is fine; contradictory evidence is not.
-fn decode(stream: &str, kind: Kind) -> Result<Value> {
-    let mut events = events(stream)?;
-    let terminal = events
-        .pop()
-        .filter(|e| e.kind == "response.completed")
-        .ok_or("ChatGPT stream ended without response.completed; no action accepted")?;
-    let completed = terminal.response.ok_or(INVALID)?;
+fn decode(stream: &str, kind: TurnKind) -> std::result::Result<Value, ModelError> {
+    let mut events = events(stream).map_err(ModelError::Fatal)?;
+    let terminal = events.pop().filter(|e| e.kind == "response.completed").ok_or_else(|| {
+        ModelError::Fatal("ChatGPT stream ended without response.completed; no action accepted".into())
+    })?;
+    let completed = terminal.response.ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
     if terminal.response_id.is_some() && terminal.response_id != completed.id {
-        return Err(INVALID.into());
+        return Err(ModelError::Fatal(INVALID.into()));
     }
-    let text = final_text(&completed)?;
+    let text = final_text(&completed).map_err(ModelError::Fatal)?;
+    if text.len() > LIMIT {
+        return Err(ModelError::Fatal("ChatGPT response exceeds the size limit; no action accepted".into()));
+    }
     let mut remaining = text;
     let mut saw_delta = false;
     let mut position = None;
     for event in events {
         if event.response_id.is_some() && event.response_id != completed.id {
-            return Err("ChatGPT event refers to a different response ID".into());
+            return Err(ModelError::Fatal("ChatGPT event refers to a different response ID".into()));
         }
         if matches!(event.kind.as_str(), "response.created" | "response.in_progress" | "response.queued") {
-            let start = event.response.as_ref().ok_or(INVALID)?;
+            let start = event.response.as_ref().ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
             if position.is_some()
                 || start.id != completed.id
                 || !start.output.is_empty()
@@ -361,7 +369,7 @@ fn decode(stream: &str, kind: Kind) -> Result<Value> {
                 || start.incomplete_details.is_some()
                 || !matches!(start.status.as_deref(), Some("queued" | "in_progress"))
             {
-                return Err(INVALID.into());
+                return Err(ModelError::Fatal(INVALID.into()));
             }
             continue;
         }
@@ -372,34 +380,36 @@ fn decode(stream: &str, kind: Kind) -> Result<Value> {
                 || event.item.is_some()
                 || event.error.is_some()
             {
-                return Err("ChatGPT response metadata did not match the completed response".into());
+                return Err(ModelError::Fatal("ChatGPT response metadata did not match the completed response".into()));
             }
             continue;
         }
-        let index = event
-            .output_index
-            .ok_or("ChatGPT stream contained an unrecognized response-level event or a missing output index")?;
-        let item = completed.output.get(index).ok_or(INVALID)?;
+        let index = event.output_index.ok_or_else(|| {
+            ModelError::Fatal(
+                "ChatGPT stream contained an unrecognized response-level event or a missing output index".into(),
+            )
+        })?;
+        let item = completed.output.get(index).ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
         if event.item_id.as_ref().is_some_and(|id| id != &item.id) {
-            return Err(INVALID.into());
+            return Err(ModelError::Fatal(INVALID.into()));
         }
         let stage = match event.kind.as_str() {
             "response.output_item.added" | "response.output_item.done" => {
-                let got = event.item.as_ref().ok_or(INVALID)?;
+                let got = event.item.as_ref().ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
                 let added = event.kind.ends_with(".added");
                 if got.id != item.id || got.kind != item.kind {
-                    return Err(INVALID.into());
+                    return Err(ModelError::Fatal(INVALID.into()));
                 }
                 if item.kind == "message" {
                     if added {
                         if !got.message() || got.status.as_deref() != Some("in_progress") || !got.content.is_empty() {
-                            return Err(INVALID.into());
+                            return Err(ModelError::Fatal(INVALID.into()));
                         }
-                    } else if got.text()? != text {
-                        return Err(INVALID.into());
+                    } else if got.text().map_err(ModelError::Fatal)? != text {
+                        return Err(ModelError::Fatal(INVALID.into()));
                     }
                 } else if !matches!(got.status.as_deref(), None | Some("in_progress" | "completed")) {
-                    return Err(INVALID.into());
+                    return Err(ModelError::Fatal(INVALID.into()));
                 }
                 if added {
                     1
@@ -418,13 +428,13 @@ fn decode(stream: &str, kind: Kind) -> Result<Value> {
                 3
             }
             _ if item.kind != "message" || event.content_index != Some(0) || event.item_id.is_none() => {
-                return Err(TEXT_ONLY.into())
+                return Err(ModelError::Fatal(TEXT_ONLY.into()))
             }
             "response.content_part.added" | "response.content_part.done" => {
-                let part = event.part.as_ref().ok_or(INVALID)?;
+                let part = event.part.as_ref().ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
                 let added = event.kind.ends_with(".added");
                 if part.kind != "output_text" || part.text.as_deref() != Some(if added { "" } else { text }) {
-                    return Err(TEXT_ONLY.into());
+                    return Err(ModelError::Fatal(TEXT_ONLY.into()));
                 }
                 if added {
                     2
@@ -433,21 +443,22 @@ fn decode(stream: &str, kind: Kind) -> Result<Value> {
                 }
             }
             "response.output_text.delta" => {
-                remaining = remaining.strip_prefix(event.delta.as_deref().ok_or(INVALID)?).ok_or(INVALID)?;
+                let delta = event.delta.as_deref().ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
+                remaining = remaining.strip_prefix(delta).ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
                 saw_delta = true;
                 3
             }
             "response.output_text.done" if event.text.as_deref() == Some(text) => 4,
-            _ => return Err(TEXT_ONLY.into()),
+            _ => return Err(ModelError::Fatal(TEXT_ONLY.into())),
         };
         let next = (index, stage);
         if position.is_some_and(|last| next < last || (next == last && stage != 3)) {
-            return Err(INVALID.into());
+            return Err(ModelError::Fatal(INVALID.into()));
         }
         position = Some(next);
     }
     if saw_delta && !remaining.is_empty() {
-        return Err(INVALID.into());
+        return Err(ModelError::Fatal(INVALID.into()));
     }
     decode_action(text, kind)
 }
@@ -488,12 +499,12 @@ mod tests {
             json!({"type":"response.metadata","response_id":"resp","sequence_number":2,"metadata":{"text":"ignored"}});
         let end = terminal(ACTION);
         let stream = frames(&[meta.clone(), delta(ACTION), end.clone()]);
-        assert_eq!(decode(&stream, Kind::Root).unwrap()["text"], "ok");
-        assert!(decode(&frames(std::slice::from_ref(&meta)), Kind::Root).is_err());
+        assert_eq!(decode(&stream, TurnKind::Root).unwrap()["text"], "ok");
+        assert!(decode(&frames(std::slice::from_ref(&meta)), TurnKind::Root).is_err());
         for id in [Value::Null, json!("other")] {
             let mut wrong = meta.clone();
             wrong["response_id"] = id;
-            assert!(decode(&frames(&[wrong, end.clone()]), Kind::Root).is_err());
+            assert!(decode(&frames(&[wrong, end.clone()]), TurnKind::Root).is_err());
         }
     }
 
@@ -522,11 +533,11 @@ mod tests {
             end,
         ]);
         let stream = format!(": heartbeat\r\n\r\n{stream}data: [DONE]\r\n\r\n");
-        assert_eq!(decode(&stream, Kind::Reporter).unwrap(), json!({"op":"finish","text":"ok"}));
+        assert_eq!(decode(&stream, TurnKind::Reporter).unwrap(), json!({"op":"finish","text":"ok"}));
         let ask = frames(&[terminal(r#"{"op":"ask","text":"which?"}"#)]);
-        assert!(decode(&ask, Kind::Root).is_ok());
-        assert!(decode(&ask, Kind::Node).is_err());
-        assert!(decode(&ask, Kind::Reporter).is_err());
+        assert!(decode(&ask, TurnKind::Root).is_ok());
+        assert!(decode(&ask, TurnKind::Node).is_err());
+        assert!(decode(&ask, TurnKind::Reporter).is_err());
     }
 
     // Only these tests substitute loopback requests for the fixed production endpoints.
@@ -610,9 +621,9 @@ mod tests {
             json!({"role":"assistant","content":"prior action"}),
             json!({"role":"user","content":"receipt"}),
         ];
-        let bytes = body(&model, None, "worker", "task-id", &history, Kind::Node, Provider::ChatGpt).unwrap();
+        let bytes = body(&model, None, "worker", "task-id", &history, TurnKind::Node, Provider::ChatGpt).unwrap();
         let req = authorize(http_agent(TIMEOUT).post(&format!("{url}/v1/responses")), TOKEN).unwrap();
-        assert_eq!(infer(req, &bytes, Kind::Node).unwrap()["text"], "ok");
+        assert_eq!(infer(req, &bytes, TurnKind::Node).unwrap()["text"], "ok");
         let (line, headers, bytes) = server.join().unwrap();
         assert_eq!(line.trim_end(), "POST /v1/responses HTTP/1.1");
         assert!(headers.contains("Bearer offline-fixture") && headers.contains("text/event-stream"));
@@ -631,7 +642,7 @@ mod tests {
             "Content-Type: text/event-stream ; charset=utf-8",
         ] {
             let (url, server) = serve(200, header, frames(&[terminal(ACTION)]), Duration::ZERO);
-            assert_eq!(infer(http_agent(TIMEOUT).post(&url), b"{}", Kind::Root).unwrap()["text"], "ok");
+            assert_eq!(infer(http_agent(TIMEOUT).post(&url), b"{}", TurnKind::Root).unwrap()["text"], "ok");
             server.join().unwrap();
         }
         for (header, body, expected) in [
@@ -645,7 +656,7 @@ mod tests {
             ("Content-Type: text/plain", frames(&[delta(ACTION)]), "without response.completed"),
         ] {
             let (url, server) = serve(200, header, body, Duration::ZERO);
-            let error = infer(http_agent(TIMEOUT).post(&url), b"{}", Kind::Root).unwrap_err();
+            let error = infer(http_agent(TIMEOUT).post(&url), b"{}", TurnKind::Root).unwrap_err().to_string();
             assert!(error.contains(expected) && !error.contains("private"), "{error}");
             server.join().unwrap();
         }
@@ -682,7 +693,14 @@ mod tests {
                 "selected model and reasoning effort",
             ),
             (200, "Content-Type: application/json", String::new(), Duration::ZERO, "event stream"),
-            (200, "Content-Type: text/event-stream", "x".repeat(LIMIT + 1), Duration::ZERO, "size limit"),
+            (200, "Content-Type: text/event-stream", "x".repeat(STREAM_LIMIT + 1), Duration::ZERO, "size limit"),
+            (
+                200,
+                "Content-Type: text/event-stream",
+                frames(&[terminal(&json!({"op":"finish","text":"y".repeat(LIMIT)}).to_string())]),
+                Duration::ZERO,
+                "size limit",
+            ),
             (
                 200,
                 "Content-Type: text/event-stream",
@@ -693,10 +711,20 @@ mod tests {
         ] {
             let (url, server) = serve(status, headers, payload, delay);
             let timeout = if delay.is_zero() { TIMEOUT } else { Duration::from_millis(100) };
-            let err = infer(authorize(http_agent(timeout).post(&url), TOKEN).unwrap(), b"{}", Kind::Root).unwrap_err();
+            let err = infer(authorize(http_agent(timeout).post(&url), TOKEN).unwrap(), b"{}", TurnKind::Root)
+                .unwrap_err()
+                .to_string();
             assert!(err.contains(expected) && !err.contains("secret") && !err.contains(TOKEN), "{err}");
             server.join().unwrap();
         }
+        // SSE framing larger than `LIMIT` (e.g. xhigh reasoning streams) still decodes when action text <= `LIMIT`.
+        let sse_over_1m = format!(":{}\r\n\r\n{}", " ".repeat(LIMIT + 64), frames(&[terminal(ACTION)]));
+        let (url, server) = serve(200, "Content-Type: text/event-stream", sse_over_1m, Duration::ZERO);
+        assert_eq!(
+            infer(authorize(http_agent(TIMEOUT).post(&url), TOKEN).unwrap(), b"{}", TurnKind::Root).unwrap()["text"],
+            "ok"
+        );
+        server.join().unwrap();
         assert_eq!(trap.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
         for payload in ["{}", r#"{"data":[{"id":"api-model"}]}"#] {
             let (url, server) = serve(200, "Content-Type: application/json", payload.to_owned(), Duration::ZERO);
@@ -715,7 +743,7 @@ mod tests {
     #[test]
     fn refuses_truncation_errors_conflicts_and_ambiguous_actions() {
         let end = terminal(ACTION);
-        let reject = |es: &[Value]| assert!(decode(&frames(es), Kind::Root).is_err());
+        let reject = |es: &[Value]| assert!(decode(&frames(es), TurnKind::Root).is_err());
         reject(&[delta(ACTION)]);
         for key in ["item_id", "response_id", "content_index", "output_index"] {
             let mut d = delta(ACTION);
@@ -762,9 +790,9 @@ mod tests {
             good.replacen("event: response.completed", "event: response.failed", 1),
             good.replace("\"id\":\"resp\"", "\"id\":\"other\",\"id\":\"resp\""),
         ] {
-            assert!(decode(&stream, Kind::Root).is_err());
+            assert!(decode(&stream, TurnKind::Root).is_err());
         }
-        let err = decode(&frames(&[delta(ACTION),json!({"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"reflected-secret"}}})]),Kind::Root).unwrap_err();
+        let err = decode(&frames(&[delta(ACTION),json!({"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"reflected-secret"}}})]),TurnKind::Root).unwrap_err().to_string();
         assert!(err.contains("https://chatgpt.com/settings/usage") && !err.contains("reflected-secret"));
     }
 }

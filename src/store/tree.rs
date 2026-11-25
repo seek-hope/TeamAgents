@@ -346,7 +346,7 @@ pub(super) fn claim_report(db: &Connection) -> Result<Option<Turn>> {
         db.execute("UPDATE tree_runs SET phase='reporting' WHERE root=?1", [&root]).db()?;
         let messages = vec![json!({"role":"user","content":input.to_string()})];
         let settings = root_model_settings(db, &root)?;
-        return Ok(Some(Turn { kind: "reporter".into(), task, agent: "reporter".into(), messages, settings }));
+        return Ok(Some(Turn { kind: TurnKind::Reporter, task, agent: "reporter".into(), messages, settings }));
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::{model::ModelSettings, Result};
+use crate::{model::ModelSettings, protocol::TurnKind, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
@@ -12,7 +12,7 @@ pub struct Store {
 
 #[derive(Debug)]
 pub struct Turn {
-    pub kind: String,
+    pub kind: TurnKind,
     pub task: String,
     pub agent: String,
     pub messages: Vec<Value>,
@@ -485,6 +485,14 @@ impl Store {
                 let outputs = tree::outputs(&tx, id)?;
                 task["tree_nodes"] = outputs.nodes;
                 task["leaf_results"] = outputs.leaves;
+                let mut cq =
+                    tx.prepare("SELECT question,answer FROM clarifications WHERE root=?1 ORDER BY rowid").db()?;
+                let clarifications = cq
+                    .query_map([id], |r| Ok(json!({"question":r.get::<_,String>(0)?,"answer":r.get::<_,String>(1)?})))
+                    .db()?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .db()?;
+                task["clarifications"] = Value::Array(clarifications);
             }
             // User status only. Omit tool results and edit bodies, and bound even a single-line command.
             let mut q = tx.prepare("SELECT t.id,t.agent,json_extract(o.action,'$.op'),
@@ -535,12 +543,30 @@ impl Store {
             }).db()?;
             let mut messages: Vec<Value> = rows.collect::<rusqlite::Result<_>>().db()?;
             if introduced {
+                let is_protocol_retry = messages.last().and_then(|m| m["content"].as_str()).is_some_and(|s| {
+                    serde_json::from_str::<Value>(s)
+                        .ok()
+                        .is_some_and(|v| v["task"].as_str() == Some(task.as_str()) && v["protocol_error"].is_string())
+                });
+                let focus = if is_protocol_retry {
+                    format!(
+                        "Continue task {task}. Original request: {prompt}\nYour previous turn was rejected (see protocol_error above). Respond with exactly one valid raw JSON action object and stop immediately at its closing '}}'."
+                    )
+                } else {
+                    format!("Continue task {task}. Original request: {prompt}")
+                };
                 // A peer may have handled other work while this task was waiting. Restore its focus.
-                messages.push(json!({"role":"user","content":format!("Continue task {task}. Original request: {prompt}")}));
+                messages.push(json!({"role":"user","content":focus}));
             }
-            let kind = if !is_tree { "legacy" } else if task==root { "root" } else { "node" };
+            let kind = if !is_tree {
+                TurnKind::Legacy
+            } else if task == root {
+                TurnKind::Root
+            } else {
+                TurnKind::Node
+            };
             let settings = root_model_settings(db, &root)?;
-            return Ok(Some(Turn { kind:kind.into(),task,agent,messages,settings }));
+            return Ok(Some(Turn { kind, task, agent, messages, settings }));
         })
     }
 
@@ -603,6 +629,45 @@ impl Store {
             }
             take_model(db, task)?;
             stop_work(db, task, "failed", error)
+        })
+    }
+
+    pub fn reject_action(&mut self, task: &str, reason: &str) -> Result<()> {
+        const MAX_ACTION_REJECTIONS: u32 = 2;
+        self.transaction(|db| {
+            if let Some(root) = tree::report_root(db, task)? {
+                return tree::fallback(db, &root, "reporter could not complete");
+            }
+            let agent = take_model(db, task)?;
+            let budget_left: bool = db
+                .query_row(
+                    "SELECT r.turns_used < (s.turn_budget - (EXISTS(SELECT 1 FROM tree_runs WHERE root=t.root) AND s.turn_budget > 1))
+                     FROM tasks t JOIN tasks r ON r.id=t.root CROSS JOIN settings s WHERE t.id=?1",
+                    [task],
+                    |r| r.get(0),
+                )
+                .db()?;
+            let prior: u32 = db
+                .query_row(
+                    "SELECT count(*) FROM messages WHERE agent=?1 AND role='user' AND CASE WHEN json_valid(content) THEN json_extract(content,'$.task')=?2 AND json_extract(content,'$.protocol_error') IS NOT NULL ELSE 0 END",
+                    params![agent, task],
+                    |r| r.get(0),
+                )
+                .db()?;
+            if budget_left && prior < MAX_ACTION_REJECTIONS {
+                return queue(
+                    db,
+                    task,
+                    json!({
+                        "task": task,
+                        "protocol_error": reason,
+                        "attempt": prior + 1,
+                        "max_corrections": MAX_ACTION_REJECTIONS,
+                        "next": "Return exactly one raw JSON object with an allowed op and exact required fields, without markdown fences, prose, or extra keys."
+                    }),
+                );
+            }
+            stop_work(db, task, "failed", reason)
         })
     }
 
@@ -713,6 +778,53 @@ impl Store {
             }
             let (status,reason) = if uncertain { ("unknown","cancelled after tool start; outcome unknown") } else { ("cancelled","cancelled by user") };
             stop_chain(db,task,status,reason)
+        })
+    }
+
+    pub fn delete(&mut self, task_id: &str) -> Result<String> {
+        self.transaction(|db| {
+            let root: String = db
+                .query_row("SELECT root FROM tasks WHERE id=?1", [task_id], |r| r.get(0))
+                .optional()
+                .db()?
+                .ok_or_else(|| format!("unknown task: {task_id}"))?;
+            let in_flight: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM tasks WHERE root=?1 AND model_reserved=1)
+                        OR EXISTS(SELECT 1 FROM operations o JOIN tasks t ON t.id=o.task WHERE t.root=?1 AND o.reserved=1)
+                        OR EXISTS(SELECT 1 FROM tree_runs WHERE root=?1 AND phase='reporting')",
+                    [&root],
+                    |r| r.get(0),
+                )
+                .db()?;
+            if in_flight {
+                return Err(
+                    "cannot delete session while work is in flight; cancel it first and wait for the current operation to settle"
+                        .into(),
+                );
+            }
+            let internal_agents: Vec<String> = {
+                let mut q = db
+                    .prepare(
+                        "SELECT DISTINCT t.agent FROM tasks t JOIN agents a ON a.name=t.agent WHERE t.root=?1 AND a.internal=1",
+                    )
+                    .db()?;
+                let rows = q.query_map([&root], |r| r.get::<_, String>(0)).db()?;
+                rows.collect::<rusqlite::Result<_>>().db()?
+            };
+            db.execute("DELETE FROM clarifications WHERE root=?1", [&root]).db()?;
+            db.execute("DELETE FROM root_model_settings WHERE root=?1", [&root]).db()?;
+            db.execute("DELETE FROM tree_runs WHERE root=?1", [&root]).db()?;
+            db.execute("DELETE FROM root_policies WHERE root=?1", [&root]).db()?;
+            db.execute("DELETE FROM operations WHERE task IN (SELECT id FROM tasks WHERE root=?1)", [&root]).db()?;
+            db.execute("UPDATE tasks SET parent=NULL WHERE root=?1", [&root]).db()?;
+            db.execute("DELETE FROM tasks WHERE root=?1 AND id<>?1", [&root]).db()?;
+            db.execute("DELETE FROM tasks WHERE id=?1", [&root]).db()?;
+            for agent in internal_agents {
+                db.execute("DELETE FROM messages WHERE agent=?1", [&agent]).db()?;
+                db.execute("DELETE FROM agents WHERE name=?1 AND internal=1", [&agent]).db()?;
+            }
+            Ok(root)
         })
     }
 

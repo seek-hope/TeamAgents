@@ -2,12 +2,14 @@ use crate::{model, store::Store, tools, Result};
 use serde_json::{json, Value};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -197,11 +199,56 @@ fn limit(name: &str, default: u32, max: u32) -> Result<u32> {
 }
 
 enum Completion {
-    Model(String, Result<Value>),
+    Model(String, std::result::Result<Value, model::ModelError>),
     Tool(String, Result<String>),
 }
 
-fn launch(store: &mut Store, workspace: &Path, tx: &Sender<Completion>, tool_first: bool) -> Result<bool> {
+#[derive(Clone)]
+struct Notifier {
+    tx: Sender<Completion>,
+    wake: Arc<UnixStream>,
+}
+
+impl Notifier {
+    fn send(&self, item: Completion) {
+        let _ = self.tx.send(item);
+        // A full wakeup socket already has POLLIN queued for the event loop.
+        let _ = (&*self.wake).write(&[1]);
+    }
+}
+
+fn drain_wake(wake_rx: &mut UnixStream) {
+    let mut buf = [0u8; 64];
+    loop {
+        match wake_rx.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+}
+
+fn wait_for_activity(listener: &UnixListener, wake_rx: &UnixStream, timeout_ms: i32) -> Result<()> {
+    let mut fds = [
+        libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: wake_rx.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+    ];
+    loop {
+        // SAFETY: `fds` points to 2 valid `pollfd` entries backed by open descriptors for the call duration.
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
+        if rc >= 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(err(e));
+        }
+    }
+}
+
+fn launch(store: &mut Store, workspace: &Path, notifier: &Notifier, tool_first: bool) -> Result<bool> {
     for tool in [tool_first, !tool_first] {
         if tool {
             if let Some((id, mut action)) = store.claim_tool()? {
@@ -210,22 +257,22 @@ fn launch(store: &mut Store, workspace: &Path, tx: &Sender<Completion>, tool_fir
                     action["op"] = json!("shell");
                 }
                 let workspace = workspace.to_path_buf();
-                let tx = tx.clone();
+                let notifier = notifier.clone();
                 thread::spawn(move || {
                     let result = std::panic::catch_unwind(|| tools::execute(&workspace, &action))
                         .unwrap_or_else(|_| Err("tool worker panicked".into()));
-                    let _ = tx.send(Completion::Tool(id, result));
+                    notifier.send(Completion::Tool(id, result));
                 });
                 return Ok(true);
             }
         } else if let Some(turn) = store.claim()? {
-            let tx = tx.clone();
+            let notifier = notifier.clone();
             thread::spawn(move || {
                 let result = std::panic::catch_unwind(|| {
-                    model::complete(&turn.agent, &turn.task, &turn.messages, &turn.kind, turn.settings.as_ref())
+                    model::complete(&turn.agent, &turn.task, &turn.messages, turn.kind, turn.settings.as_ref())
                 })
-                .unwrap_or_else(|_| Err("model worker panicked".into()));
-                let _ = tx.send(Completion::Model(turn.task, result));
+                .unwrap_or_else(|_| Err(model::ModelError::Fatal("model worker panicked".into())));
+                notifier.send(Completion::Model(turn.task, result));
             });
             return Ok(true);
         }
@@ -243,7 +290,8 @@ fn settle(store: &mut Store, done: Completion) -> Result<()> {
     }
     match done {
         Completion::Tool(id, result) => store.tool_result(&id, result.as_deref().map_err(String::as_str)),
-        Completion::Model(id, Err(e)) => store.fail(&id, &e),
+        Completion::Model(id, Err(model::ModelError::Fatal(e))) => store.fail(&id, &e),
+        Completion::Model(id, Err(model::ModelError::InvalidAction(e))) => store.reject_action(&id, &e),
         Completion::Model(id, Ok(action)) => {
             let result = match action["op"].as_str() {
                 Some("read_file" | "edit_file" | "shell") => store.request_tool(&id, &action),
@@ -253,7 +301,7 @@ fn settle(store: &mut Store, done: Completion) -> Result<()> {
                 _ => Err("unrecognized model action".into()),
             };
             if let Err(e) = result {
-                store.fail(&id, &e)?;
+                store.reject_action(&id, &e)?;
             }
             Ok(())
         }
@@ -323,6 +371,10 @@ fn dispatch(store: &mut Store, workspace: &Value, frame: &Value, active: usize) 
             store.cancel(field(b, "id")?)?;
             json!({"ok":true})
         }
+        "delete" => {
+            let root = store.delete(field(b, "id")?)?;
+            json!({"ok":true, "root":root})
+        }
         "approve" | "deny" => {
             store.approve(field(b, "id")?, b["op"] == "approve")?;
             json!({"ok":true})
@@ -384,22 +436,31 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
     let listener = UnixListener::bind(&socket).map_err(err)?;
     let _socket_guard = SocketGuard(socket);
     listener.set_nonblocking(true).map_err(err)?;
+    let (mut wake_rx, wake_tx) = UnixStream::pair().map_err(err)?;
+    wake_rx.set_nonblocking(true).map_err(err)?;
+    wake_tx.set_nonblocking(true).map_err(err)?;
     let workspace_identity = json!(loc.workspace.as_os_str().as_encoded_bytes());
     let (tx, rx) = mpsc::channel();
+    let notifier = Notifier { tx, wake: Arc::new(wake_tx) };
     let mut active = 0;
     let mut tool_first = true;
     let mut wake = true; // Also check persisted queues immediately after recovery.
     loop {
+        drain_wake(&mut wake_rx);
         for done in rx.try_iter() {
             active -= 1;
             settle(&mut store, done)?;
             wake = true;
         }
         // Bound each batch so a busy client cannot starve the agents.
+        let mut batch_full = true;
         for _ in 0..16 {
             let stream = match listener.accept() {
                 Ok((s, _)) => s,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    batch_full = false;
+                    break;
+                }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(err(e)),
             };
@@ -425,23 +486,61 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
                 Ok((v, stop)) => (json!({"value":v}), stop),
                 Err(e) => (json!({"error":e}), false),
             };
+            if stop {
+                drop(_socket_guard);
+                drop(listener);
+                drop(store);
+                drop(lock);
+                let _ = write_frame(&stream, &reply);
+                return Ok(());
+            }
             if let Err(e) = write_frame(&stream, &reply) {
                 if e == "daemon frame exceeds 4 MiB" {
                     let _ = write_frame(&stream, &json!({"error":e}));
                 }
             }
-            if stop {
-                return Ok(());
-            }
         }
         while wake && active < concurrency {
-            if !launch(&mut store, &loc.workspace, &tx, tool_first)? {
+            if !launch(&mut store, &loc.workspace, &notifier, tool_first)? {
                 wake = false;
                 break;
             }
             active += 1;
             tool_first = !tool_first;
         }
-        thread::sleep(Duration::from_millis(25));
+        if !batch_full && !(wake && active < concurrency) {
+            wait_for_activity(&listener, &wake_rx, 1000)?;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notifier_wakes_blocked_poll_without_sleep_latency() {
+        let dir = std::env::temp_dir().join(format!("ta-wake-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let sock_path = dir.join("test.sock");
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (mut wake_rx, wake_tx) = UnixStream::pair().unwrap();
+        wake_rx.set_nonblocking(true).unwrap();
+        wake_tx.set_nonblocking(true).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let notifier = Notifier { tx, wake: Arc::new(wake_tx) };
+        let worker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(5));
+            notifier.send(Completion::Tool("t1".into(), Ok("done".into())));
+        });
+        let start = Instant::now();
+        wait_for_activity(&listener, &wake_rx, 1000).unwrap();
+        let elapsed = start.elapsed();
+        drain_wake(&mut wake_rx);
+        assert!(matches!(rx.try_recv().unwrap(), Completion::Tool(id, Ok(msg)) if id == "t1" && msg == "done"));
+        assert!(elapsed < Duration::from_millis(100), "poll took {elapsed:?}");
+        worker.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
     }
 }

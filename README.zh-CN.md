@@ -1,16 +1,14 @@
 # TeamAgents
 
-[English](README.md) · [设计决策](docs/DECISIONS.md) · [0.5.0 架构图](docs/teamagents-0.5.0.canvas)
+[English](README.md) · [设计决策](docs/DECISIONS.md) · [架构图](docs/architecture.canvas)
 
-TeamAgents 0.5.0 在本地工作区中执行编程任务。每个新任务先交给一个智能体，未指定时由 `default` 接手。当前阶段可以自行完成工作，也可以把工作分给新的子阶段。任务沿树向下传递。叶子阶段结束后，由树外的汇总智能体向用户报告结果。
+TeamAgents 在本地工作区执行编程任务。会话中的每个智能体都有持久身份和私有对话记录。未指定接收者时，任务交给 `default`。每个阶段可以自行完成工作，也可以向子阶段分派任务。叶子阶段结束后，由树外的汇总智能体向用户报告结果。
 
 ## 安装与启动
 
 Shell 沙箱支持原生 x86-64 和小端 AArch64 Linux。先用系统包管理器安装 `bubblewrap` 和 `slirp4netns`。Ubuntu 可运行 `sudo apt install bubblewrap slirp4netns`。运行时使用 `/usr/bin/bwrap`，联网助手默认为 `/usr/bin/slirp4netns`。如助手安装在其他位置，请在守护进程启动前，将 `TEAMAGENTS_SLIRP4NETNS` 设为可信助手可执行文件的绝对路径。系统须允许普通用户使用用户命名空间和网络命名空间。使用二进制压缩包或源码安装脚本均需单独安装这些依赖。
 
-更换二进制文件前，先等正在执行的操作结束，再用与守护进程匹配的客户端在每个运行中的会话里执行 `teamagents stop`。会话迁移会保留每个根任务的派发方式、审批策略和待处理操作。数据库模式版本为 1 的根任务仍需逐项审批。在同一会话中新提交的任务使用单向执行树。
-
-从源码安装需要 `rust-toolchain.toml` 指定的 Rust 工具链和 C 编译器（用于编译随包提供的 SQLite）。在源码目录运行 `cargo install --locked --path .` 或 `./install.sh`，把 Cargo 安装目录（通常是 `~/.cargo/bin`）加入 `PATH`，然后用 `teamagents version` 确认版本为 `0.5.0`。
+从源码安装需要 `rust-toolchain.toml` 指定的 Rust 工具链和 C 编译器（用于编译随包提供的 SQLite）。如果 TeamAgents 已在运行，先等在途工作结束，再在每个运行中的会话里执行 `teamagents stop`，然后更换程序。在源码目录运行 `cargo install --locked --path .` 或 `./install.sh`，把 Cargo 安装目录（通常是 `~/.cargo/bin`）加入 `PATH`，运行 `teamagents version` 确认安装成功。
 
 启动会话守护进程前先选好模型服务，在需要处理的项目目录运行客户端。
 
@@ -47,6 +45,24 @@ teamagents chat
 
 TeamAgents 接受 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 和 `max`，每个模型支持的档位由服务商决定。`default` 表示由服务商选择。设置按会话和模型服务保存，从下一次通过 `chat` 或 `exec` 提交任务时生效。子节点、修复节点、最终汇报都沿用根任务提交时的选择；回答澄清问题或重启后恢复工作时也一样。
 
+### 交互式 TUI 与纯文本对话
+
+在交互式终端中运行 `teamagents` 或 `teamagents chat [--review]` 会自动进入 TUI；使用管道输入、`--json` 或 `--plain` 时回退为纯文本行模式。使用 `teamagents tui [--review]` 可显式启动 TUI（需要交互式终端）。TUI 中快捷键负责导航、布局与直接操作，斜杠命令负责配置与工作流控制，二者互补不重叠：
+
+| 快捷键 | 作用（导航、布局与直接条目操作） |
+|---|---|
+| `Tab` / `BackTab` | 切换焦点面板（输入区、侧栏、详情检查器）或补全 `/命令` |
+| `Ctrl+B` | 显示/隐藏左侧边栏 |
+| `Ctrl+P` | 打开待审批队列（`a` 批准，`d` 拒绝） |
+| `Alt+1`–`4` / `1`–`4` | 切换检查器标签页（`Summary`、`Evidence`、`Tree`、`Log`） |
+| `[` / `]` | 切换侧栏视图（`Sessions` 会话 / `Agents` 智能体） |
+| `a` / `d` / `r` / `x` | 批准 / 拒绝 / 回复澄清问题 / 取消运行中任务 |
+| 连续两次 `Del` | 选中会话后第一次触发删除确认提示，第二次执行删除 |
+| `Enter` / `Shift+Enter` | 提交任务或回答 / 插入换行 |
+| `F1` / `Ctrl+Q` | 打开快捷键与命令参考 / 退出 TUI（守护进程继续后台运行） |
+
+互补的 TUI 斜杠命令：`/model`、`/to`、`/check`、`/review`、`/new TEXT`、`/answer ROOT_ID TEXT`、`/clear`、`/stop`。
+
 ## 提交任务并验证结果
 
 新任务默认无人值守。`exec` 默认等到最终报告或澄清问题，没有客户端等待时限。下面的示例要求修复脚本，并指定如何检验其输出。
@@ -73,7 +89,7 @@ teamagents answer ROOT_ID '请使用完整的问候语。'
 
 根任务状态为 `input` 时，先读 `question`，再用该根任务的 ID 作答。在对话中可用 `/status ROOT_ID` 和 `/answer ROOT_ID TEXT`。当会话中只有一个待答问题、且问题属于当前选定的智能体时，直接输入文字即可作答。有待答问题时，用 `/new TEXT` 另开任务。
 
-`/members` 列出智能体，`/to NAME` 选择下次提交对话任务时的接收者，`/tasks` 列出会话任务。离开对话或等待超时都不会取消任务。`cancel TASK_ID` 请求取消任务，`stop` 关闭空闲的守护进程并保留会话。
+`/members` 列出智能体，`/to NAME` 选择下次提交对话任务时的接收者，`/tasks` 列出会话任务。离开对话或等待超时都不会取消任务。`cancel TASK_ID` 请求取消任务，`delete ROOT_ID` 删除已结束或空闲的会话树，`stop` 关闭空闲的守护进程并保留会话。
 
 **如需逐项审批模型请求的 shell 命令或文件编辑**，使用 `teamagents exec --review '…'` 或 `teamagents chat --review`。子任务继承根任务的策略。在同一会话中用 `teamagents tasks` 查找待审批任务，用 `teamagents status TASK_ID` 阅读具体操作，再将该操作的 `approval_id` 传给 `teamagents approve APPROVAL_ID` 或 `teamagents deny APPROVAL_ID`。`--check` 指定的原样命令已在提交时获得授权。
 

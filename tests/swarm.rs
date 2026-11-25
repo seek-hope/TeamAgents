@@ -676,3 +676,55 @@ fn reporter_cannot_run_a_workspace_tool() {
     assert_eq!(task["subtree_receipts"], json!([]));
     assert!(!lab.ws.join("reporter-side-effect").exists());
 }
+
+#[test]
+fn worker_recovers_from_malformed_action_json_within_budget() {
+    let lab = Lab::new();
+    let attached = lab.client(&["exec", "Return recovered report"]);
+    let first = lab.call();
+    let root = first.id.clone();
+    // 1st worker turn returns a markdown-fenced JSON block instead of raw JSON.
+    let body = json!({
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "```json\n{\"op\":\"finish\",\"text\":\"oops\"}\n```"}}]
+    })
+    .to_string();
+    write!(
+        { first }.socket,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+
+    // Runtime feeds the protocol error back cleanly on a budget-charged correction turn.
+    let retry = lab.next(&root);
+    assert!(retry.records().any(|v| v["protocol_error"].as_str().is_some_and(|s| s.contains("code fence"))));
+    retry.reply(finish("recovered work"));
+    let reporter = lab.call();
+    assert_eq!(reporter.report_input()["leaf_results"][0]["result"], "recovered work");
+    reporter.reply(finish("Recovered cleanly after format slip"));
+    let out = attached.json();
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["turns_used"], 3);
+
+    // Three consecutive malformed worker turns exhaust MAX_ACTION_REJECTIONS (2 retries -> 3rd fails).
+    let fail_receipt = lab.json(&["exec", "--detach", "Exhaust format retries"]);
+    let fail_root = field(&fail_receipt, "id");
+    for _ in 0..3 {
+        let mut turn = lab.next(fail_root);
+        let bad = json!({
+            "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "not json"}}]
+        })
+        .to_string();
+        write!(
+            turn.socket,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{bad}",
+            bad.len()
+        )
+        .unwrap();
+    }
+    let reporter = lab.call();
+    reporter.reply(finish("Reported failure after 3 malformed turns"));
+    let settled = lab.wait(fail_root, "failed");
+    assert!(settled["stage_error"].as_str().is_some_and(|e| e.contains("non-JSON text")));
+    assert_eq!(settled["turns_used"], 4);
+}

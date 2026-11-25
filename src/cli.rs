@@ -1,10 +1,13 @@
-use crate::{daemon, Result};
+use crate::{
+    daemon,
+    protocol::{field, is_terminal_str, outcome_label, preview, sanitize_terminal, Client, QuestionTracker},
+    Result,
+};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,12 +15,14 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(500);
 const HELP: &str = "TeamAgents — persistent agent sessions
 
-  teamagents [chat] [--review]           Submit prompts and receive final reports
+  teamagents [chat] [--review] [--plain] Submit prompts and receive final reports (TUI on TTY)
+  teamagents tui [--review]              Launch the interactive terminal interface
   teamagents exec [OPTIONS] TEXT         Submit a task (use - or pipe stdin for text)
   teamagents members | tasks             List session members or tasks
   teamagents status TASK_ID              Inspect progress, result and pending action
   teamagents answer ROOT_ID TEXT          Answer a root clarification and resume work
   teamagents cancel TASK_ID              Request cancellation
+  teamagents delete ROOT_ID              Delete a settled or idle session tree
   teamagents approve | deny APPROVAL_ID  Decide one pending action, not a whole task
   teamagents auth login | status | logout  Manage ChatGPT subscription sign-in
   teamagents stop                        Stop an idle daemon; keep the session
@@ -28,10 +33,11 @@ Options may appear before or after the command. Use -- before literal arguments.
   --workspace PATH     Workspace (default: current directory)
   --agent NAME         Recipient for a new task or chat (default: default)
   --json               Print machine-readable JSON
+  --plain              Use the line-oriented chat REPL even on a terminal (chat)
   --detach             Return the submission receipt without waiting (exec)
   --timeout SECONDS    Limit the wait after submission (exec waits indefinitely by default)
   --review             Require approval for each shell command and edit requested by
-                       the model on this root or its children (exec and chat)
+                       the model on this root or its children (exec, chat, and tui)
   --check COMMAND      Run this exact trusted command at proposed completion (exec).
                        A failure returns diagnostics for repair, up to 3 check attempts
                        within the root's shared model-turn budget.
@@ -43,6 +49,7 @@ Leaving or timing out keeps work running. Use status to reconnect and tasks to f
 pending approvals. When a root needs clarification, exec prints its question and exits.
 Use /model in chat to select the model and reasoning effort for new tasks.
 Use answer ROOT_ID TEXT to continue. Final reports distinguish claims from observed results.";
+
 const CHAT_HELP: &str = "Enter a task, or reply to a single waiting question for your selected agent.
 Use /answer to select a question or /new to start separate work.
 /to NAME   /members   /tasks   /status TASK_ID   /cancel TASK_ID
@@ -50,42 +57,75 @@ Use /answer to select a question or /new to start separate work.
 /model shows the selection for new roots. /model list shows visible ChatGPT plan models.
 /model MODEL [EFFORT]   /model effort EFFORT   /model default";
 
-struct Options {
+struct GlobalOptions {
     session: Option<PathBuf>,
     workspace: Option<PathBuf>,
-    agent: String,
     json: bool,
-    detach: bool,
-    timeout: Option<Duration>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AuthAction {
+    Login,
+    Status,
+    Logout,
+}
+
+struct ExecOptions {
+    agent: String,
     review: bool,
     check: Option<String>,
-    command: String,
+    detach: bool,
+    timeout: Option<Duration>,
     args: Vec<String>,
 }
 
-fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
-    let mut opt = Options {
-        session: None,
-        workspace: None,
-        agent: "default".into(),
-        json: false,
-        detach: false,
-        timeout: None,
-        review: false,
-        check: None,
-        command: String::new(),
-        args: Vec::new(),
-    };
+enum Command {
+    Help,
+    Version,
+    Auth(AuthAction),
+    Daemon,
+    Chat { agent: String, review: bool, plain: bool },
+    Tui { agent: String, review: bool },
+    Exec(ExecOptions),
+    Members,
+    Tasks,
+    Status { id: String },
+    Answer { root_id: String, text: String },
+    Cancel { id: String },
+    Delete { id: String },
+    Approve { id: String },
+    Deny { id: String },
+    Stop,
+}
+
+struct Parsed {
+    global: GlobalOptions,
+    command: Command,
+}
+
+fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
+    let mut session = None;
+    let mut workspace = None;
+    let mut agent = String::from("default");
+    let mut json = false;
+    let mut detach = false;
+    let mut timeout = None;
+    let mut review = false;
+    let mut plain = false;
+    let mut check = None;
+    let mut cmd_name = String::new();
+    let mut pos_args: Vec<String> = Vec::new();
     let mut args = args.into_iter();
     let mut literal = false;
     let mut info = None;
+
     while let Some(arg) = args.next() {
         let word = arg.to_str().ok_or("command and prompt arguments must be UTF-8")?;
         if literal {
-            if opt.command.is_empty() {
-                opt.command = word.into();
+            if cmd_name.is_empty() {
+                cmd_name = word.into();
             } else {
-                opt.args.push(word.into());
+                pos_args.push(word.into());
             }
             continue;
         }
@@ -93,169 +133,119 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
         let text = |v: OsString| v.into_string().map_err(|_| format!("{word} requires UTF-8 text"));
         match word {
             "--" => literal = true,
-            "--session" => opt.session = Some(value()?.into()),
-            "--workspace" => opt.workspace = Some(value()?.into()),
-            "--agent" => opt.agent = text(value()?)?,
-            "--check" => opt.check = Some(text(value()?)?),
+            "--session" => session = Some(value()?.into()),
+            "--workspace" => workspace = Some(value()?.into()),
+            "--agent" => agent = text(value()?)?,
+            "--check" => check = Some(text(value()?)?),
             "--timeout" => {
                 let seconds = text(value()?)?.parse().map_err(|_| "--timeout requires nonnegative whole seconds")?;
-                opt.timeout = Some(Duration::from_secs(seconds));
+                timeout = Some(Duration::from_secs(seconds));
             }
-            "--json" => opt.json = true,
-            "--review" => opt.review = true,
-            "--detach" => opt.detach = true,
+            "--json" => json = true,
+            "--review" => review = true,
+            "--plain" => plain = true,
+            "--detach" => detach = true,
             "--help" | "-h" => info = Some("help"),
             "--version" | "-V" => info = Some("version"),
             _ if word.starts_with('-') && word != "-" => {
                 return Err(format!("unknown option: {word} (use -- for literal text)"))
             }
-            _ if opt.command.is_empty() => opt.command = word.into(),
-            _ => opt.args.push(word.into()),
+            _ if cmd_name.is_empty() => cmd_name = word.into(),
+            _ => pos_args.push(word.into()),
         }
     }
+
+    let global = GlobalOptions { session, workspace, json };
     if let Some(info) = info {
-        opt.command = info.into();
-        opt.args.clear();
+        return Ok(Parsed { global, command: if info == "help" { Command::Help } else { Command::Version } });
     }
-    if opt.command.is_empty() {
-        opt.command = "chat".into();
+    if cmd_name.is_empty() {
+        cmd_name = "chat".into();
     }
-    match opt.command.as_str() {
-        "help" | "version" => return Ok(opt),
-        "exec" => {}
+
+    if cmd_name != "exec" && (check.is_some() || detach || timeout.is_some()) {
+        return Err("--check, --timeout and --detach apply only to exec".into());
+    }
+    if review && !matches!(cmd_name.as_str(), "chat" | "exec" | "tui") {
+        return Err("--review applies only to exec, chat, and tui".into());
+    }
+    if plain && cmd_name != "chat" {
+        return Err("--plain applies only to chat".into());
+    }
+    if json && cmd_name == "tui" {
+        return Err("--json does not apply to tui".into());
+    }
+    if agent.trim().is_empty() {
+        return Err("--agent requires a name".into());
+    }
+    if check.as_deref().is_some_and(|s| s.trim().is_empty()) {
+        return Err("--check requires a command".into());
+    }
+
+    let command = match cmd_name.as_str() {
+        "help" => Command::Help,
+        "version" => Command::Version,
         "auth" => {
-            if opt.args.len() != 1 || !matches!(opt.args[0].as_str(), "login" | "status" | "logout") {
+            if pos_args.len() != 1 || !matches!(pos_args[0].as_str(), "login" | "status" | "logout") {
                 return Err("use teamagents auth login, status or logout".into());
             }
-            if opt.json || opt.session.is_some() || opt.workspace.is_some() || opt.agent != "default" {
+            if global.json || global.session.is_some() || global.workspace.is_some() || agent != "default" {
                 return Err(
                     "auth manages the local user account and does not take session, workspace, agent or JSON options"
                         .into(),
                 );
             }
+            Command::Auth(match pos_args[0].as_str() {
+                "login" => AuthAction::Login,
+                "status" => AuthAction::Status,
+                "logout" => AuthAction::Logout,
+                _ => unreachable!("validated auth action"),
+            })
         }
+        "exec" => Command::Exec(ExecOptions { agent, review, check, detach, timeout, args: pos_args }),
         "answer" => {
-            if opt.args.len() < 2 || opt.args[0].trim().is_empty() || opt.args[1..].iter().all(|s| s.trim().is_empty())
+            if pos_args.len() < 2 || pos_args[0].trim().is_empty() || pos_args[1..].iter().all(|s| s.trim().is_empty())
             {
                 return Err("answer requires ROOT_ID and nonempty TEXT".into());
             }
+            Command::Answer { root_id: pos_args[0].clone(), text: pos_args[1..].join(" ") }
         }
-        "cancel" | "status" | "approve" | "deny" => {
-            if opt.args.len() != 1 || opt.args[0].trim().is_empty() {
-                return Err(format!("{} requires exactly one ID", opt.command));
+        "cancel" | "delete" | "status" | "approve" | "deny" => {
+            if pos_args.len() != 1 || pos_args[0].trim().is_empty() {
+                return Err(format!("{cmd_name} requires exactly one ID"));
+            }
+            let id = pos_args.into_iter().next().unwrap();
+            match cmd_name.as_str() {
+                "cancel" => Command::Cancel { id },
+                "delete" => Command::Delete { id },
+                "status" => Command::Status { id },
+                "approve" => Command::Approve { id },
+                "deny" => Command::Deny { id },
+                _ => unreachable!(),
             }
         }
-        "chat" | "daemon" | "members" | "tasks" | "stop" => {
-            if !opt.args.is_empty() {
-                return Err(format!("{} does not take arguments", opt.command));
+        "chat" | "tui" | "daemon" | "members" | "tasks" | "stop" => {
+            if !pos_args.is_empty() {
+                return Err(format!("{cmd_name} does not take arguments"));
+            }
+            match cmd_name.as_str() {
+                "chat" => Command::Chat { agent, review, plain },
+                "tui" => Command::Tui { agent, review },
+                "daemon" => Command::Daemon,
+                "members" => Command::Members,
+                "tasks" => Command::Tasks,
+                "stop" => Command::Stop,
+                _ => unreachable!(),
             }
         }
         cmd => return Err(format!("unknown command: {cmd} (see teamagents help)")),
-    }
-    if opt.command != "exec" && (opt.check.is_some() || opt.detach || opt.timeout.is_some()) {
-        return Err("--check, --timeout and --detach apply only to exec".into());
-    }
-    if opt.review && !matches!(opt.command.as_str(), "chat" | "exec") {
-        return Err("--review applies only to exec and chat".into());
-    }
-    if opt.agent.trim().is_empty() {
-        return Err("--agent requires a name".into());
-    }
-    if opt.check.as_deref().is_some_and(|s| s.trim().is_empty()) {
-        return Err("--check requires a command".into());
-    }
-    Ok(opt)
-}
+    };
 
-#[derive(Clone)]
-struct Client {
-    session: PathBuf,
-    workspace: PathBuf,
-}
-
-impl Client {
-    fn new(opt: &Options) -> Result<Self> {
-        let cwd = env::current_dir().map_err(|e| e.to_string())?;
-        let workspace = cwd.join(opt.workspace.as_deref().unwrap_or(Path::new(".")));
-        let workspace = workspace.canonicalize().map_err(|e| format!("workspace {}: {e}", workspace.display()))?;
-        let session = if let Some(path) = &opt.session {
-            cwd.join(path)
-        } else {
-            let state = env::var_os("XDG_STATE_HOME")
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute())
-                .or_else(|| env::var_os("HOME").filter(|p| !p.is_empty()).map(|p| cwd.join(p).join(".local/state")))
-                .ok_or("set XDG_STATE_HOME, HOME, or --session")?;
-            state.join("teamagents-swarm/sessions").join(workspace_key(&workspace))
-        };
-        Ok(Self { session, workspace })
-    }
-
-    fn call(&self, body: Value) -> Result<Value> {
-        daemon::request(&self.session, &self.workspace, &body)
-    }
-    fn tasks(&self) -> Result<Vec<Value>> {
-        match self.call(json!({"op":"tasks"}))? {
-            Value::Array(rows) => Ok(rows),
-            _ => Err("invalid tasks response".into()),
-        }
-    }
-    fn answer(&self, id: &str, text: &str, machine: bool) -> Result<()> {
-        let value = self.call(json!({"op":"answer", "id":id, "text":text}))?;
-        output(&render("answer", &value, machine))
-    }
-    fn submit(&self, agent: &str, text: &str, review: bool, check: Option<&str>) -> Result<Value> {
-        if text.trim().is_empty() {
-            return Err("a nonempty task prompt is required".into());
-        }
-        let mut body = json!({"op":"submit", "agent":agent, "text":text, "review":review});
-        if let Some(command) = check {
-            body["check"] = json!(command);
-        }
-        let receipt = self.call(body)?;
-        field(&receipt, "id")?;
-        Ok(receipt)
-    }
-}
-
-// FNV-1a is deliberately fixed so upgrading Rust does not change the default session.
-fn workspace_key(path: &Path) -> String {
-    let hash = path
-        .as_os_str()
-        .as_encoded_bytes()
-        .iter()
-        .fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3));
-    format!("{hash:016x}")
-}
-
-fn field<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
-    value[key].as_str().filter(|s| !s.is_empty()).ok_or_else(|| format!("invalid daemon response: missing {key}"))
-}
-
-fn terminal(status: &str) -> bool {
-    matches!(status, "done" | "failed" | "cancelled" | "unknown")
+    Ok(Parsed { global, command })
 }
 
 fn display_value(value: &Value) -> String {
     value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string())
-}
-
-// Keep final feedback readable even for a command with pages of output. JSON keeps the full receipt.
-fn preview(text: &str) -> String {
-    let mut chars = text.trim().chars().map(|c| if c.is_whitespace() { ' ' } else { c });
-    let mut short: String = chars.by_ref().take(160).collect();
-    if chars.next().is_some() {
-        short.push('…');
-    }
-    short
-}
-
-fn outcome(receipt: &Value) -> &'static str {
-    match receipt["ok"].as_bool() {
-        Some(true) => "ok",
-        Some(false) => "failed",
-        None => "unknown",
-    }
 }
 
 fn append_evidence(out: &mut String, task: &Value) {
@@ -266,12 +256,12 @@ fn append_evidence(out: &mut String, task: &Value) {
             out.push_str("\n  No completed command receipts on this task.");
         }
         for r in commands.iter().rev().take(4).rev() {
-            let command = preview(r["action"]["command"].as_str().unwrap());
-            let result = preview(r["result"].as_str().unwrap_or(""));
+            let command = preview(r["action"]["command"].as_str().unwrap(), 160);
+            let result = preview(r["result"].as_str().unwrap_or(""), 160);
             out.push_str(&format!(
                 "\n  Observed {} [{}] {command} — {result}",
                 r["action"]["op"].as_str().unwrap_or("command"),
-                outcome(r)
+                outcome_label(r["ok"].as_bool())
             ));
         }
         if commands.len() > 4 {
@@ -281,13 +271,13 @@ fn append_evidence(out: &mut String, task: &Value) {
     if let Some(index) = task["subtree_receipts"].as_array().filter(|i| !i.is_empty()) {
         out.push_str("\n  Subtree receipts (inspect a task ID for details):");
         for r in index.iter().take(8) {
-            let label = preview(r["label"].as_str().unwrap_or(""));
+            let label = preview(r["label"].as_str().unwrap_or(""), 160);
             out.push_str(&format!(
                 "\n    {} {}: {} [{}]",
                 r["task"].as_str().unwrap_or("?"),
                 r["agent"].as_str().unwrap_or("?"),
                 r["op"].as_str().unwrap_or("?"),
-                outcome(r)
+                outcome_label(r["ok"].as_bool())
             ));
             if !label.is_empty() {
                 out.push(' ');
@@ -332,11 +322,11 @@ fn task_text(task: &Value) -> String {
         if task["status"] == "done" {
             out.push_str(&format!("\n  Model report: {result}"));
         } else {
-            out.push_str(&format!("\n  Outcome: {}", preview(result)));
+            out.push_str(&format!("\n  Outcome: {}", preview(result, 160)));
         }
     }
     if let Some(error) = task["stage_error"].as_str() {
-        out.push_str(&format!("\n  Worker error: {}", preview(error)));
+        out.push_str(&format!("\n  Worker error: {}", preview(error, 160)));
     }
     for key in ["policy", "verification", "check", "tool_state"] {
         if let Some(value) = task[key].as_str() {
@@ -358,7 +348,7 @@ fn task_text(task: &Value) -> String {
             let id = leaf["task"].as_str().unwrap_or("?");
             let agent = leaf["agent"].as_str().unwrap_or("?");
             let status = leaf["status"].as_str().unwrap_or("?");
-            let result = preview(leaf["result"].as_str().unwrap_or(""));
+            let result = preview(leaf["result"].as_str().unwrap_or(""), 160);
             out.push_str(&format!("\n    {id} {agent} [{status}] {result}"));
         }
     }
@@ -391,22 +381,9 @@ fn render(op: &str, value: &Value, machine: bool) -> String {
     }
 }
 
-fn terminal_text(text: &str) -> String {
-    // Neutralize terminal controls without changing the contents of JSON strings.
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if c.is_control() && !matches!(c, '\n' | '\t') {
-            out.push_str(&format!("\\u{:04x}", u32::from(c)));
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 fn output(line: &str) -> Result<()> {
     let mut out = io::stdout().lock();
-    writeln!(out, "{}", terminal_text(line)).and_then(|_| out.flush()).map_err(|e| e.to_string())
+    writeln!(out, "{}", sanitize_terminal(line)).and_then(|_| out.flush()).map_err(|e| e.to_string())
 }
 
 fn command(client: &Client, op: &str, id: Option<&str>, machine: bool) -> Result<()> {
@@ -431,14 +408,14 @@ fn prompt(args: &[String]) -> Result<String> {
     }
 }
 
-fn exec(client: Client, opt: &Options) -> Result<()> {
+fn exec(client: Client, opt: ExecOptions, machine: bool) -> Result<()> {
     let receipt = client.submit(&opt.agent, &prompt(&opt.args)?, opt.review, opt.check.as_deref())?;
     if opt.detach {
-        return output(&render("submit", &receipt, opt.json));
+        return output(&render("submit", &receipt, machine));
     }
     let id = field(&receipt, "id")?.to_owned();
-    if !opt.json {
-        eprintln!("{}", terminal_text(&format!("Submitted {id}. Reconnect with status {id}.")));
+    if !machine {
+        eprintln!("{}", sanitize_terminal(&format!("Submitted {id}. Reconnect with status {id}.")));
         if opt.review {
             eprintln!("Use tasks in another client to review pending actions, including child approvals.");
         }
@@ -452,7 +429,7 @@ fn exec(client: Client, opt: &Options) -> Result<()> {
     thread::spawn(move || loop {
         let status = client.call(query.clone());
         let finished =
-            status.as_ref().map_or(true, |v| v["status"].as_str().is_none_or(|s| terminal(s) || s == "input"));
+            status.as_ref().map_or(true, |v| v["status"].as_str().is_none_or(|s| is_terminal_str(s) || s == "input"));
         if tx.send(status).is_err() || finished {
             break;
         }
@@ -476,73 +453,20 @@ fn exec(client: Client, opt: &Options) -> Result<()> {
         };
         let status = field(&task, "status")?;
         if status == "input" {
-            output(&render("status", &task, opt.json))?;
+            output(&render("status", &task, machine))?;
             return Err(format!("input required; resume with teamagents answer {id} TEXT"));
         }
-        if terminal(status) {
-            output(&render("status", &task, opt.json))?;
+        if is_terminal_str(status) {
+            output(&render("status", &task, machine))?;
             return if status == "done" { Ok(()) } else { Err(format!("task {id} {status}")) };
         }
-        if !opt.json && status == "approval" && last != task {
-            eprintln!("{}", terminal_text(&task_text(&task)));
+        if !machine && status == "approval" && last != task {
+            eprintln!("{}", sanitize_terminal(&task_text(&task)));
         }
         last = task;
     }
-    output(&render(if last.get("status").is_some() { "status" } else { "submit" }, &last, opt.json))?;
+    output(&render(if last.get("status").is_some() { "status" } else { "submit" }, &last, machine))?;
     Err(format!("timed out waiting for {id}; reconnect with status {id}"))
-}
-
-// Track the whole session, not just locally submitted roots. Child proposals and
-// changes made from another terminal must reach the chat without more keyboard input.
-#[derive(Default)]
-struct Watch {
-    // Deduplicate notices without retaining full task records or tool output.
-    seen: HashMap<String, (String, Option<String>)>,
-    questions: HashMap<String, String>, // announced root ID -> recipient
-    initialized: bool,
-}
-
-impl Watch {
-    fn update(&mut self, tasks: Vec<Value>, mut show: impl FnMut(&Value) -> Result<()>) -> Result<()> {
-        for task in tasks {
-            let id = field(&task, "id")?.to_owned();
-            let status = field(&task, "status")?;
-            let waiting = status == "input" && task["parent"].is_null();
-            let detail = if waiting { &task["question"] } else { &task["approval_id"] };
-            let key = (status.to_owned(), detail.as_str().map(str::to_owned));
-            if self.seen.get(&id) == Some(&key) {
-                continue;
-            }
-            if waiting || status == "approval" || (self.initialized && task["parent"].is_null() && terminal(status)) {
-                show(&task)?;
-            }
-            if waiting {
-                self.questions.insert(id.clone(), field(&task, "agent")?.to_owned());
-            }
-            self.seen.insert(id, key);
-        }
-        self.initialized = true;
-        Ok(())
-    }
-
-    fn reply_to(&mut self, agent: &str) -> Result<Option<String>> {
-        // A different client may have answered or cancelled while this user typed.
-        // Warn once before treating a line as a new task or redirecting it to the remaining root.
-        let announced = self.questions.len();
-        self.questions.retain(|id, _| self.seen.get(id).is_some_and(|(status, _)| status == "input"));
-        if self.questions.len() != announced {
-            return Err(
-                "A waiting question closed in another client. Nothing was sent. Use /answer ROOT_ID TEXT or /new TEXT."
-                    .into(),
-            );
-        }
-        let mut questions = self.questions.iter();
-        match questions.next() {
-            None => Ok(None),
-            Some((id, recipient)) if recipient == agent && questions.next().is_none() => Ok(Some(id.clone())),
-            _ => Err("Specify /answer ROOT_ID TEXT for a waiting question or /new TEXT for a separate task.".into()),
-        }
-    }
 }
 
 fn model_command(client: &Client, args: &str, machine: bool) -> Result<()> {
@@ -603,47 +527,46 @@ fn model_command(client: &Client, args: &str, machine: bool) -> Result<()> {
     output(&text)
 }
 
-fn chat(client: &Client, opt: &Options) -> Result<()> {
-    let mut agent = opt.agent.clone();
-    if !opt.json && io::stdin().is_terminal() {
-        let mode = if opt.review { "individual action review" } else { "unattended" };
+fn chat_plain(client: &Client, initial_agent: &str, review: bool, machine: bool) -> Result<()> {
+    let mut agent = initial_agent.to_owned();
+    if !machine && io::stdin().is_terminal() {
+        let mode = if review { "individual action review" } else { "unattended" };
         output(&format!("Chatting with {agent} ({mode}). Enter a task, or /help for commands."))?;
     }
-    let watch = Mutex::new(Watch::default());
+    let tracker = Mutex::new(QuestionTracker::default());
     let show = |task: &Value| {
-        if terminal(field(task, "status")?) {
+        if is_terminal_str(field(task, "status")?) {
             // The list omits receipts. Fetch the final status only when the root finishes.
-            command(client, "status", Some(field(task, "id")?), opt.json)
+            command(client, "status", Some(field(task, "id")?), machine)
         } else {
-            output(&render("status", task, opt.json))
+            output(&render("status", task, machine))
         }
     };
-    watch.lock().unwrap().update(client.tasks()?, show)?;
+    tracker.lock().unwrap().update_raw(client.tasks_raw()?, show)?;
     let answer = |id: &str, text: &str| {
-        client.answer(id, text, opt.json)?;
-        let mut watch = watch.lock().unwrap();
-        watch.questions.remove(id);
-        watch.seen.remove(id);
+        let value = client.answer(id, text)?;
+        output(&render("answer", &value, machine))?;
+        tracker.lock().unwrap().clear_answered(id);
         Ok(())
     };
     let submit = |agent: &str, text: &str| {
-        let receipt = client.submit(agent, text, opt.review, None)?;
-        if opt.json || opt.review {
-            output(&render("submit", &receipt, opt.json))
+        let receipt = client.submit(agent, text, review, None)?;
+        if machine || review {
+            output(&render("submit", &receipt, machine))
         } else {
             Ok(())
         }
     };
     let (stop, stopped) = mpsc::channel::<()>();
     thread::scope(|scope| {
-        let watch = &watch;
+        let tracker = &tracker;
         scope.spawn(move || {
             let mut previous_error = None;
             while stopped.recv_timeout(POLL) == Err(mpsc::RecvTimeoutError::Timeout) {
-                let error = client.tasks().and_then(|tasks| watch.lock().unwrap().update(tasks, show)).err();
+                let error = client.tasks_raw().and_then(|tasks| tracker.lock().unwrap().update_raw(tasks, show)).err();
                 if error != previous_error {
                     if let Some(message) = &error {
-                        eprintln!("task updates: {}", terminal_text(message));
+                        eprintln!("task updates: {}", sanitize_terminal(message));
                     }
                 }
                 previous_error = error;
@@ -664,11 +587,11 @@ fn chat(client: &Client, opt: &Options) -> Result<()> {
                 let arg = parts.next();
                 match (op, arg, parts.next()) {
                     ("quit", None, None) => break,
-                    ("help", None, None) => output(&render("help", &json!(CHAT_HELP), opt.json)),
-                    ("model", _, _) => model_command(client, args, opt.json),
+                    ("help", None, None) => output(&render("help", &json!(CHAT_HELP), machine)),
+                    ("model", _, _) => model_command(client, args, machine),
                     ("to", Some(name), None) => {
                         agent = name.into();
-                        output(&if opt.json {
+                        output(&if machine {
                             json!({"agent":agent}).to_string()
                         } else {
                             format!("Chatting with {agent}.")
@@ -680,12 +603,12 @@ fn chat(client: &Client, opt: &Options) -> Result<()> {
                     }
                     ("new", Some(_), _) => submit(&agent, args),
                     ("tasks" | "members", None, None) | ("status" | "cancel" | "approve" | "deny", Some(_), None) => {
-                        command(client, op, arg, opt.json)
+                        command(client, op, arg, machine)
                     }
                     _ => Err(format!("invalid /{op} command; see /help")),
                 }
             } else {
-                let target = watch.lock().unwrap().reply_to(&agent);
+                let target = tracker.lock().unwrap().reply_target(&agent);
                 match target {
                     Ok(Some(id)) => answer(&id, line),
                     Ok(None) => submit(&agent, line),
@@ -693,7 +616,7 @@ fn chat(client: &Client, opt: &Options) -> Result<()> {
                 }
             };
             if let Err(e) = result {
-                eprintln!("teamagents: {}", terminal_text(&e));
+                eprintln!("teamagents: {}", sanitize_terminal(&e));
             }
         }
         Ok(())
@@ -701,31 +624,57 @@ fn chat(client: &Client, opt: &Options) -> Result<()> {
 }
 
 pub fn run() -> Result<()> {
-    run_cli().map_err(|e| terminal_text(&e))
+    run_cli().map_err(|e| sanitize_terminal(&e))
 }
 
 fn run_cli() -> Result<()> {
-    let opt = parse(env::args_os().skip(1))?;
-    match opt.command.as_str() {
-        "help" => return output(&render("help", &json!(HELP), opt.json)),
-        "version" => return output(&render("version", &json!(env!("CARGO_PKG_VERSION")), opt.json)),
-        "auth" => {
-            return match opt.args[0].as_str() {
-                "login" => crate::oauth::login(),
-                "status" => crate::oauth::status(),
-                "logout" => crate::oauth::logout(),
-                _ => unreachable!("validated auth command"),
+    let Parsed { global, command: cmd } = parse(env::args_os().skip(1))?;
+    match cmd {
+        Command::Help => return output(&render("help", &json!(HELP), global.json)),
+        Command::Version => return output(&render("version", &json!(env!("CARGO_PKG_VERSION")), global.json)),
+        Command::Auth(action) => {
+            return match action {
+                AuthAction::Login => crate::oauth::login(),
+                AuthAction::Status => crate::oauth::status(),
+                AuthAction::Logout => crate::oauth::logout(),
             };
         }
         _ => {}
     }
-    let client = Client::new(&opt)?;
-    match opt.command.as_str() {
-        "daemon" => daemon::serve(&client.session, &client.workspace),
-        "chat" => chat(&client, &opt),
-        "exec" => exec(client, &opt),
-        "answer" => client.answer(&opt.args[0], &opt.args[1..].join(" "), opt.json),
-        op => command(&client, op, opt.args.first().map(String::as_str), opt.json),
+
+    let client = Client::new(global.session.as_deref(), global.workspace.as_deref())?;
+    let interactive_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+    match cmd {
+        Command::Daemon => daemon::serve(&client.session, &client.workspace),
+        Command::Tui { agent, review } => {
+            if !interactive_tty {
+                return Err(
+                    "tui requires an interactive terminal; use `teamagents chat --plain` or `teamagents exec`".into()
+                );
+            }
+            crate::tui::run(client, agent, review)
+        }
+        Command::Chat { agent, review, plain } => {
+            if !global.json && !plain && interactive_tty {
+                crate::tui::run(client, agent, review)
+            } else {
+                chat_plain(&client, &agent, review, global.json)
+            }
+        }
+        Command::Exec(opt) => exec(client, opt, global.json),
+        Command::Answer { root_id, text } => {
+            let value = client.answer(&root_id, &text)?;
+            output(&render("answer", &value, global.json))
+        }
+        Command::Members => command(&client, "members", None, global.json),
+        Command::Tasks => command(&client, "tasks", None, global.json),
+        Command::Status { id } => command(&client, "status", Some(&id), global.json),
+        Command::Cancel { id } => command(&client, "cancel", Some(&id), global.json),
+        Command::Delete { id } => command(&client, "delete", Some(&id), global.json),
+        Command::Approve { id } => command(&client, "approve", Some(&id), global.json),
+        Command::Deny { id } => command(&client, "deny", Some(&id), global.json),
+        Command::Stop => command(&client, "stop", None, global.json),
+        Command::Help | Command::Version | Command::Auth(_) => unreachable!(),
     }
 }
 
@@ -733,13 +682,13 @@ fn run_cli() -> Result<()> {
 mod tests {
     use super::*;
 
-    fn options(args: &[&str]) -> Result<Options> {
+    fn options(args: &[&str]) -> Result<Parsed> {
         parse(args.iter().map(OsString::from))
     }
 
     #[test]
     fn options_and_literal_prompt_do_not_depend_on_flag_position() {
-        let opt = options(&[
+        let parsed = options(&[
             "--session",
             "s",
             "--json",
@@ -758,21 +707,37 @@ mod tests {
             "literal",
         ])
         .unwrap();
-        assert_eq!(opt.session.as_deref(), Some(Path::new("s")));
-        assert_eq!(opt.workspace.as_deref(), Some(Path::new("w")));
-        assert!(opt.json && opt.detach);
-        assert_eq!(opt.agent, "worker");
-        assert_eq!(opt.timeout, Some(Duration::from_secs(2)));
-        assert_eq!(opt.check.as_deref(), Some("cargo test"));
-        assert_eq!(prompt(&opt.args).unwrap(), "--help literal");
-        assert_eq!(options(&[]).unwrap().command, "chat");
-        for command in ["chat", "exec"] {
-            let opt = options(&[command]).unwrap();
-            assert!(!opt.review && opt.timeout.is_none());
-            assert!(options(&["--review", command]).unwrap().review);
+        assert_eq!(parsed.global.session.as_deref(), Some(std::path::Path::new("s")));
+        assert_eq!(parsed.global.workspace.as_deref(), Some(std::path::Path::new("w")));
+        assert!(parsed.global.json);
+        match parsed.command {
+            Command::Exec(opt) => {
+                assert!(!opt.review && opt.detach);
+                assert_eq!(opt.agent, "worker");
+                assert_eq!(opt.timeout, Some(Duration::from_secs(2)));
+                assert_eq!(opt.check.as_deref(), Some("cargo test"));
+                assert_eq!(prompt(&opt.args).unwrap(), "--help literal");
+            }
+            _ => panic!("expected exec"),
         }
+
+        assert!(matches!(options(&[]).unwrap().command, Command::Chat { plain: false, .. }));
+        assert!(matches!(
+            options(&["chat", "--plain", "--review"]).unwrap().command,
+            Command::Chat { plain: true, review: true, .. }
+        ));
+        assert!(matches!(
+            options(&["--review", "tui", "--agent", "builder"]).unwrap().command,
+            Command::Tui { ref agent, review: true } if agent == "builder"
+        ));
+        assert!(matches!(
+            options(&["delete", "r1"]).unwrap().command,
+            Command::Delete { ref id } if id == "r1"
+        ));
         for args in [
             &["deny"][..],
+            &["delete"],
+            &["delete", "r1", "extra"],
             &["answer"],
             &["answer", "t1"],
             &["answer", "t1", " "],
@@ -781,6 +746,11 @@ mod tests {
             &["--check", "x", "tasks"],
             &["tasks", "--review"],
             &["chat", "--timeout", "1"],
+            &["exec", "--plain"],
+            &["tasks", "--plain"],
+            &["tui", "--json"],
+            &["tui", "--plain"],
+            &["tui", "extra"],
         ] {
             assert!(options(args).is_err(), "{args:?}");
         }
@@ -795,13 +765,13 @@ mod tests {
             seen.push(render("status", v, false));
             Ok(())
         };
-        let mut watch = Watch::default();
-        watch.update(vec![finished.clone(), child.clone()], &mut show).unwrap();
-        watch.update(vec![finished, child], &mut show).unwrap();
-        watch
-            .update(vec![json!({"id":"t2", "parent":"t1", "status":"done", "result":"child report"})], &mut show)
+        let mut tracker = QuestionTracker::default();
+        tracker.update_raw(vec![finished.clone(), child.clone()], &mut show).unwrap();
+        tracker.update_raw(vec![finished, child], &mut show).unwrap();
+        tracker
+            .update_raw(vec![json!({"id":"t2", "parent":"t1", "status":"done", "result":"child report"})], &mut show)
             .unwrap();
-        watch.update(vec![json!({"id":"t1", "status":"done", "result":"all tests passed"})], &mut show).unwrap();
+        tracker.update_raw(vec![json!({"id":"t1", "status":"done", "result":"all tests passed"})], &mut show).unwrap();
         assert_eq!(seen.len(), 2);
         for s in ["child of t1", "approval_id: a1", "\"command\":\"cargo test\""] {
             assert!(seen[0].contains(s));
@@ -811,23 +781,25 @@ mod tests {
 
     #[test]
     fn natural_reply_never_redirects_a_stale_answer() {
-        let mut watch = Watch::default();
+        let mut tracker = QuestionTracker::default();
         let first = json!({"id":"first","agent":"a","status":"input","question":"Which target?"});
         let second = json!({"id":"second","agent":"a","status":"input","question":"Which version?"});
-        watch.update(vec![first.clone(), second], |_| Ok(())).unwrap();
-        assert!(watch.reply_to("a").is_err());
-        watch.update(vec![first, json!({"id":"second","agent":"a","status":"queued"})], |_| Ok(())).unwrap();
-        assert!(watch.reply_to("a").unwrap_err().contains("Nothing was sent"));
-        assert!(watch.reply_to("different agent").is_err());
-        assert_eq!(watch.reply_to("a").unwrap().as_deref(), Some("first"));
-        watch.update(vec![json!({"id":"first","agent":"a","status":"cancelled"})], |_| Ok(())).unwrap();
-        assert!(watch.reply_to("a").is_err());
-        assert!(watch.reply_to("a").unwrap().is_none());
+        tracker.update_raw(vec![first.clone(), second], |_| Ok(())).unwrap();
+        assert!(tracker.reply_target("a").is_err());
+        tracker.update_raw(vec![first, json!({"id":"second","agent":"a","status":"queued"})], |_| Ok(())).unwrap();
+        assert!(tracker.reply_target("a").unwrap_err().contains("Nothing was sent"));
+        assert!(tracker.reply_target("different agent").is_err());
+        assert_eq!(tracker.reply_target("a").unwrap().as_deref(), Some("first"));
+        tracker.update_raw(vec![json!({"id":"first","agent":"a","status":"cancelled"})], |_| Ok(())).unwrap();
+        assert!(tracker.reply_target("a").is_err());
+        assert!(tracker.reply_target("a").unwrap().is_none());
     }
 
     #[test]
     fn human_receipts_are_bounded_without_hiding_failure_or_changing_json() {
-        let commands: Vec<_> = (0..6).map(|i| json!({"action":{"op":"verify","command":format!("check {i}")}, "ok":false,"result":"x".repeat(1000)})).collect();
+        let commands: Vec<_> = (0..6)
+            .map(|i| json!({"action":{"op":"verify","command":format!("check {i}")}, "ok":false,"result":"x".repeat(1000)}))
+            .collect();
         let index: Vec<_> = (0..9)
             .map(|i| json!({"task":format!("t{i}"),"agent":"builder","op":"verify","label":"make test","ok":false}))
             .collect();
@@ -852,12 +824,12 @@ mod tests {
     #[test]
     fn machine_output_round_trips_even_for_terminal_control_characters() {
         let task = json!({"id":"t", "status":"unknown", "result":"a\u{1b}\u{9b}b", "extra":[2]});
-        let rendered = terminal_text(&render("status", &task, true));
+        let rendered = sanitize_terminal(&render("status", &task, true));
         assert!(!rendered.chars().any(char::is_control));
         assert_eq!(serde_json::from_str::<Value>(&rendered).unwrap(), task);
         for state in ["done", "failed", "cancelled", "unknown"] {
-            assert!(terminal(state));
+            assert!(is_terminal_str(state));
         }
-        assert!(!terminal("approval"));
+        assert!(!is_terminal_str("approval"));
     }
 }

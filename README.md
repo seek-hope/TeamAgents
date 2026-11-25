@@ -1,16 +1,14 @@
 # TeamAgents
 
-[中文](README.zh-CN.md) · [Design decisions](docs/DECISIONS.md) · [0.5.0 architecture](docs/teamagents-0.5.0.canvas)
+[中文](README.zh-CN.md) · [Design decisions](docs/DECISIONS.md) · [Architecture diagram](docs/architecture.canvas)
 
-TeamAgents 0.5.0 runs coding tasks in a local workspace. A new task starts with one agent, `default` unless you select another. A stage can do the work itself or hand off to new child stages. Work flows down the tree. When the leaves finish, a summarizer outside the tree prepares the report for the user.
+TeamAgents runs coding tasks in a local workspace. Each session member has a persistent identity and private history. A task starts with `default` unless you select another member. Each stage can finish the work or hand off assignments to child stages. Once the leaves finish, a summarizer outside the tree reports the result to the user.
 
 ## Install and start
 
 The shell sandbox supports native x86-64 and little-endian AArch64 Linux. Install `bubblewrap` and `slirp4netns` with your distribution's package manager (on Ubuntu, `sudo apt install bubblewrap slirp4netns`). The runtime uses `/usr/bin/bwrap` and defaults to `/usr/bin/slirp4netns`. For a helper installed elsewhere, set `TEAMAGENTS_SLIRP4NETNS` to its trusted absolute executable path before starting the daemon. The host must permit unprivileged user and network namespaces. The binary archive and source installer require these prerequisites to be installed separately.
 
-Before replacing the binary, let in-flight work settle and run `teamagents stop` in each running session with its matching client. Session migration preserves each root's routing, approval policy and pending operations. Schema 1 roots keep per-operation review. New submissions in the same session use the one-way tree.
-
-To build from source, use the pinned Rust toolchain and a C compiler for bundled SQLite. From the checkout, run `cargo install --locked --path .` or `./install.sh`. Put Cargo's installation directory (usually `~/.cargo/bin`) on `PATH` and check `teamagents version` for `0.5.0`.
+To build from source, use the pinned Rust toolchain and a C compiler for bundled SQLite. If TeamAgents is already running, let in-flight work finish and run `teamagents stop` in each running session before replacing the binary. From the checkout, run `cargo install --locked --path .` or `./install.sh`. Add Cargo's installation directory (usually `~/.cargo/bin`) to `PATH` and run `teamagents version` to check the installation.
 
 Choose a model provider before starting the session daemon. Run the client in the project directory you want to work on.
 
@@ -47,6 +45,24 @@ By default, the daemon selects subscription access when signed in and API-key ac
 
 TeamAgents accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. Each model supports its own subset. `default` lets the provider choose. The selection is saved in this session for the current provider and takes effect on the next `chat` or `exec` submission. Children, repair stages and the final reporter use the selection saved with their root, including when work resumes after clarification or a restart.
 
+### Interactive TUI and plain chat
+
+Running `teamagents` or `teamagents chat [--review]` on an interactive terminal opens the TUI; piped input, `--json`, or `--plain` uses the line-oriented chat REPL. Use `teamagents tui [--review]` to require the TUI explicitly. Shortcuts handle navigation, layout, item actions, and exit, while `/` commands configure workflows without overlap:
+
+| Shortcut | Action (navigation, layout & direct item control) |
+|---|---|
+| `Tab` / `BackTab` | Cycle focus (`Composer`, `Sidebar`, `Inspector`) or complete `/` command |
+| `Ctrl+B` | Toggle sidebar rail |
+| `Ctrl+P` | Open pending approvals queue (`a` approve, `d` deny) |
+| `Alt+1`–`4` / `1`–`4` | Switch inspector tabs (`Summary`, `Evidence`, `Tree`, `Log`) |
+| `[` / `]` | Switch sidebar tabs (`Sessions`, `Agents`) |
+| `a` / `d` / `r` / `x` | Approve / deny / reply clarification / cancel selected task |
+| `Del` ×2 | Arm and confirm deleting the selected root session (idle/settled only) |
+| `Enter` / `Shift+Enter` | Submit prompt or reply / insert a newline |
+| `F1` / `Ctrl+Q` | Open reference sheet / leave TUI (daemon keeps running) |
+
+Complementary TUI slash commands: `/model`, `/to`, `/check`, `/review`, `/new TEXT`, `/answer ROOT_ID TEXT`, `/clear`, and `/stop`.
+
 ## Submit work and verify the result
 
 By default, new tasks run unattended. `exec` waits for a final report or a clarification question, with no client deadline. This example asks the team to fix a script and defines how to check its output.
@@ -73,7 +89,7 @@ teamagents answer ROOT_ID 'Use the long greeting.'
 
 When root status is `input`, read `question` and reply to that root ID. In chat, use `/status ROOT_ID` and `/answer ROOT_ID TEXT`. Plain text answers a question when it is the only pending question and belongs to the selected agent. Use `/new TEXT` to start a separate task while a question is open.
 
-`/members` lists agents and `/to NAME` selects the recipient of the next chat submission. `/tasks` lists work in the session. Leaving chat or timing out keeps work running. `cancel TASK_ID` requests cancellation. `stop` closes an idle daemon and keeps the session.
+`/members` lists agents and `/to NAME` selects the recipient of the next chat submission. `/tasks` lists work in the session. Leaving chat or timing out keeps work running. `cancel TASK_ID` requests cancellation, `delete ROOT_ID` removes a settled or idle root tree, and `stop` closes an idle daemon while keeping the session.
 
 **To review each model-requested shell command or edit**, submit with `teamagents exec --review '…'` or start `teamagents chat --review`. Children inherit the root's policy. In the same session, use `teamagents tasks` to find pending work, then `teamagents status TASK_ID` to read the proposed operation. Pass its `approval_id` to `teamagents approve APPROVAL_ID` or `teamagents deny APPROVAL_ID`. The exact `--check` command was authorized at submission.
 
