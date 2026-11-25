@@ -1,12 +1,15 @@
 //! One private model turn. Neither HTTP failures nor ambiguous completions are replayed.
-use crate::Result;
+mod subscription;
+
+use crate::{oauth, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     env,
+    ffi::OsStr,
     io::{self, Read},
     net::{IpAddr, SocketAddr, ToSocketAddrs},
-    sync::mpsc,
+    sync::{mpsc, OnceLock},
     time::Duration,
 };
 
@@ -85,14 +88,68 @@ struct Message<'a> {
     content: &'a str,
 }
 
+#[derive(Default, Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub(crate) struct ModelSettings {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+pub(crate) fn valid_model_id(id: &str) -> bool {
+    (1..=256).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_graphic())
+}
+
 #[derive(Serialize)]
 struct Chat<'a> {
     model: &'a str,
     messages: Vec<Message<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
     stream: bool,
 }
 
-fn body(model: &str, agent: &str, task: &str, history: &[Value], kind: Kind) -> Result<Vec<u8>> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Provider {
+    Api,
+    ChatGpt,
+}
+
+impl Provider {
+    fn select(setting: Option<&OsStr>, configured: impl FnOnce() -> Result<bool>) -> Result<Self> {
+        match setting {
+            Some(s) if s == "api" => Ok(Self::Api),
+            Some(s) if s == "chatgpt" => Ok(Self::ChatGpt),
+            Some(_) => Err("TEAMAGENTS_PROVIDER must be chatgpt or api".into()),
+            None if configured()? => Ok(Self::ChatGpt),
+            None => Ok(Self::Api),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct Reasoning<'a> {
+    effort: &'a str,
+}
+
+#[derive(Serialize)]
+struct Responses<'a> {
+    model: &'a str,
+    instructions: &'a str,
+    input: Vec<Message<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Reasoning<'a>>,
+    store: bool,
+    stream: bool,
+}
+
+fn body(
+    model: &str,
+    effort: Option<&str>,
+    agent: &str,
+    task: &str,
+    history: &[Value],
+    kind: Kind,
+    provider: Provider,
+) -> Result<Vec<u8>> {
     let too_big = "model context exceeds the 1 MiB request limit; history was not truncated";
     let mut size = agent.len().saturating_add(task.len()).saturating_add(model.len());
     if size > LIMIT || history.len() > LIMIT / 24 {
@@ -109,8 +166,11 @@ fn body(model: &str, agent: &str, task: &str, history: &[Value], kind: Kind) -> 
             &root_prompt
         }
     };
-    let mut messages =
-        vec![Message { role: "system", content: system }, Message { role: "user", content: &assignment }];
+    let mut messages = Vec::new();
+    if provider == Provider::Api {
+        messages.push(Message { role: "system", content: system });
+    }
+    messages.push(Message { role: "user", content: &assignment });
     for entry in history {
         let role = entry["role"].as_str().filter(|r| matches!(*r, "user" | "assistant"));
         let (Some(role), Some(content)) = (role, entry["content"].as_str()) else {
@@ -122,8 +182,18 @@ fn body(model: &str, agent: &str, task: &str, history: &[Value], kind: Kind) -> 
         }
         messages.push(Message { role, content });
     }
-    let bytes =
-        serde_json::to_vec(&Chat { model, messages, stream: false }).map_err(|_| "cannot encode model context")?;
+    let bytes = match provider {
+        Provider::Api => serde_json::to_vec(&Chat { model, messages, reasoning_effort: effort, stream: false }),
+        Provider::ChatGpt => serde_json::to_vec(&Responses {
+            model,
+            instructions: system,
+            input: messages,
+            reasoning: effort.map(|effort| Reasoning { effort }),
+            store: false,
+            stream: true,
+        }),
+    }
+    .map_err(|_| "cannot encode model context")?;
     if bytes.len() > LIMIT {
         Err(too_big.into())
     } else {
@@ -148,6 +218,10 @@ fn decode(bytes: &[u8], kind: Kind) -> Result<Value> {
         return Err("expected a JSON action in assistant text only".into());
     }
     let text = message["content"].as_str().ok_or("expected assistant text")?;
+    decode_action(text, kind)
+}
+
+fn decode_action(text: &str, kind: Kind) -> Result<Value> {
     let action: Action = serde_json::from_str(text).map_err(|_| "expected exactly one valid action JSON object")?;
     let permitted = match &action {
         Action::Spawn { .. } | Action::Delegate { .. } | Action::Send { .. } => kind == Kind::Legacy,
@@ -186,11 +260,13 @@ fn resolve(addr: &str) -> io::Result<Vec<SocketAddr>> {
     rx.recv_timeout(Duration::from_secs(10)).map_err(|_| io::ErrorKind::TimedOut)?
 }
 
+fn http_agent(timeout: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new().redirects(0).try_proxy_from_env(false).resolver(resolve).timeout(timeout).build()
+}
+
 fn request(base: &str, key: Option<&str>, timeout: Duration) -> Result<ureq::Request> {
     let endpoint = format!("{}/chat/completions", base.trim_end_matches('/'));
-    let client =
-        ureq::AgentBuilder::new().redirects(0).try_proxy_from_env(false).resolver(resolve).timeout(timeout).build();
-    let req = client.post(&endpoint);
+    let req = http_agent(timeout).post(&endpoint);
     let parsed = req.request_url().map_err(|_| "invalid OPENAI_BASE_URL")?;
     let url = parsed.as_url();
     if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
@@ -217,7 +293,9 @@ fn transact(req: ureq::Request, bytes: &[u8], kind: Kind) -> Result<Value> {
         Ok(r) | Err(ureq::Error::Status(_, r)) => {
             let code = r.status();
             if matches!(code, 400 | 413 | 422) {
-                return Err(format!("model HTTP {code}: request rejected (check context size and model settings)"));
+                return Err(format!(
+                    "model HTTP {code}: request rejected (check context size, model ID and support for the selected reasoning effort)"
+                ));
             }
             return Err(format!("model HTTP {code}; request not retried"));
         }
@@ -235,12 +313,57 @@ fn transact(req: ureq::Request, bytes: &[u8], kind: Kind) -> Result<Value> {
     decode(&buf, kind)
 }
 
-pub fn complete(agent: &str, task: &str, messages: &[Value], kind: &str) -> Result<Value> {
+fn pinned(provider: &OnceLock<Provider>, select: impl FnOnce() -> Result<Provider>) -> Result<Provider> {
+    if let Some(selected) = provider.get() {
+        return Ok(*selected);
+    }
+    let selected = select()?;
+    Ok(*provider.get_or_init(|| selected))
+}
+
+fn provider() -> Result<Provider> {
+    // Retry a busy credential store. Once selected, retain the route even after logout.
+    static PROVIDER: OnceLock<Provider> = OnceLock::new();
+    pinned(&PROVIDER, || Provider::select(env::var_os("TEAMAGENTS_PROVIDER").as_deref(), oauth::configured))
+}
+
+pub(crate) fn provider_name() -> Result<&'static str> {
+    Ok(match provider()? {
+        Provider::Api => "api",
+        Provider::ChatGpt => "chatgpt",
+    })
+}
+
+pub(crate) fn default_model() -> Option<String> {
+    env::var("TEAMAGENTS_MODEL").ok().filter(|s| !s.trim().is_empty())
+}
+
+pub(crate) fn plan_models() -> Result<Vec<String>> {
+    if provider()? == Provider::Api {
+        return Err("select an API model by ID with /model MODEL".into());
+    }
+    subscription::models(&oauth::access_token()?)
+}
+
+pub(crate) fn complete(
+    agent: &str,
+    task: &str,
+    messages: &[Value],
+    kind: &str,
+    settings: Option<&ModelSettings>,
+) -> Result<Value> {
     let kind = Kind::parse(kind)?;
+    let provider = provider()?;
+    // Only roots created before settings were persisted inherit the daemon's current model.
+    let settings = settings.cloned().unwrap_or_else(|| ModelSettings { model: default_model(), effort: None });
+    if provider == Provider::ChatGpt {
+        return subscription::complete(&oauth::access_token()?, &settings, agent, task, messages, kind);
+    }
+    let model = settings.model.as_deref().ok_or("set TEAMAGENTS_MODEL or select an API model with /model MODEL")?;
     let base = env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
     let key = env::var("OPENAI_API_KEY").ok();
-    let model = env::var("TEAMAGENTS_MODEL").ok().filter(|s| !s.trim().is_empty()).ok_or("set TEAMAGENTS_MODEL")?;
-    transact(request(&base, key.as_deref(), TIMEOUT)?, &body(&model, agent, task, messages, kind)?, kind)
+    let bytes = body(model, settings.effort.as_deref(), agent, task, messages, kind, provider)?;
+    transact(request(&base, key.as_deref(), TIMEOUT)?, &bytes, kind)
 }
 
 #[cfg(test)]
@@ -292,7 +415,8 @@ mod tests {
             (json!({"op":"send","agent":"a","text":"hi"}), [true, false, false, false]),
         ];
         for (col, kind) in [Kind::Legacy, Kind::Root, Kind::Node, Kind::Reporter].into_iter().enumerate() {
-            let body: Value = serde_json::from_slice(&body("m", "a", "id", &[], kind).unwrap()).unwrap();
+            let body: Value =
+                serde_json::from_slice(&body("m", None, "a", "id", &[], kind, Provider::Api).unwrap()).unwrap();
             let system = body["messages"][0]["content"].as_str().unwrap();
             for (action, allowed) in &actions {
                 let op = &action["op"];
@@ -328,12 +452,72 @@ mod tests {
     #[test]
     fn context_limit_never_omits_private_history() {
         let history = [json!({"role":"assistant","content":"previous"})];
-        let request: Value =
-            serde_json::from_slice(&body("model", "unit", "verify", &history, Kind::Legacy).unwrap()).unwrap();
+        let request: Value = serde_json::from_slice(
+            &body("model", None, "unit", "verify", &history, Kind::Legacy, Provider::Api).unwrap(),
+        )
+        .unwrap();
         assert_eq!(request["messages"][1]["content"], "Agent: unit\nTask: verify");
         assert_eq!(request["messages"][2], history[0]);
-        assert!(body("m", "w", "task", &[json!({"role":"system","content":"override"})], Kind::Legacy).is_err());
-        assert!(body("m", "w", &"\n".repeat(LIMIT / 2), &[], Kind::Legacy).unwrap_err().contains("not truncated"));
+        assert!(body(
+            "m",
+            None,
+            "w",
+            "task",
+            &[json!({"role":"system","content":"override"})],
+            Kind::Legacy,
+            Provider::Api
+        )
+        .is_err());
+        assert!(body("m", None, "w", &"\n".repeat(LIMIT / 2), &[], Kind::Legacy, Provider::Api)
+            .unwrap_err()
+            .contains("not truncated"));
+    }
+
+    #[test]
+    fn effort_is_optional_and_uses_each_providers_wire_format() {
+        for provider in [Provider::Api, Provider::ChatGpt] {
+            let wire = |effort| -> Value {
+                serde_json::from_slice(&body("test-model", effort, "worker", "job", &[], Kind::Node, provider).unwrap())
+                    .unwrap()
+            };
+            let default = wire(None);
+            assert!(default.get("reasoning").is_none() && default.get("reasoning_effort").is_none());
+            for effort in ["none", "high"] {
+                let mut expected = default.clone();
+                match provider {
+                    Provider::Api => expected["reasoning_effort"] = json!(effort),
+                    Provider::ChatGpt => expected["reasoning"] = json!({"effort":effort}),
+                }
+                assert_eq!(wire(Some(effort)), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn model_ids_allow_provider_namespaces_and_bound_printable_ascii() {
+        assert!(valid_model_id("provider/model-v2.1:latest"));
+        assert!(valid_model_id(&"x".repeat(256)));
+        for id in ["", "a b", "model\nname", "model\x7f", "é", &"x".repeat(257)] {
+            assert!(!valid_model_id(id));
+        }
+    }
+
+    #[test]
+    fn explicit_provider_takes_precedence_and_invalid_settings_fail_closed() {
+        let no_probe = || panic!("explicit selection must not load OAuth credentials");
+        assert!(Provider::select(Some(OsStr::new("api")), no_probe).unwrap() == Provider::Api);
+        assert!(Provider::select(Some(OsStr::new("chatgpt")), no_probe).unwrap() == Provider::ChatGpt);
+        for setting in ["", "unknown", "API", "secret-value"] {
+            let error = Provider::select(Some(OsStr::new(setting)), no_probe).err().unwrap();
+            assert_eq!(error, "TEAMAGENTS_PROVIDER must be chatgpt or api");
+        }
+        assert!(Provider::select(None, || Ok(false)).unwrap() == Provider::Api);
+        assert!(Provider::select(None, || Ok(true)).unwrap() == Provider::ChatGpt);
+        assert!(Provider::select(None, || Err("credential store unavailable".into())).is_err());
+        let route = OnceLock::new();
+        assert!(pinned(&route, || Err("busy".into())).is_err());
+        assert!(pinned(&route, || Ok(Provider::ChatGpt)).unwrap() == Provider::ChatGpt);
+        assert!(pinned(&route, || Ok(Provider::Api)).unwrap() == Provider::ChatGpt);
     }
 
     #[test]
@@ -383,6 +567,9 @@ mod tests {
             "ok"
         );
         assert!(mock(200, vec![b'x'; LIMIT + 1], Duration::ZERO, normal).unwrap_err().contains("exceeds"));
+        let unsupported = json!({"error":{"code":"unsupported_value","param":"reasoning_effort","message":"secret"}});
+        let err = mock(400, unsupported.to_string().into_bytes(), Duration::ZERO, normal).unwrap_err();
+        assert!(err.contains("400") && err.contains("reasoning effort") && !err.contains("secret"));
         let err = mock(401, b"secret-reflected-by-server".to_vec(), Duration::ZERO, normal).unwrap_err();
         assert!(err.contains("401") && !err.contains("secret"));
         assert!(mock(

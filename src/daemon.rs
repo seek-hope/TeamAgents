@@ -32,6 +32,8 @@ impl Location {
         if !workspace.is_dir() {
             return Err("workspace is not a directory".into());
         }
+        crate::oauth::ensure_disjoint(&workspace)?;
+        crate::oauth::ensure_disjoint(session)?;
         DirBuilder::new().recursive(true).mode(0o700).create(session).map_err(err)?;
         let session = session.canonicalize().map_err(err)?;
         if session.starts_with(&workspace) || workspace.starts_with(&session) {
@@ -139,10 +141,35 @@ pub fn request(session: &Path, workspace: &Path, body: &Value) -> Result<Value> 
     let frame = |b: &Value| json!({"protocol":PROTOCOL,"workspace":workspace,"body":b});
     // An old daemon ignores unrecognized fields. Negotiate using a read-only request
     // on the same connection before ever sending a mutating body.
-    write_frame(&stream, &frame(&json!({"op":"hello"})))?;
+    let mut hello = frame(&json!({"op":"hello"}));
+    let desired = if matches!(body["op"].as_str(), Some("submit" | "model")) {
+        hello["query_provider"] = json!(true);
+        Some(model::provider_name()?)
+    } else {
+        None
+    };
+    write_frame(&stream, &hello)?;
     let greeting = read_frame(&stream)?;
+    if let Some(error) = greeting["error"].as_str() {
+        return Err(error.to_owned());
+    }
     if greeting["value"]["protocol"] != PROTOCOL {
         return Err(INCOMPATIBLE.into());
+    }
+    if body["op"] == "model" && greeting["value"]["model_settings"] != true {
+        return Err(
+            "this session daemon predates /model; let active work finish, then run teamagents stop and reopen chat"
+                .into(),
+        );
+    }
+    if let Some(desired) = desired {
+        // Protocol 3 daemons predating subscription support always use API billing.
+        let actual = greeting["value"]["provider"].as_str().unwrap_or("api");
+        if actual != desired {
+            let detail =
+                if body["op"] == "submit" { "No task was submitted." } else { "Model settings were not accessed." };
+            return Err(format!("Session uses {actual}, but this client selected {desired}. {detail} Run teamagents stop in this workspace and restart with the intended provider."));
+        }
     }
     write_frame(&stream, &frame(body))?;
     // A broken connection after writing is ambiguous; never resubmit a mutation.
@@ -194,9 +221,10 @@ fn launch(store: &mut Store, workspace: &Path, tx: &Sender<Completion>, tool_fir
         } else if let Some(turn) = store.claim()? {
             let tx = tx.clone();
             thread::spawn(move || {
-                let result =
-                    std::panic::catch_unwind(|| model::complete(&turn.agent, &turn.task, &turn.messages, &turn.kind))
-                        .unwrap_or_else(|_| Err("model worker panicked".into()));
+                let result = std::panic::catch_unwind(|| {
+                    model::complete(&turn.agent, &turn.task, &turn.messages, &turn.kind, turn.settings.as_ref())
+                })
+                .unwrap_or_else(|_| Err("model worker panicked".into()));
                 let _ = tx.send(Completion::Model(turn.task, result));
             });
             return Ok(true);
@@ -236,6 +264,35 @@ fn field<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key].as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| format!("expected nonempty {key}"))
 }
 
+pub(crate) const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+fn configure_model(store: &mut Store, body: &Value) -> Result<Value> {
+    let provider = model::provider_name()?;
+    let mut settings = store.model_settings(provider, None)?;
+    if let Some(value) = body.get("model") {
+        settings.model = if value.is_null() {
+            None
+        } else {
+            Some(value.as_str().filter(|s| model::valid_model_id(s)).ok_or("invalid model ID")?.to_owned())
+        };
+    }
+    if let Some(value) = body.get("effort") {
+        settings.effort = if value.is_null() {
+            None
+        } else {
+            let effort = value
+                .as_str()
+                .filter(|s| EFFORTS.contains(s))
+                .ok_or_else(|| format!("reasoning effort must be default or one of {}", EFFORTS.join(", ")))?;
+            Some(effort.to_owned())
+        };
+    }
+    if body.get("model").is_some() || body.get("effort").is_some() {
+        store.set_model_settings(provider, &settings)?;
+    }
+    Ok(json!({"provider":provider, "model":settings.model.or_else(model::default_model), "effort":settings.effort}))
+}
+
 fn dispatch(store: &mut Store, workspace: &Value, frame: &Value, active: usize) -> Result<(Value, bool)> {
     if frame["protocol"] != PROTOCOL {
         return Err(INCOMPATIBLE.into());
@@ -250,9 +307,11 @@ fn dispatch(store: &mut Store, workspace: &Value, frame: &Value, active: usize) 
             let prompt = field(b, "text")?;
             let check = b.get("check").filter(|v| !v.is_null()).map(|_| field(b, "check")).transpose()?;
             let review = b["review"].as_bool().ok_or("expected boolean review policy")?;
-            let id = store.submit_with_policy(agent, prompt, check, review)?;
+            let settings = store.model_settings(model::provider_name()?, model::default_model().as_deref())?;
+            let id = store.submit_with_model(agent, prompt, check, review, &settings)?;
             json!({"id":id})
         }
+        "model" => configure_model(store, b)?,
         "members" => store.agents()?,
         "tasks" => store.tasks()?,
         "status" => store.task(field(b, "id")?)?,
@@ -350,7 +409,12 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
                 if hello["protocol"] != PROTOCOL || hello["body"]["op"] != "hello" {
                     return Err(INCOMPATIBLE.into());
                 }
-                write_frame(&stream, &json!({"value":{"protocol":PROTOCOL}}))?;
+                let mut welcome = json!({"protocol":PROTOCOL});
+                if hello["query_provider"] == true {
+                    welcome["provider"] = json!(model::provider_name()?);
+                    welcome["model_settings"] = json!(true);
+                }
+                write_frame(&stream, &json!({"value":welcome}))?;
                 let frame = read_frame(&stream)?;
                 let result = dispatch(&mut store, &workspace_identity, &frame, active)?;
                 wake |=

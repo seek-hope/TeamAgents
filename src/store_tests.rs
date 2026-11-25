@@ -23,6 +23,19 @@ impl Drop for Session {
     }
 }
 
+impl Store {
+    fn submit_root(
+        &mut self,
+        agent: &str,
+        prompt: &str,
+        check: Option<&str>,
+        review: bool,
+        tree: bool,
+    ) -> Result<String> {
+        self.create_root(agent, prompt, check, review, tree.then_some(&ModelSettings::default()))
+    }
+}
+
 fn legacy(s: &mut Store, agent: &str, prompt: &str) -> Result<String> {
     s.submit_root(agent, prompt, None, false, false)
 }
@@ -446,7 +459,7 @@ fn migration_preserves_legacy_root_policy_pending_and_ready_operations() {
 
     let mut s = home.open(1, 1);
     s.recover().unwrap();
-    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 3);
+    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 4);
     for t in s.tasks().unwrap().as_array().unwrap() {
         assert_eq!(t["policy"], "review");
     }
@@ -487,7 +500,7 @@ fn migration_rolls_back_and_unknown_versions_do_not_open() {
     let other = Session::new();
     let path = other.0.join("swarm.db");
     let db = legacy_database(&other);
-    for (app, version) in [(APP_ID, 4), (APP_ID, 0), (0, 1), (0, 2), (42, 2)] {
+    for (app, version) in [(APP_ID, 5), (APP_ID, 0), (0, 1), (0, 2), (42, 2)] {
         db.pragma_update(None, "application_id", app).unwrap();
         db.pragma_update(None, "user_version", version).unwrap();
         assert!(Store::open(&path, 1, 1).is_err());
@@ -541,6 +554,106 @@ fn packet(reporter: &Turn) -> Value {
 }
 
 #[test]
+fn model_overrides_are_scoped_to_session_and_provider() {
+    let home = Session::new();
+    let mut s = home.open(1, 4);
+    let api = ModelSettings { model: Some("api-model".into()), effort: Some("high".into()) };
+    let chatgpt = ModelSettings { model: None, effort: Some("medium".into()) };
+    s.set_model_settings("api", &api).unwrap();
+    s.set_model_settings("chatgpt", &chatgpt).unwrap();
+    drop(s);
+
+    let mut s = home.open(1, 4);
+    assert_eq!(s.model_settings("api", Some("env-model")).unwrap(), api);
+    assert_eq!(s.model_settings("chatgpt", None).unwrap(), chatgpt);
+    assert_eq!(
+        s.model_settings("chatgpt", Some("env-model")).unwrap(),
+        ModelSettings { model: Some("env-model".into()), ..chatgpt.clone() },
+    );
+    s.set_model_settings("api", &ModelSettings::default()).unwrap();
+    assert_eq!(s.model_settings("api", None).unwrap(), ModelSettings::default());
+    assert_eq!(s.model_settings("chatgpt", None).unwrap(), chatgpt);
+
+    let other = Session::new();
+    assert_eq!(other.open(1, 4).model_settings("chatgpt", None).unwrap(), ModelSettings::default());
+}
+
+#[test]
+fn submitted_settings_survive_changes_and_restart_through_handoff_repair_and_report() {
+    let home = Session::new();
+    let mut s = home.open(2, 8);
+    let overrides = ModelSettings { model: None, effort: Some("low".into()) };
+    s.set_model_settings("api", &overrides).unwrap();
+    let submitted = s.model_settings("api", Some("at-submission")).unwrap();
+    let root = s.submit_with_model("default", "fix", Some("check it"), false, &submitted).unwrap();
+    s.set_model_settings("api", &ModelSettings { model: Some("later-model".into()), effort: None }).unwrap();
+    drop(s);
+
+    let mut s = home.open(2, 8);
+    s.recover().unwrap();
+    assert_eq!(claim(&mut s, &root).settings.as_ref(), Some(&submitted));
+    handoff(&mut s, &root, &[("worker", "implement")]).unwrap();
+    let child = turn(&mut s);
+    assert_eq!(child.agent, "worker");
+    assert_eq!(child.settings.as_ref(), Some(&submitted));
+    finish(&mut s, &child.task, "first pass");
+    assert_eq!(s.claim_tool().unwrap().unwrap().0, root);
+    s.tool_result(&root, Err("fix required")).unwrap();
+    let repair = turn(&mut s);
+    assert!(repair.agent.starts_with("repair-"));
+    assert_eq!(repair.settings.as_ref(), Some(&submitted));
+    finish(&mut s, &repair.task, "fixed");
+    assert_eq!(s.claim_tool().unwrap().unwrap().0, root);
+    s.tool_result(&root, Ok("passed")).unwrap();
+    let reporter = turn(&mut s);
+    assert_eq!(reporter.kind, "reporter");
+    assert_eq!(reporter.settings.as_ref(), Some(&submitted));
+    finish(&mut s, &reporter.task, "verified");
+    assert_eq!(s.task(&root).unwrap()["status"], "done");
+}
+
+#[test]
+fn failed_snapshot_write_rolls_back_root_submission() {
+    let home = Session::new();
+    let mut s = home.open(1, 4);
+    s.db.execute_batch(
+        "CREATE TRIGGER reject_snapshot BEFORE INSERT ON root_model_settings
+        BEGIN SELECT RAISE(ABORT,'snapshot write failed'); END;",
+    )
+    .unwrap();
+    let error = s.submit_with_model("default", "work", None, false, &ModelSettings::default()).unwrap_err();
+    assert!(error.contains("snapshot write failed"));
+    assert_eq!(s.tasks().unwrap(), json!([]));
+    assert!(s.claim().unwrap().is_none());
+}
+
+#[test]
+fn schema_three_tree_keeps_legacy_model_selection_alongside_an_empty_snapshot() {
+    let home = Session::new();
+    let db = legacy_database(&home);
+    db.execute_batch("INSERT INTO tasks(id,root,agent,prompt,status) VALUES ('old','old','default','work','queued')")
+        .unwrap();
+    db.execute_batch(MIGRATE_V2).unwrap();
+    db.execute_batch(tree::MIGRATE_V3).unwrap();
+    db.execute("INSERT INTO tree_runs(root,reporter) VALUES ('old','report-old')", []).unwrap();
+    db.pragma_update(None, "user_version", 3).unwrap();
+    drop(db);
+
+    let mut s = home.open(2, 10);
+    let new = s.submit_with_model("default", "new work", None, false, &ModelSettings::default()).unwrap();
+    s.set_model_settings("api", &ModelSettings { model: Some("future-model".into()), effort: None }).unwrap();
+    assert_eq!(claim(&mut s, "old").settings, None);
+    finish(&mut s, "old", "old result");
+    assert_eq!(claim(&mut s, "report-old").settings, None);
+    finish(&mut s, "report-old", "old report");
+    assert_eq!(claim(&mut s, &new).settings, Some(ModelSettings::default()));
+    finish(&mut s, &new, "new result");
+    let reporter = turn(&mut s);
+    assert_eq!(reporter.kind, "reporter");
+    assert_eq!(reporter.settings, Some(ModelSettings::default()));
+}
+
+#[test]
 fn schema_two_keeps_private_history_active_operations_and_legacy_actions() {
     let home = Session::new();
     let db = legacy_database(&home);
@@ -559,10 +672,12 @@ fn schema_two_keeps_private_history_active_operations_and_legacy_actions() {
     s.tool_result("old", Ok("legacy receipt")).unwrap();
     let old = claim(&mut s, "old");
     assert_eq!(old.kind, "legacy");
+    assert_eq!(old.settings, None);
     assert!(chat(&old).contains("prior private history"));
     s.apply("old", &json!({"op":"delegate","agent":"peer","text":"legacy assignment"})).unwrap();
     let child = turn(&mut s);
     assert_eq!(child.kind, "legacy");
+    assert_eq!(child.settings, None);
     finish(&mut s, &child.task, "legacy result");
     assert!(chat(&claim(&mut s, "old")).contains("legacy result"));
     finish(&mut s, "old", "old finished");

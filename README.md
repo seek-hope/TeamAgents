@@ -12,16 +12,40 @@ Before replacing the binary, let in-flight work settle and run `teamagents stop`
 
 To build from source, use the pinned Rust toolchain and a C compiler for bundled SQLite. From the checkout, run `cargo install --locked --path .` or `./install.sh`. Put Cargo's installation directory (usually `~/.cargo/bin`) on `PATH` and check `teamagents version` for `0.5.0`.
 
-Set the provider environment before the session daemon starts. Then run the client in the project directory you want it to use.
+Choose a model provider before starting the session daemon. Run the client in the project directory you want to work on.
+
+**ChatGPT subscription.** Run `teamagents auth login` and open the printed OpenAI URL in a browser on the same machine. Approve plan usage for TeamAgents and return to the terminal. Then run:
 
 ```sh
+teamagents auth status
+TEAMAGENTS_PROVIDER=chatgpt teamagents chat
+```
+
+The daemon uses OpenAI's [subscription Responses API](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference). `TEAMAGENTS_MODEL` sets the initial model. With no selection, the daemon chooses the first visible model for your account. All workers and the reporter share the selected provider. Account eligibility and usage limits are set by OpenAI. TeamAgents keeps local authorization in `~/.teamagents-auth/`, outside the workspace. Use `teamagents auth logout` to remove local authorization. If a project already has a running daemon, let active tasks settle and run `teamagents stop` before changing providers.
+
+**API key.** To use a Chat Completions provider:
+
+```sh
+export TEAMAGENTS_PROVIDER=api
 export OPENAI_BASE_URL=https://api.openai.com/v1  # default
 export TEAMAGENTS_MODEL='your-provider-model-id'
 # Set OPENAI_API_KEY in this environment using your secret manager.
 teamagents chat
 ```
 
-The daemon sends non-streaming Chat Completions to the configured provider, separately from the shell network. Non-loopback endpoints require HTTPS and `OPENAI_API_KEY`. A loopback provider may use HTTP without a key. Requests time out after 120 seconds and do not follow redirects or retry HTTP errors.
+By default, the daemon selects subscription access when signed in and API-key access otherwise. Set `TEAMAGENTS_PROVIDER=chatgpt` to require plan billing across restarts. `OPENAI_BASE_URL` and `OPENAI_API_KEY` apply only to the API-key provider. Non-loopback Chat Completions endpoints require HTTPS and a key. A loopback provider may use HTTP without a key. Requests time out after 120 seconds and do not follow redirects or retry inference.
+
+### Switch models and reasoning effort in chat
+
+| Chat command | Effect |
+|---|---|
+| `/model` | Show the provider, model selection and reasoning effort for the next task. |
+| `/model list` | Show model IDs visible to the signed-in ChatGPT account. For an API provider, use a model ID supplied by that provider. |
+| `/model MODEL [EFFORT]` | Choose a model. Omitting the effort uses that model's default. Use `/model set MODEL [EFFORT]` for an ID such as `default` that also names a command. |
+| `/model effort high` | Change only the effort. `/model effort default` restores the model's default. |
+| `/model default` | Restore the daemon's `TEAMAGENTS_MODEL` setting and the model's default effort. |
+
+TeamAgents accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. Each model supports its own subset. `default` lets the provider choose. The selection is saved in this session for the current provider and takes effect on the next `chat` or `exec` submission. Children, repair stages and the final reporter use the selection saved with their root, including when work resumes after clarification or a restart.
 
 ## Submit work and verify the result
 

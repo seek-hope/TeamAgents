@@ -40,7 +40,7 @@ struct Call {
     messages: Vec<Value>,
 }
 impl Call {
-    fn read(socket: TcpStream) -> Self {
+    fn read(socket: TcpStream, model: &str, effort: Option<&str>) -> Self {
         socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         socket.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut reader = BufReader::new(&socket);
@@ -63,7 +63,8 @@ impl Call {
         let mut buf = vec![0; len];
         reader.read_exact(&mut buf).unwrap();
         let body: Value = serde_json::from_slice(&buf).unwrap();
-        assert_eq!(body["model"], MODEL);
+        assert_eq!(body["model"], model);
+        assert_eq!(body.get("reasoning_effort"), effort.map(Value::from).as_ref(), "model {model}");
         let messages = body["messages"].as_array().unwrap().clone();
         let (agent, task) =
             field(&messages[1], "content").strip_prefix("Agent: ").unwrap().split_once("\nTask: ").unwrap();
@@ -208,6 +209,23 @@ impl Lab {
         c.arg("--json").args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
         Process::spawn(c)
     }
+    fn chat(&self, input: &str) -> Output {
+        let mut c = self.cmd();
+        c.args(["--json", "chat"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut chat = Process::spawn(c);
+        writeln!(chat.child().stdin.take().unwrap(), "{input}").unwrap();
+        let out = chat.output();
+        assert!(out.status.success(), "chat {input:?}: {}", String::from_utf8_lossy(&out.stderr));
+        out
+    }
+    fn model_settings(&self) -> (String, Value) {
+        let out = self.chat("/model");
+        let settings: Value =
+            serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("invalid /model output: {e}; {out:?}"));
+        assert_eq!(settings["provider"], "api");
+        let effort = settings.get("effort").expect("/model must include the effective effort");
+        (field(&settings, "model").to_owned(), effort.clone())
+    }
     fn json(&self, args: &[&str]) -> Value {
         self.client(args).json()
     }
@@ -230,10 +248,13 @@ impl Lab {
         }
     }
     fn call(&self) -> Call {
+        self.call_with_model(MODEL, None)
+    }
+    fn call_with_model(&self, model: &str, effort: Option<&str>) -> Call {
         let until = Instant::now() + LIMIT;
         loop {
             match self.socket.accept() {
-                Ok((s, _)) => return Call::read(s),
+                Ok((s, _)) => return Call::read(s, model, effort),
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until => thread::sleep(POLL),
                 Err(e) => panic!("expected provider request ({e}); tasks={}", self.json(&["tasks"])),
             }
@@ -319,6 +340,87 @@ fn siblings_overlap_grow_a_lower_branch_and_report_partial_failure_once() {
     let outcome = lab.wait(root, "failed");
     assert_eq!(outcome["result"], "Assets catalogued. API inspection failed.");
     assert_eq!(outcome["turns_used"], 5); // Root, siblings, lower leaf and one outside reporter.
+}
+
+fn assert_exec_model(lab: &Lab, prompt: &str, model: &str, effort: Option<&str>) {
+    let exec = lab.client(&["exec", prompt]);
+    let worker = lab.call_with_model(model, effort);
+    assert!(worker.contains(prompt));
+    worker.reply(finish("Work complete"));
+    let reporter = lab.call_with_model(model, effort);
+    assert_eq!(reporter.report_input()["intent"], prompt);
+    reporter.reply(finish("Reported"));
+    assert_eq!(exec.json()["result"], "Reported");
+}
+
+#[test]
+fn model_commands_show_reset_and_preserve_settings_on_errors() {
+    let mut lab = Lab::new();
+    let defaults = lab.model_settings();
+    assert_eq!(defaults.0, MODEL);
+
+    lab.chat("/model selected high");
+    let selected = ("selected".to_owned(), json!("high"));
+    assert_eq!(lab.model_settings(), selected);
+    for invalid in [
+        "/model effort",
+        "/model default high",
+        "/model effort low extra",
+        "/model replacement low extra",
+        "/model effort invalid-effort",
+        "/model replacement invalid-effort",
+    ] {
+        assert!(!lab.chat(invalid).stderr.is_empty(), "missing diagnostic for {invalid}");
+        assert_eq!(lab.model_settings(), selected, "{invalid} changed the session settings");
+    }
+    assert_eq!(lab.json(&["tasks"]), json!([]));
+
+    lab.chat("/model replacement");
+    assert_eq!(lab.model_settings(), ("replacement".into(), defaults.1.clone()));
+    assert_exec_model(&lab, "Use the new model with its default effort", "replacement", None);
+
+    lab.chat("/model effort medium");
+    assert_eq!(lab.model_settings(), ("replacement".into(), json!("medium")));
+    lab.chat("/model default");
+    assert_eq!(lab.model_settings(), defaults);
+    lab.restart();
+    assert_eq!(lab.model_settings(), defaults);
+    assert_exec_model(&lab, "Use the session defaults", MODEL, None);
+}
+
+#[test]
+fn model_selection_survives_restart_and_stays_with_the_chat_tree() {
+    let mut lab = Lab::new();
+    let prompt = "Review the release notes";
+    lab.chat("/model reviewer low\n/model effort high");
+    assert_eq!(lab.model_settings(), ("reviewer".into(), json!("high")));
+    let submitted = lab.chat(prompt);
+    let receipt: Value = serde_json::from_slice(&submitted.stdout).unwrap();
+    let root = field(&receipt, "id");
+    let original = lab.call_with_model("reviewer", Some("high"));
+    assert_eq!(original.id, root);
+    assert!(original.contains(prompt));
+
+    // Change the session while the original root's first provider request is still open.
+    lab.chat("/model editor low");
+    original.reply(json!({"op":"ask", "text":"Which version?"}));
+    lab.wait(root, "input");
+    lab.restart();
+    assert_exec_model(&lab, "Edit the changelog", "editor", Some("low"));
+
+    lab.json(&["answer", root, "Version 2"]);
+    let resumed = lab.call_with_model("reviewer", Some("high"));
+    assert_eq!(resumed.id, root);
+    assert!(resumed.contains("Version 2"));
+    resumed.reply(handoff("Review version 2", &[("reader", "Read the notes")]));
+    let child = lab.call_with_model("reviewer", Some("high"));
+    assert_eq!(child.agent, "reader");
+    assert_eq!(lab.status(&child.id)["parent"], root);
+    child.reply(finish("Notes reviewed"));
+    let reporter = lab.call_with_model("reviewer", Some("high"));
+    assert_eq!(reporter.report_input()["intent"], prompt);
+    reporter.reply(finish("Review complete"));
+    assert_eq!(lab.wait(root, "done")["result"], "Review complete");
 }
 
 #[test]

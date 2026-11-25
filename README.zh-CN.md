@@ -12,16 +12,40 @@ Shell 沙箱支持原生 x86-64 和小端 AArch64 Linux。先用系统包管理�
 
 从源码安装需要 `rust-toolchain.toml` 指定的 Rust 工具链和 C 编译器（用于编译随包提供的 SQLite）。在源码目录运行 `cargo install --locked --path .` 或 `./install.sh`，把 Cargo 安装目录（通常是 `~/.cargo/bin`）加入 `PATH`，然后用 `teamagents version` 确认版本为 `0.5.0`。
 
-在会话守护进程启动前设置模型服务环境变量，然后在你选定的项目目录运行客户端。
+启动会话守护进程前先选好模型服务，在需要处理的项目目录运行客户端。
+
+**使用 ChatGPT 订阅。** 运行 `teamagents auth login`，用同一台机器上的浏览器打开终端给出的 OpenAI 登录链接，确认授权 TeamAgents 使用订阅额度，然后回到终端运行：
 
 ```sh
+teamagents auth status
+TEAMAGENTS_PROVIDER=chatgpt teamagents chat
+```
+
+守护进程通过 OpenAI 的[订阅 Responses API](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) 调用模型。`TEAMAGENTS_MODEL` 指定初始模型。如果没有指定模型，则自动选择账户目录中的第一个可见模型。工作节点与汇报节点都使用选定的服务。账户资格和额度由 OpenAI 决定。授权文件保存在工作区外的 `~/.teamagents-auth/`。`teamagents auth logout` 可清除本机授权。项目中如已有守护进程，请先等在途工作完成，再运行 `teamagents stop`，然后切换模型服务。
+
+**使用 API 密钥。** 连接兼容 Chat Completions 的服务：
+
+```sh
+export TEAMAGENTS_PROVIDER=api
 export OPENAI_BASE_URL=https://api.openai.com/v1  # 默认地址
 export TEAMAGENTS_MODEL='your-provider-model-id'
 # 通过密钥管理工具在当前环境设置 OPENAI_API_KEY。
 teamagents chat
 ```
 
-守护进程直接向配置的模型服务发送非流式 Chat Completions 请求，与 shell 沙箱的网络通道独立。非回环地址需要 HTTPS 和 `OPENAI_API_KEY`。回环地址可使用 HTTP，也可不提供密钥。请求在 120 秒后超时，不跟随重定向，也不重试 HTTP 错误。
+默认情况下，守护进程在已登录时使用订阅，否则使用 API 密钥。设置 `TEAMAGENTS_PROVIDER=chatgpt` 可以在重启后也只使用订阅额度。`OPENAI_BASE_URL` 和 `OPENAI_API_KEY` 仅用于 API 密钥模式。非回环 Chat Completions 地址需要 HTTPS 和密钥，回环地址可使用 HTTP，也可不提供密钥。请求在 120 秒后超时，不跟随重定向，也不重试推理请求。
+
+### 在对话中切换模型和思考强度
+
+| 对话命令 | 作用 |
+|---|---|
+| `/model` | 查看下一个任务将使用的服务、模型和思考强度。 |
+| `/model list` | 查看当前登录的 ChatGPT 账户可用的模型 ID。使用 API 时，填写服务商提供的模型 ID。 |
+| `/model MODEL [EFFORT]` | 选择模型。省略强度时使用该模型的默认值。如果模型 ID 恰好也是命令名（如 `default`），可用 `/model set MODEL [EFFORT]`。 |
+| `/model effort high` | 仅修改思考强度。`/model effort default` 恢复模型默认强度。 |
+| `/model default` | 恢复守护进程的 `TEAMAGENTS_MODEL` 设置和模型默认强度。 |
+
+TeamAgents 接受 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 和 `max`，每个模型支持的档位由服务商决定。`default` 表示由服务商选择。设置按会话和模型服务保存，从下一次通过 `chat` 或 `exec` 提交任务时生效。子节点、修复节点、最终汇报都沿用根任务提交时的选择；回答澄清问题或重启后恢复工作时也一样。
 
 ## 提交任务并验证结果
 

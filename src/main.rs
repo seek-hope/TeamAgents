@@ -2,6 +2,7 @@ mod cli;
 mod daemon;
 mod model;
 mod net;
+mod oauth;
 mod sandbox;
 mod store;
 mod tools;

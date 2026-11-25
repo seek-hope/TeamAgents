@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{model::ModelSettings, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
@@ -16,6 +16,8 @@ pub struct Turn {
     pub task: String,
     pub agent: String,
     pub messages: Vec<Value>,
+    /// Pre-snapshot roots retain the provider's legacy environment-based selection.
+    pub settings: Option<ModelSettings>,
 }
 
 // These pragmas and the schema are committed together, before any work is admitted.
@@ -67,6 +69,29 @@ CREATE TABLE root_policies (
 );
 INSERT INTO root_policies(root,policy) SELECT id,'review' FROM tasks WHERE root=id;
 ";
+
+const MIGRATE_V4: &str = "
+CREATE TABLE model_overrides (
+    provider TEXT PRIMARY KEY NOT NULL,
+    model TEXT,
+    effort TEXT
+);
+CREATE TABLE root_model_settings (
+    root TEXT PRIMARY KEY NOT NULL REFERENCES tree_runs(root),
+    model TEXT,
+    effort TEXT
+);
+";
+
+fn model_settings_row(row: &Row<'_>) -> rusqlite::Result<ModelSettings> {
+    Ok(ModelSettings { model: row.get(0)?, effort: row.get(1)? })
+}
+
+fn root_model_settings(db: &Connection, root: &str) -> Result<Option<ModelSettings>> {
+    db.query_row("SELECT model,effort FROM root_model_settings WHERE root=?1", [root], model_settings_row)
+        .optional()
+        .db()
+}
 
 fn error(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -223,7 +248,7 @@ fn operation(db: &Connection, task: &str, action: &Value, state: &str) -> Result
 fn schema_version(db: &Connection) -> Result<i64> {
     let app: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0)).db()?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).db()?;
-    if app == APP_ID && matches!(version, 1..=3) {
+    if app == APP_ID && matches!(version, 1..=4) {
         return Ok(version);
     }
     let tables: i64 = db.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0)).db()?;
@@ -267,6 +292,10 @@ impl Store {
             tx.execute_batch(tree::MIGRATE_V3).db()?;
             tx.pragma_update(None, "user_version", 3).db()?;
         }
+        if version < 4 {
+            tx.execute_batch(MIGRATE_V4).db()?;
+            tx.pragma_update(None, "user_version", 4).db()?;
+        }
         tx.query_row(
             "SELECT 1 FROM settings,agents WHERE singleton=1 AND max_agents>0 AND turn_budget>0 AND name='default'",
             [],
@@ -276,6 +305,8 @@ impl Store {
         // Reject missing schema in the same transaction as the migration.
         tx.prepare(&format!("{TASK_VIEW} LIMIT 0")).db()?;
         tx.prepare("SELECT role,content FROM messages LIMIT 0").db()?;
+        tx.prepare("SELECT provider,model,effort FROM model_overrides LIMIT 0").db()?;
+        tx.prepare("SELECT root,model,effort FROM root_model_settings LIMIT 0").db()?;
         tx.commit().db()?;
         Ok(Self { db })
     }
@@ -304,6 +335,31 @@ impl Store {
         })
     }
 
+    /// With no daemon default this returns the provider's raw session overrides.
+    pub fn model_settings(&self, provider: &str, default_model: Option<&str>) -> Result<ModelSettings> {
+        let mut settings = self
+            .db
+            .query_row("SELECT model,effort FROM model_overrides WHERE provider=?1", [provider], model_settings_row)
+            .optional()
+            .db()?
+            .unwrap_or_default();
+        if settings.model.is_none() {
+            settings.model = default_model.map(str::to_owned);
+        }
+        Ok(settings)
+    }
+
+    pub fn set_model_settings(&mut self, provider: &str, settings: &ModelSettings) -> Result<()> {
+        self.db
+            .execute(
+                "INSERT INTO model_overrides(provider,model,effort) VALUES (?1,?2,?3)
+             ON CONFLICT(provider) DO UPDATE SET model=excluded.model,effort=excluded.effort",
+                params![provider, settings.model, settings.effort],
+            )
+            .db()?;
+        Ok(())
+    }
+
     // Convenience API retained for callers that use the default admission policy.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn submit(&mut self, agent: &str, prompt: &str) -> Result<String> {
@@ -322,16 +378,27 @@ impl Store {
         check: Option<&str>,
         review: bool,
     ) -> Result<String> {
-        self.submit_root(agent, prompt, check, review, true)
+        self.submit_with_model(agent, prompt, check, review, &ModelSettings::default())
     }
 
-    fn submit_root(
+    pub fn submit_with_model(
         &mut self,
         agent: &str,
         prompt: &str,
         check: Option<&str>,
         review: bool,
-        tree: bool,
+        settings: &ModelSettings,
+    ) -> Result<String> {
+        self.create_root(agent, prompt, check, review, Some(settings))
+    }
+
+    fn create_root(
+        &mut self,
+        agent: &str,
+        prompt: &str,
+        check: Option<&str>,
+        review: bool,
+        tree_settings: Option<&ModelSettings>,
     ) -> Result<String> {
         nonempty(prompt, "prompt")?;
         if let Some(c) = check {
@@ -350,8 +417,13 @@ impl Store {
                 params![task, if review { "review" } else { "auto" }],
             )
             .db()?;
-            if tree {
+            if let Some(settings) = tree_settings {
                 db.execute("INSERT INTO tree_runs(root,reporter) VALUES (?1,?2)", params![task, id()]).db()?;
+                db.execute(
+                    "INSERT INTO root_model_settings(root,model,effort) VALUES (?1,?2,?3)",
+                    params![task, settings.model, settings.effort],
+                )
+                .db()?;
             }
             Ok(task)
         })
@@ -467,7 +539,8 @@ impl Store {
                 messages.push(json!({"role":"user","content":format!("Continue task {task}. Original request: {prompt}")}));
             }
             let kind = if !is_tree { "legacy" } else if task==root { "root" } else { "node" };
-            return Ok(Some(Turn { kind:kind.into(),task,agent,messages }));
+            let settings = root_model_settings(db, &root)?;
+            return Ok(Some(Turn { kind:kind.into(),task,agent,messages,settings }));
         })
     }
 
@@ -695,7 +768,8 @@ const TASK_VIEW: &str = "SELECT t.id,t.root,t.parent,t.agent,
     o.action,CASE WHEN o.state='approval' THEN o.id END,o.state,r.turns_used,s.turn_budget,p.policy,
     CASE WHEN g.root IS NULL THEN 'legacy' WHEN t.id=g.root THEN 'root' ELSE 'node' END,
     CASE WHEN t.id=g.root AND g.question IS NOT NULL THEN 'input' ELSE t.status END,
-    CASE WHEN t.id=g.root THEN g.question END
+    CASE WHEN t.id=g.root THEN g.question END,
+    CASE WHEN t.id=g.root AND t.status='failed' THEN t.result END
     FROM tasks t JOIN tasks r ON r.id=t.root JOIN root_policies p ON p.root=r.id CROSS JOIN settings s LEFT JOIN tree_runs g ON g.root=t.root
     LEFT JOIN operations o ON o.task=t.id AND o.state IN ('approval','ready','started','unknown')";
 
@@ -713,7 +787,7 @@ fn task_view(r: &Row<'_>) -> rusqlite::Result<Value> {
     let text = |n| r.get::<_, Option<String>>(n);
     Ok(json!({"id":text(0)?,"root":text(1)?,"parent":text(2)?,"agent":text(3)?,"status":text(4)?,
         "result":text(5)?,"prompt":text(6)?,"check":text(7)?,"proposal":text(8)?,"action":action_at(r,9)?,
-        "approval_id":text(10)?,"tool_state":text(11)?,"turns_used":r.get::<_,u32>(12)?,"turn_budget":r.get::<_,u32>(13)?,"policy":text(14)?,"kind":text(15)?,"stage_status":text(16)?,"question":text(17)?}))
+        "approval_id":text(10)?,"tool_state":text(11)?,"turns_used":r.get::<_,u32>(12)?,"turn_budget":r.get::<_,u32>(13)?,"policy":text(14)?,"kind":text(15)?,"stage_status":text(16)?,"question":text(17)?,"stage_error":text(18)?}))
 }
 
 #[cfg(test)]

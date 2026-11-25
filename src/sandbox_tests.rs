@@ -61,6 +61,24 @@ fn native_and_staged_tools_protect_checkout_worktree_and_aliases() {
 }
 
 #[test]
+fn auth_directory_is_excluded_from_file_tools_and_shell_publication() {
+    let ws = Scratch::new().unwrap();
+    let name = ".teamagents-auth/profile.json";
+    let auth = ws.0.join(".teamagents-auth");
+    fs::create_dir(&auth).unwrap();
+    fs::write(ws.0.join(name), "fixture").unwrap();
+    assert!(read(&ws.0, name).is_err());
+    assert!(create(&ws.0, name).is_err());
+    assert!(Stage::new(&auth).is_err());
+    let stage = Stage::new(&ws.0).unwrap();
+    assert!(!stage.scratch.0.join(".teamagents-auth").exists());
+    fs::create_dir(stage.scratch.0.join(".teamagents-auth")).unwrap();
+    fs::write(stage.scratch.0.join(name), "replacement").unwrap();
+    assert!(stage.publish().unwrap_err().contains("reserved"));
+    assert_eq!(fs::read_to_string(ws.0.join(name)).unwrap(), "fixture");
+}
+
+#[test]
 fn staging_handles_disjoint_changes_and_refuses_stale_publication() {
     let ws = Scratch::new().unwrap();
     fs::write(ws.0.join("a"), "one").unwrap();

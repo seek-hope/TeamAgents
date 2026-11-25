@@ -1,4 +1,5 @@
 /target/
+**/.teamagents-auth/
 /swarm.sqlite3*
 /.codegraph/
 /.zcode/

@@ -19,6 +19,7 @@ const HELP: &str = "TeamAgents — persistent agent sessions
   teamagents answer ROOT_ID TEXT          Answer a root clarification and resume work
   teamagents cancel TASK_ID              Request cancellation
   teamagents approve | deny APPROVAL_ID  Decide one pending action, not a whole task
+  teamagents auth login | status | logout  Manage ChatGPT subscription sign-in
   teamagents stop                        Stop an idle daemon; keep the session
   teamagents help | version
 
@@ -40,11 +41,14 @@ package installs and other project work. Shells cannot read private host files
 outside the workspace or inherit the daemon's provider key. Use a trusted workspace.
 Leaving or timing out keeps work running. Use status to reconnect and tasks to find
 pending approvals. When a root needs clarification, exec prints its question and exits.
+Use /model in chat to select the model and reasoning effort for new tasks.
 Use answer ROOT_ID TEXT to continue. Final reports distinguish claims from observed results.";
 const CHAT_HELP: &str = "Enter a task, or reply to a single waiting question for your selected agent.
 Use /answer to select a question or /new to start separate work.
 /to NAME   /members   /tasks   /status TASK_ID   /cancel TASK_ID
-/answer ROOT_ID TEXT   /new TEXT   /approve APPROVAL_ID   /deny APPROVAL_ID   /help   /quit";
+/answer ROOT_ID TEXT   /new TEXT   /approve APPROVAL_ID   /deny APPROVAL_ID   /help   /quit
+/model shows the selection for new roots. /model list shows visible ChatGPT plan models.
+/model MODEL [EFFORT]   /model effort EFFORT   /model default";
 
 struct Options {
     session: Option<PathBuf>,
@@ -119,6 +123,17 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Options> {
     match opt.command.as_str() {
         "help" | "version" => return Ok(opt),
         "exec" => {}
+        "auth" => {
+            if opt.args.len() != 1 || !matches!(opt.args[0].as_str(), "login" | "status" | "logout") {
+                return Err("use teamagents auth login, status or logout".into());
+            }
+            if opt.json || opt.session.is_some() || opt.workspace.is_some() || opt.agent != "default" {
+                return Err(
+                    "auth manages the local user account and does not take session, workspace, agent or JSON options"
+                        .into(),
+                );
+            }
+        }
         "answer" => {
             if opt.args.len() < 2 || opt.args[0].trim().is_empty() || opt.args[1..].iter().all(|s| s.trim().is_empty())
             {
@@ -319,6 +334,9 @@ fn task_text(task: &Value) -> String {
         } else {
             out.push_str(&format!("\n  Outcome: {}", preview(result)));
         }
+    }
+    if let Some(error) = task["stage_error"].as_str() {
+        out.push_str(&format!("\n  Worker error: {}", preview(error)));
     }
     for key in ["policy", "verification", "check", "tool_state"] {
         if let Some(value) = task[key].as_str() {
@@ -527,6 +545,64 @@ impl Watch {
     }
 }
 
+fn model_command(client: &Client, args: &str, machine: bool) -> Result<()> {
+    let words: Vec<_> = args.split_whitespace().collect();
+    let usage = "use /model, /model list, /model MODEL [EFFORT], /model effort EFFORT or /model default";
+    let mut body = json!({"op":"model"});
+    let effort_value = |s: &str| if s == "default" { Value::Null } else { json!(s) };
+    match words.as_slice() {
+        [] | ["list"] => (),
+        ["default"] => {
+            body["model"] = Value::Null;
+            body["effort"] = Value::Null;
+        }
+        ["effort", effort] => body["effort"] = effort_value(effort),
+        ["effort" | "list" | "default", ..] => return Err(usage.into()),
+        args => {
+            let args = args.strip_prefix(&["set"]).unwrap_or(args);
+            let (name, effort) = match args {
+                [name] => (name, Value::Null),
+                [name, effort] => (name, effort_value(effort)),
+                _ => return Err(usage.into()),
+            };
+            body["model"] = json!(name);
+            body["effort"] = effort;
+        }
+    }
+    let mut value = client.call(body)?;
+    let provider = field(&value, "provider")?;
+    if words == ["list"] {
+        if provider != "chatgpt" {
+            return Err("/model list uses the ChatGPT account catalog. For this API provider, enter /model MODEL [EFFORT] with its model ID.".into());
+        }
+        let models = crate::model::plan_models()?;
+        if !machine {
+            return if models.is_empty() {
+                output("No visible models for this ChatGPT account.")
+            } else {
+                output(&models.join("\n"))
+            };
+        }
+        value["models"] = json!(models);
+        return output(&value.to_string());
+    }
+    if machine {
+        return output(&value.to_string());
+    }
+    let fallback = if provider == "chatgpt" { "automatic (first visible plan model)" } else { "unset" };
+    let model = value["model"].as_str().unwrap_or(fallback);
+    let effort = value["effort"].as_str().unwrap_or("provider default");
+    let mut text = format!("New tasks use {provider} | model: {model} | reasoning effort: {effort}");
+    if words.is_empty() {
+        text.push_str("\n/model MODEL [EFFORT]   /model effort EFFORT   /model default");
+        text.push_str(&format!("\nEffort: default, {} (support varies by model).", daemon::EFFORTS.join(", ")));
+        if provider == "chatgpt" {
+            text.push_str("\nUse /model list to see model IDs for your ChatGPT account.");
+        }
+    }
+    output(&text)
+}
+
 fn chat(client: &Client, opt: &Options) -> Result<()> {
     let mut agent = opt.agent.clone();
     if !opt.json && io::stdin().is_terminal() {
@@ -589,6 +665,7 @@ fn chat(client: &Client, opt: &Options) -> Result<()> {
                 match (op, arg, parts.next()) {
                     ("quit", None, None) => break,
                     ("help", None, None) => output(&render("help", &json!(CHAT_HELP), opt.json)),
+                    ("model", _, _) => model_command(client, args, opt.json),
                     ("to", Some(name), None) => {
                         agent = name.into();
                         output(&if opt.json {
@@ -632,6 +709,14 @@ fn run_cli() -> Result<()> {
     match opt.command.as_str() {
         "help" => return output(&render("help", &json!(HELP), opt.json)),
         "version" => return output(&render("version", &json!(env!("CARGO_PKG_VERSION")), opt.json)),
+        "auth" => {
+            return match opt.args[0].as_str() {
+                "login" => crate::oauth::login(),
+                "status" => crate::oauth::status(),
+                "logout" => crate::oauth::logout(),
+                _ => unreachable!("validated auth command"),
+            };
+        }
         _ => {}
     }
     let client = Client::new(&opt)?;

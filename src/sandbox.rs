@@ -87,7 +87,10 @@ fn cached_target(p: &Path, dir: &File) -> Result<bool> {
     }
 }
 fn reserved(p: &Path) -> bool {
-    p.components().any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+    p.components().any(|c| {
+        let name = c.as_os_str();
+        name.eq_ignore_ascii_case(".git") || name.eq_ignore_ascii_case(".teamagents-auth")
+    })
 }
 fn root_dir(root: &Path) -> Result<File> {
     if root.canonicalize().map_err(err)? != root {
