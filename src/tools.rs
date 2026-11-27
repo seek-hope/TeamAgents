@@ -271,15 +271,32 @@ impl StreamBuffer {
     }
 }
 
+const DRAIN_BATCH_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DrainState {
+    Eof,
+    WouldBlock,
+    More,
+}
+
 // No blocking reader threads: even a descendant that escapes the group and inherits a writer cannot hold us open.
 // Oversize output uses middle-truncation (head + tail preserved) so commands always finish with real exit codes.
-fn drain(stream: &mut UnixStream, buffer: &mut StreamBuffer, label: &str) -> Result<bool> {
+// Bounding each drain batch prevents a saturated pipe from starving the opposite stream or timeout checks.
+fn drain(stream: &mut UnixStream, buffer: &mut StreamBuffer, label: &str) -> Result<DrainState> {
     let mut buf = [0; 8192];
+    let mut read_bytes = 0usize;
     loop {
         match stream.read(&mut buf) {
-            Ok(0) => return Ok(true),
-            Ok(n) => buffer.push(&buf[..n]),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Ok(0) => return Ok(DrainState::Eof),
+            Ok(n) => {
+                buffer.push(&buf[..n]);
+                read_bytes += n;
+                if read_bytes >= DRAIN_BATCH_BYTES {
+                    return Ok(DrainState::More);
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(DrainState::WouldBlock),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(format!("read shell {label}: {e}")),
         }
@@ -343,13 +360,13 @@ fn shell(workspace: &Path, command: &str, timeout: Duration, staged: bool) -> Re
     let mut failure = (|| -> Result<()> {
         network.connect(&child)?;
         connected = true;
-        let (mut out_eof, mut err_eof) = (false, false);
+        let (mut out_state, mut err_state) = (DrainState::WouldBlock, DrainState::WouldBlock);
         loop {
-            if !out_eof {
-                out_eof = drain(&mut stdout, &mut out, "stdout")?;
+            if out_state != DrainState::Eof {
+                out_state = drain(&mut stdout, &mut out, "stdout")?;
             }
-            if !err_eof {
-                err_eof = drain(&mut stderr, &mut err, "stderr")?;
+            if err_state != DrainState::Eof {
+                err_state = drain(&mut stderr, &mut err, "stderr")?;
             }
             if exited(&child).map_err(|e| format!("poll shell: {e}"))? {
                 return Ok(());
@@ -360,11 +377,13 @@ fn shell(workspace: &Path, command: &str, timeout: Duration, staged: bool) -> Re
             if remaining.is_zero() {
                 return Err(format!("shell timed out after {}ms (exit 124)", timeout.as_millis()));
             }
-            poll_streams(
-                (!out_eof).then_some(stdout.as_raw_fd()),
-                (!err_eof).then_some(stderr.as_raw_fd()),
-                remaining.min(Duration::from_millis(10)),
-            )?;
+            if out_state != DrainState::More && err_state != DrainState::More {
+                poll_streams(
+                    (out_state != DrainState::Eof).then_some(stdout.as_raw_fd()),
+                    (err_state != DrainState::Eof).then_some(stderr.as_raw_fd()),
+                    remaining.min(Duration::from_millis(10)),
+                )?;
+            }
         }
     })()
     .err();
@@ -384,16 +403,23 @@ fn shell(workspace: &Path, command: &str, timeout: Duration, staged: bool) -> Re
         // Capture bytes already written, but never wait indefinitely for escaped writers.
         let end = Instant::now() + Duration::from_millis(200);
         failure = (|| -> Result<()> {
+            let (mut out_state, mut err_state) = (DrainState::WouldBlock, DrainState::WouldBlock);
             loop {
-                let out_done = drain(&mut stdout, &mut out, "stdout")?;
-                let err_done = drain(&mut stderr, &mut err, "stderr")?;
-                if out_done && err_done {
+                if out_state != DrainState::Eof {
+                    out_state = drain(&mut stdout, &mut out, "stdout")?;
+                }
+                if err_state != DrainState::Eof {
+                    err_state = drain(&mut stderr, &mut err, "stderr")?;
+                }
+                if out_state == DrainState::Eof && err_state == DrainState::Eof {
                     return Ok(());
                 }
                 if Instant::now() >= end {
                     return Err("shell descendants still hold output open; capture incomplete".into());
                 }
-                thread::sleep(Duration::from_millis(5));
+                if out_state != DrainState::More && err_state != DrainState::More {
+                    thread::sleep(Duration::from_millis(5));
+                }
             }
         })()
         .err();
@@ -595,9 +621,13 @@ mod tests {
             ok.chars().take(1000).collect::<String>()
         );
         for command in ["yes x", "yes x >&2"] {
+            let flood_start = Instant::now();
             let err = shell(&t.0, command, Duration::from_millis(150), false).unwrap_err();
             assert!(
-                err.contains("timed out") && err.contains("exit 124") && err.len() < OUTPUT_LIMIT * 2 + 512,
+                err.contains("timed out")
+                    && err.contains("exit 124")
+                    && err.len() < OUTPUT_LIMIT * 2 + 512
+                    && flood_start.elapsed() < Duration::from_secs(2),
                 "{}",
                 err.chars().take(1000).collect::<String>()
             );

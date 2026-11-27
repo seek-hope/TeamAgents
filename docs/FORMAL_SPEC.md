@@ -33,10 +33,11 @@ TeamAgents models task orchestration, collaborative coordination, compaction, st
 ## 4. StreamBuffer Conservation & UTF-8 Safety ($\mathcal{M}_{\text{stream}}$)
 
 - **State**: `(head, tail, omitted_bytes, omitted_lines)` with `HALF_OUTPUT = 65536` (`OUTPUT_LIMIT = 131072`).
-- **Invariants (`Inv_StreamBoundedMemory`, `Inv_StreamConservation`, `Inv_StreamUtf8Safe`)**:
+- **Invariants (`Inv_StreamBoundedMemory`, `Inv_StreamConservation`, `Inv_StreamUtf8Safe`, `Inv_DrainBoundedBatch`)**:
   1. `head.len() ≤ HALF_OUTPUT ∧ tail.len() ≤ HALF_OUTPUT`, so live memory never exceeds `OUTPUT_LIMIT`.
   2. Before finish: `head.len() + omitted_bytes + tail.len() == total_bytes_pushed`.
   3. On `finish`: trimming incomplete trailing lead/continuation bytes from `head` and leading continuation bytes from `tail` preserves exact byte conservation `head_end + omitted_bytes + tail_len == total_bytes_pushed` and emits valid UTF-8 with zero replacement characters (`\u{FFFD}`) for any valid UTF-8 stream under arbitrary chunking.
+  4. `shell()` drains at most `64 KiB` (`DRAIN_BATCH_BYTES`) per stream per loop iteration (`DrainState::{Eof, WouldBlock, More}`), ensuring a saturated writer can never starve the sibling stream or `exited`/`timeout` checks.
 
 ## 5. Boundary Contracts & Machine Verification Mapping
 
