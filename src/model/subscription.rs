@@ -2,8 +2,8 @@
 use super::{
     body, http_agent, is_context_overflow_payload, is_retryable_status, note_rate_limit,
     responses::{decode_sse, StreamDecodeErr},
-    retry_delay, send_with_redirects, valid_model_id, wait_rate_limit, ModelError, ModelSettings, Provider,
-    HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT, STREAM_LIMIT, TIMEOUT,
+    retry_delay, send_with_redirects, valid_model_id, wait_rate_limit, ModelError, ModelOutput, ModelSettings,
+    Provider, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT, STREAM_LIMIT, TIMEOUT,
 };
 use crate::{protocol::TurnKind, Result};
 use ring::digest::{digest, Digest, SHA256};
@@ -271,7 +271,7 @@ pub(super) fn complete(
     task: &str,
     history: &[Value],
     kind: TurnKind,
-) -> std::result::Result<Value, ModelError> {
+) -> std::result::Result<ModelOutput, ModelError> {
     static CACHE: ModelCache = ModelCache(Mutex::new(None));
     let model = CACHE.select(token, settings.model.as_deref(), || models(token)).map_err(ModelError::Fatal)?;
     let bytes = body(&model, settings.effort.as_deref(), agent, task, history, kind, Provider::ChatGpt)
@@ -310,7 +310,7 @@ fn map_stream_err(err: StreamDecodeErr, kind: TurnKind) -> std::result::Result<M
 fn infer_response(
     outcome: std::result::Result<ureq::Response, ureq::Error>,
     kind: TurnKind,
-) -> std::result::Result<std::result::Result<Value, ModelError>, RetryErr> {
+) -> std::result::Result<std::result::Result<ModelOutput, ModelError>, RetryErr> {
     let r = check_or_retry(outcome)?;
     // Some gateways omit the SSE media type. Only a validated terminal event authorizes an action.
     let media = match r.header("Content-Type").map(|_| r.content_type().trim().to_ascii_lowercase()).as_deref() {
@@ -372,7 +372,7 @@ fn infer_with_retry(
     bytes: &[u8],
     kind: TurnKind,
     retry_base: Duration,
-) -> std::result::Result<Value, ModelError> {
+) -> std::result::Result<ModelOutput, ModelError> {
     for attempt in 1..=HTTP_MAX_ATTEMPTS {
         wait_rate_limit(retry_base);
         let outcome = send_with_redirects(initial_url, Some(bytes), |url, send_auth| {
@@ -403,7 +403,7 @@ fn infer_with_retry(
 fn infer(req: ureq::Request, bytes: &[u8], kind: TurnKind) -> std::result::Result<Value, ModelError> {
     let outcome = req.set("Content-Type", "application/json").set("Accept", "text/event-stream").send_bytes(bytes);
     match infer_response(outcome, kind) {
-        Ok(res) => res,
+        Ok(res) => res.map(|o| o.action),
         Err(RetryErr::Compaction(msg)) if kind != TurnKind::Reporter => Err(ModelError::NeedsCompaction(msg)),
         Err(RetryErr::Quota(msg)) => Err(ModelError::QuotaExceeded(msg)),
         Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message)) => Err(ModelError::Fatal(message)),
@@ -413,7 +413,7 @@ fn infer(req: ureq::Request, bytes: &[u8], kind: TurnKind) -> std::result::Resul
 #[cfg(test)]
 fn decode(stream: &str, kind: TurnKind) -> std::result::Result<Value, ModelError> {
     match decode_sse(stream, kind, TEXT_ONLY, INVALID) {
-        Ok(v) => Ok(v),
+        Ok(v) => Ok(v.action),
         Err(e) => match map_stream_err(e, kind) {
             Ok(m) => Err(m),
             Err(RetryErr::Quota(m)) => Err(ModelError::QuotaExceeded(m)),
@@ -594,7 +594,7 @@ mod tests {
             .collect();
         assert_eq!(
             wire,
-            json!({"model":"z-first","input":[{"role":"user","content":"Agent: worker\nTask: task-id"},history[0],history[1],history[2]],"instructions":super::super::WORKER,"tools":expected_tools,"tool_choice":"required","parallel_tool_calls":false,"store":false,"stream":true})
+            json!({"model":"z-first","input":[history[0],history[1],history[2]],"instructions":super::super::WORKER,"tools":expected_tools,"tool_choice":"required","parallel_tool_calls":false,"store":false,"stream":true})
         );
     }
 
@@ -674,7 +674,7 @@ mod tests {
             Duration::from_millis(1),
         )
         .unwrap();
-        assert_eq!(retried["text"], "ok");
+        assert_eq!(retried.action["text"], "ok");
         server.join().unwrap();
 
         for (status, headers, payload, delay, expected) in [

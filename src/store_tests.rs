@@ -465,7 +465,7 @@ fn migration_preserves_legacy_root_policy_pending_and_ready_operations() {
 
     let mut s = home.open();
     s.recover().unwrap();
-    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 7);
+    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 8);
     for t in s.tasks().unwrap().as_array().unwrap() {
         assert_eq!(t["policy"], "review");
     }
@@ -506,7 +506,7 @@ fn migration_rolls_back_and_unknown_versions_do_not_open() {
     let other = Session::new();
     let path = other.0.join("swarm.db");
     let db = legacy_database(&other);
-    for (app, version) in [(APP_ID, 8), (APP_ID, 0), (0, 1), (0, 2), (42, 2)] {
+    for (app, version) in [(APP_ID, 9), (APP_ID, 0), (0, 1), (0, 2), (42, 2)] {
         db.pragma_update(None, "application_id", app).unwrap();
         db.pragma_update(None, "user_version", version).unwrap();
         assert!(Store::open(&path).is_err());
@@ -730,7 +730,13 @@ fn handoff_is_atomic_and_sibling_stages_settle_concurrently_without_upward_messa
     let c = turn(&mut s);
     assert_eq!((b.kind, c.kind), (TurnKind::Node, TurnKind::Node));
     assert!(chat(&b).contains("shared forward brief") && chat(&b).contains("only b"));
-    assert!(!chat(&b).contains("only c") && !chat(&b).contains("private original intent"));
+    // Default forked handoff shares the parent's immutable prefix while keeping sibling assignments isolated.
+    assert!(chat(&b).contains("private original intent") && chat(&c).contains("private original intent"));
+    assert_eq!(b.messages[..b.messages.len() - 1], c.messages[..c.messages.len() - 1]);
+    let b_last = b.messages.last().unwrap()["content"].as_str().unwrap();
+    let c_last = c.messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(b_last.contains("only b") && !b_last.contains("only c"));
+    assert!(c_last.contains("only c") && !c_last.contains("only b"));
     assert!(handoff(&mut s, &b.task, &[("c", "invalid sibling")]).is_err());
     assert!(s.apply(&b.task, &json!({"op":"ask","text":"invalid"})).is_err());
     assert!(s.claim().unwrap().is_none());
@@ -778,6 +784,59 @@ fn handoff_is_atomic_and_sibling_stages_settle_concurrently_without_upward_messa
     assert_eq!(next_status["status"], "done");
     assert_eq!(next_status["result"], "new output");
     assert_eq!(next_status["continuation_node"], next);
+}
+
+#[test]
+fn handoff_opt_out_isolates_parent_history_and_usage_aggregates_per_root() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "secret parent prompt").unwrap();
+    claim(&mut s, &root);
+    s.record_usage(
+        &root,
+        &crate::model::UsageStats { input_tokens: 1000, cached_tokens: 200, output_tokens: 50 },
+        3000,
+    )
+    .unwrap();
+    let meta = json!({"reasoning":[{"type":"reasoning","id":"rs1"}]});
+    let action = json!({
+        "op":"handoff",
+        "text":"fresh brief",
+        "inherit_context":false,
+        "children":[{"agent":"b","text":"only b"},{"agent":"c","text":"only c"}]
+    });
+    s.apply_with_meta(&root, &action, Some(&meta)).unwrap();
+    let b = turn(&mut s);
+    let c = turn(&mut s);
+    assert!(chat(&b).contains("fresh brief") && chat(&b).contains("only b"));
+    assert!(!chat(&b).contains("secret parent prompt") && !chat(&b).contains("only c"));
+    assert_eq!(b.last_input_tokens, 0);
+    s.record_usage(
+        &b.task,
+        &crate::model::UsageStats { input_tokens: 400, cached_tokens: 300, output_tokens: 20 },
+        1200,
+    )
+    .unwrap();
+    s.record_usage(
+        &c.task,
+        &crate::model::UsageStats { input_tokens: 400, cached_tokens: 300, output_tokens: 20 },
+        1200,
+    )
+    .unwrap();
+    finish(&mut s, &b.task, "b done");
+    finish(&mut s, &c.task, "c done");
+    let reporter = turn(&mut s);
+    s.record_usage(
+        &reporter.task,
+        &crate::model::UsageStats { input_tokens: 200, cached_tokens: 0, output_tokens: 10 },
+        600,
+    )
+    .unwrap();
+    finish(&mut s, &reporter.task, "overall done");
+    let status = s.task(&root).unwrap();
+    assert_eq!(status["usage"]["input_tokens"], 2000);
+    assert_eq!(status["usage"]["cached_tokens"], 800);
+    assert_eq!(status["usage"]["output_tokens"], 100);
 }
 
 #[test]
@@ -1374,7 +1433,7 @@ fn schema_four_database_migrates_cleanly_to_v6_and_allows_concurrent_same_agent(
 
     let mut s = home.open();
     s.recover().unwrap();
-    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 7);
+    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 8);
     let t1 = s.task("r1").unwrap();
     assert_eq!(t1["continuation_node"], "c1");
     assert_eq!(t1["rounds"].as_array().unwrap().len(), 1);

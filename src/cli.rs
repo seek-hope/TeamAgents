@@ -415,6 +415,13 @@ fn task_text(task: &Value) -> String {
         let seq = task["whiteboard_seq"].as_u64().unwrap_or(0);
         out.push_str(&format!("\n  whiteboard: {} entry/entries (seq {seq})", wb.len()));
     }
+    if let Some(usage) = task.get("usage").filter(|u| u["input_tokens"].as_u64().unwrap_or(0) > 0) {
+        let input = usage["input_tokens"].as_u64().unwrap_or(0);
+        let cached = usage["cached_tokens"].as_u64().unwrap_or(0);
+        let output = usage["output_tokens"].as_u64().unwrap_or(0);
+        let pct = usage["cache_hit_rate"].as_f64().unwrap_or(0.0) * 100.0;
+        out.push_str(&format!("\n  tokens: {input} in ({cached} cached, {pct:.1}% hit), {output} out"));
+    }
     append_evidence(&mut out, task);
     out
 }

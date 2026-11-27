@@ -1,9 +1,10 @@
 //! Anthropic Messages API transport (`TEAMAGENTS_PROVIDER=anthropic`).
 use super::{
     checked_post_request, decode_action, decode_tool_call_str, decode_tool_call_value, is_context_overflow_payload,
-    is_quota_exceeded_payload, is_retryable_status, note_rate_limit, parse_history, request_limit, retry_delay,
-    send_with_redirects, system_prompt, tool_specs, wait_rate_limit, AuthHeader, HistoryItem, ModelError,
-    ModelSettings, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT, STREAM_LIMIT, TIMEOUT,
+    is_quota_exceeded_payload, is_retryable_status, needs_leading_assignment, note_rate_limit, parse_history,
+    request_limit, retry_delay, send_with_redirects, system_prompt, tool_specs, wait_rate_limit, AuthHeader,
+    HistoryItem, ModelError, ModelOutput, ModelSettings, UsageStats, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT,
+    STREAM_LIMIT, TIMEOUT,
 };
 use crate::{protocol::TurnKind, Result};
 use serde::Deserialize;
@@ -104,13 +105,26 @@ pub(super) fn body(
     let thinking_enabled = thinking.as_ref().and_then(|t| t["type"].as_str()) == Some("enabled");
 
     let assignment = format!("Agent: {agent}\nTask: {task}");
-    let mut groups: Vec<(&str, Vec<Value>)> = vec![("user", vec![json!({"type": "text", "text": assignment})])];
+    let mut groups: Vec<(&str, Vec<Value>)> = if needs_leading_assignment(kind, history) {
+        vec![("user", vec![json!({"type": "text", "text": assignment})])]
+    } else {
+        Vec::new()
+    };
     let items = parse_history(history, &mut size, max_bytes, too_big)?;
 
     for item in items {
         match item {
-            HistoryItem::ToolTurn { call_id, name, raw_assistant, args_value, output, .. } => {
-                if !thinking_enabled {
+            HistoryItem::ToolTurn { call_id, name, raw_assistant, args_value, output, meta, .. } => {
+                let signed_thinking: Vec<Value> = meta
+                    .and_then(|m| m.get("thinking_blocks"))
+                    .and_then(Value::as_array)
+                    .filter(|arr| !arr.is_empty())
+                    .cloned()
+                    .unwrap_or_default();
+                if !thinking_enabled || !signed_thinking.is_empty() {
+                    for tb in signed_thinking {
+                        push_block(&mut groups, "assistant", tb);
+                    }
                     push_block(
                         &mut groups,
                         "assistant",
@@ -128,7 +142,14 @@ pub(super) fn body(
                     push_block(&mut groups, "user", json!({"type": "text", "text": output}));
                 }
             }
-            HistoryItem::Message { role, content } => {
+            HistoryItem::Message { role, content, meta } => {
+                if role == "assistant" && thinking_enabled {
+                    if let Some(tbs) = meta.and_then(|m| m.get("thinking_blocks")).and_then(Value::as_array) {
+                        for tb in tbs {
+                            push_block(&mut groups, "assistant", tb.clone());
+                        }
+                    }
+                }
                 if !content.is_empty() {
                     push_block(&mut groups, role, json!({"type": "text", "text": content}));
                 } else if !groups.last().is_some_and(|(r, _)| *r == role) {
@@ -138,7 +159,7 @@ pub(super) fn body(
         }
     }
 
-    let messages: Vec<Value> = groups
+    let mut messages: Vec<Value> = groups
         .into_iter()
         .map(|(role, mut blocks)| {
             if blocks.is_empty() {
@@ -147,14 +168,28 @@ pub(super) fn body(
             json!({"role": role, "content": blocks})
         })
         .collect();
+    // Rolling cache breakpoint on the final content block keeps multi-turn prefixes cached.
+    if let Some(last_block) =
+        messages.last_mut().and_then(|m| m.get_mut("content")).and_then(Value::as_array_mut).and_then(|c| c.last_mut())
+    {
+        last_block["cache_control"] = json!({"type": "ephemeral"});
+    }
 
-    let tools: Vec<Value> = tool_specs(kind)
+    let mut tools: Vec<Value> = tool_specs(kind)
         .into_iter()
         .map(|s| json!({"name": s.name, "description": s.description, "input_schema": s.parameters}))
         .collect();
+    if let Some(last_tool) = tools.last_mut() {
+        last_tool["cache_control"] = json!({"type": "ephemeral"});
+    }
+    let system_blocks = vec![json!({
+        "type": "text",
+        "text": system_prompt(kind),
+        "cache_control": {"type": "ephemeral"}
+    })];
     let mut payload = json!({
         "model": model,
-        "system": system_prompt(kind),
+        "system": system_blocks,
         "messages": messages,
         "tools": tools,
         "tool_choice": {
@@ -179,7 +214,11 @@ pub(super) fn body(
 struct ContentBlock {
     #[serde(rename = "type")]
     kind: String,
+    id: Option<String>,
     text: Option<String>,
+    thinking: Option<String>,
+    signature: Option<String>,
+    data: Option<String>,
     name: Option<String>,
     input: Option<Value>,
 }
@@ -189,6 +228,8 @@ struct Delta {
     #[serde(rename = "type")]
     kind: Option<String>,
     text: Option<String>,
+    thinking: Option<String>,
+    signature: Option<String>,
     partial_json: Option<String>,
     stop_reason: Option<String>,
 }
@@ -199,6 +240,7 @@ struct StartMessage {
     kind: Option<String>,
     role: Option<String>,
     stop_reason: Option<String>,
+    usage: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -215,13 +257,57 @@ struct SseEvent {
     index: Option<usize>,
     content_block: Option<ContentBlock>,
     delta: Option<Delta>,
+    usage: Option<Value>,
     error: Option<ApiError>,
 }
 
 enum BlockKind {
     Text,
-    Thinking,
-    ToolUse { name: String, input_json: String, initial_input: Option<Value> },
+    Thinking { kind: String, thinking: String, signature: Option<String>, data: Option<String> },
+    ToolUse { id: Option<String>, name: String, input_json: String, initial_input: Option<Value> },
+}
+
+fn parse_anthropic_usage(usage: Option<&Value>) -> Option<UsageStats> {
+    let u = usage?.as_object()?;
+    let base = u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let cached = u.get("cache_read_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let created = u.get("cache_creation_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let output_tokens = u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+    Some(UsageStats {
+        input_tokens: base.saturating_add(cached).saturating_add(created),
+        cached_tokens: cached,
+        output_tokens,
+    })
+}
+
+fn merge_anthropic_usage(acc: &mut Option<Value>, patch: Option<Value>) {
+    let Some(Value::Object(patch_map)) = patch else { return };
+    match acc {
+        Some(Value::Object(base)) => {
+            for (k, v) in patch_map {
+                base.insert(k, v);
+            }
+        }
+        _ => *acc = Some(Value::Object(patch_map)),
+    }
+}
+
+fn build_anthropic_meta(
+    thinking_blocks: Vec<Value>,
+    call_id: Option<String>,
+    raw_arguments: Option<String>,
+) -> Option<Value> {
+    let mut map = serde_json::Map::new();
+    if !thinking_blocks.is_empty() {
+        map.insert("thinking_blocks".into(), Value::Array(thinking_blocks));
+    }
+    if let Some(id) = call_id.filter(|s| !s.is_empty()) {
+        map.insert("call_id".into(), Value::String(id));
+    }
+    if let Some(args) = raw_arguments {
+        map.insert("raw_arguments".into(), Value::String(args));
+    }
+    (!map.is_empty()).then_some(Value::Object(map))
 }
 
 enum SseDecodeErr {
@@ -242,7 +328,7 @@ fn check_stop_reason(reason: Option<&str>) -> std::result::Result<(), ModelError
     }
 }
 
-fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<Value, SseDecodeErr> {
+fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<ModelOutput, SseDecodeErr> {
     let mut events = Vec::new();
     let mut data = String::new();
     let mut name = None;
@@ -298,6 +384,7 @@ fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<Value, SseDec
     let mut blocks: Vec<(BlockKind, bool)> = Vec::new(); // (kind, open)
     let mut text = String::new();
     let mut saw_text_block = false;
+    let mut raw_usage: Option<Value> = None;
 
     for ev in events {
         if saw_stop {
@@ -316,6 +403,7 @@ fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<Value, SseDec
                 if msg.stop_reason.is_some() {
                     stop_reason = msg.stop_reason;
                 }
+                merge_anthropic_usage(&mut raw_usage, msg.usage);
                 saw_start = true;
             }
             "content_block_start" => {
@@ -341,7 +429,15 @@ fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<Value, SseDec
                         blocks.push((BlockKind::Text, true));
                     }
                     "thinking" | "redacted_thinking" => {
-                        blocks.push((BlockKind::Thinking, true));
+                        blocks.push((
+                            BlockKind::Thinking {
+                                kind: cb.kind,
+                                thinking: cb.thinking.unwrap_or_default(),
+                                signature: cb.signature,
+                                data: cb.data,
+                            },
+                            true,
+                        ));
                     }
                     "tool_use" => {
                         let tool_name = cb
@@ -349,7 +445,12 @@ fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<Value, SseDec
                             .filter(|n| !n.is_empty())
                             .ok_or_else(|| SseDecodeErr::Model(ModelError::InvalidAction(TEXT_ONLY.into())))?;
                         blocks.push((
-                            BlockKind::ToolUse { name: tool_name, input_json: String::new(), initial_input: cb.input },
+                            BlockKind::ToolUse {
+                                id: cb.id,
+                                name: tool_name,
+                                input_json: String::new(),
+                                initial_input: cb.input,
+                            },
                             true,
                         ));
                     }
@@ -386,8 +487,19 @@ fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<Value, SseDec
                         }
                         input_json.push_str(piece);
                     }
-                    (BlockKind::Text, "citations_delta")
-                    | (BlockKind::Thinking, "thinking_delta" | "signature_delta") => {}
+                    (BlockKind::Thinking { thinking, .. }, "thinking_delta") => {
+                        if let Some(piece) = delta.thinking.as_deref() {
+                            if thinking.len().saturating_add(piece.len()) <= LIMIT {
+                                thinking.push_str(piece);
+                            }
+                        }
+                    }
+                    (BlockKind::Thinking { signature, .. }, "signature_delta") => {
+                        if let Some(piece) = delta.signature.as_deref() {
+                            signature.get_or_insert_with(String::new).push_str(piece);
+                        }
+                    }
+                    (BlockKind::Text, "citations_delta") => {}
                     _ => return Err(SseDecodeErr::Model(ModelError::InvalidAction(TEXT_ONLY.into()))),
                 }
             }
@@ -411,6 +523,7 @@ fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<Value, SseDec
                         stop_reason = Some(reason);
                     }
                 }
+                merge_anthropic_usage(&mut raw_usage, ev.usage);
             }
             "message_stop" => {
                 if !saw_start {
@@ -428,28 +541,46 @@ fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<Value, SseDec
         )));
     }
     check_stop_reason(stop_reason.as_deref()).map_err(SseDecodeErr::Model)?;
-    let tool_uses: Vec<(String, String, Option<Value>)> = blocks
-        .into_iter()
-        .filter_map(|(bk, _)| match bk {
-            BlockKind::ToolUse { name, input_json, initial_input } => Some((name, input_json, initial_input)),
-            _ => None,
-        })
-        .collect();
+    let mut thinking_blocks = Vec::new();
+    let mut tool_uses = Vec::new();
+    for (bk, _) in blocks {
+        match bk {
+            BlockKind::Thinking { kind: bk_kind, thinking, signature, data } => {
+                if bk_kind == "thinking" {
+                    if let Some(sig) = signature.filter(|s| !s.is_empty()) {
+                        thinking_blocks.push(json!({"type": "thinking", "thinking": thinking, "signature": sig}));
+                    }
+                } else if let Some(d) = data.filter(|s| !s.is_empty()) {
+                    thinking_blocks.push(json!({"type": "redacted_thinking", "data": d}));
+                }
+            }
+            BlockKind::ToolUse { id, name, input_json, initial_input } => {
+                tool_uses.push((id, name, input_json, initial_input));
+            }
+            BlockKind::Text => {}
+        }
+    }
     if tool_uses.len() > 1 {
         return Err(SseDecodeErr::Model(ModelError::InvalidAction(MULTI_TOOL.into())));
     }
-    if let Some((tname, input_json, initial_input)) = tool_uses.into_iter().next() {
-        return if !input_json.trim().is_empty() {
+    let usage = parse_anthropic_usage(raw_usage.as_ref());
+    if let Some((tid, tname, input_json, initial_input)) = tool_uses.into_iter().next() {
+        let has_raw = !input_json.trim().is_empty();
+        let action = if has_raw {
             decode_tool_call_str(&tname, &input_json, kind)
         } else {
             decode_tool_call_value(&tname, initial_input.unwrap_or_else(|| json!({})), kind)
         }
-        .map_err(SseDecodeErr::Model);
+        .map_err(SseDecodeErr::Model)?;
+        let meta = build_anthropic_meta(thinking_blocks, tid, has_raw.then_some(input_json));
+        return Ok(ModelOutput { action, meta, usage });
     }
     if !saw_text_block {
         return Err(SseDecodeErr::Model(ModelError::InvalidAction(TEXT_ONLY.into())));
     }
-    decode_action(&text, kind).map_err(SseDecodeErr::Model)
+    let action = decode_action(&text, kind).map_err(SseDecodeErr::Model)?;
+    let meta = build_anthropic_meta(thinking_blocks, None, None);
+    Ok(ModelOutput { action, meta, usage })
 }
 
 fn redacted_error(status: Option<u16>, err_type: Option<&str>, kind: TurnKind, body: &[u8]) -> ModelError {
@@ -485,7 +616,7 @@ fn redacted_error(status: Option<u16>, err_type: Option<&str>, kind: TurnKind, b
     }
 }
 
-pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result::Result<Value, ModelError> {
+pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result::Result<ModelOutput, ModelError> {
     let raw: Value = serde_json::from_slice(bytes).map_err(|_| ModelError::Fatal(INVALID.into()))?;
     if raw["type"] == "error" || raw.get("error").is_some_and(|e| !e.is_null()) {
         let err_type = raw.pointer("/error/type").and_then(Value::as_str);
@@ -495,13 +626,24 @@ pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result:
         return Err(ModelError::Fatal(INVALID.into()));
     }
     check_stop_reason(raw["stop_reason"].as_str())?;
+    let usage = parse_anthropic_usage(raw.get("usage"));
     let content = raw["content"].as_array().ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
     let mut text = String::new();
     let mut saw_text = false;
+    let mut thinking_blocks = Vec::new();
     let mut tool_uses = Vec::new();
     for block in content {
         match block["type"].as_str() {
-            Some("thinking" | "redacted_thinking") => {}
+            Some("thinking") => {
+                if block.get("signature").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+                    thinking_blocks.push(block.clone());
+                }
+            }
+            Some("redacted_thinking") => {
+                if block.get("data").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+                    thinking_blocks.push(block.clone());
+                }
+            }
             Some("text") => {
                 let piece = block["text"].as_str().ok_or_else(|| ModelError::InvalidAction(TEXT_ONLY.into()))?;
                 if text.len().saturating_add(piece.len()) > LIMIT {
@@ -511,13 +653,14 @@ pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result:
                 saw_text = true;
             }
             Some("tool_use") => {
+                let id = block.get("id").and_then(Value::as_str).map(str::to_owned);
                 let name = block["name"]
                     .as_str()
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| ModelError::InvalidAction(TEXT_ONLY.into()))?
                     .to_owned();
                 let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
-                tool_uses.push((name, input));
+                tool_uses.push((id, name, input));
             }
             _ => return Err(ModelError::InvalidAction(TEXT_ONLY.into())),
         }
@@ -525,13 +668,17 @@ pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result:
     if tool_uses.len() > 1 {
         return Err(ModelError::InvalidAction(MULTI_TOOL.into()));
     }
-    if let Some((name, input)) = tool_uses.into_iter().next() {
-        return decode_tool_call_value(&name, input, kind);
+    if let Some((tid, name, input)) = tool_uses.into_iter().next() {
+        let action = decode_tool_call_value(&name, input, kind)?;
+        let meta = build_anthropic_meta(thinking_blocks, tid, None);
+        return Ok(ModelOutput { action, meta, usage });
     }
     if !saw_text {
         return Err(ModelError::InvalidAction(TEXT_ONLY.into()));
     }
-    decode_action(&text, kind)
+    let action = decode_action(&text, kind)?;
+    let meta = build_anthropic_meta(thinking_blocks, None, None);
+    Ok(ModelOutput { action, meta, usage })
 }
 
 enum RetryErr {
@@ -555,7 +702,7 @@ fn handle_outcome(
     kind: TurnKind,
     attempt: usize,
     retry_base: Duration,
-) -> std::result::Result<Value, RetryErr> {
+) -> std::result::Result<ModelOutput, RetryErr> {
     let resp = match outcome {
         Ok(r) if (200..300).contains(&r.status()) => r,
         Ok(r) | Err(ureq::Error::Status(_, r)) => {
@@ -651,7 +798,7 @@ pub(super) fn transact_with_retry(
     bytes: &[u8],
     kind: TurnKind,
     retry_base: Duration,
-) -> std::result::Result<Value, ModelError> {
+) -> std::result::Result<ModelOutput, ModelError> {
     let initial = messages_endpoint(base);
     for attempt in 1..=HTTP_MAX_ATTEMPTS {
         wait_rate_limit(retry_base);
@@ -674,7 +821,7 @@ pub(super) fn transact_with_retry(
         })
         .map_err(ModelError::Fatal)?;
         match handle_outcome(outcome, kind, attempt, retry_base) {
-            Ok(action) => return Ok(action),
+            Ok(out) => return Ok(out),
             Err(RetryErr::Retryable(delay)) => thread::sleep(delay),
             Err(RetryErr::Done(err)) => return Err(err),
         }
@@ -690,7 +837,7 @@ pub(super) fn complete(
     task: &str,
     history: &[Value],
     kind: TurnKind,
-) -> std::result::Result<Value, ModelError> {
+) -> std::result::Result<ModelOutput, ModelError> {
     let model = settings.model.as_deref().ok_or_else(|| {
         ModelError::Fatal("set TEAMAGENTS_MODEL or select an Anthropic model with /model MODEL".into())
     })?;
@@ -734,11 +881,38 @@ mod tests {
         let msgs = v["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0]["role"], "user");
-        assert_eq!(msgs[0]["content"].as_array().unwrap().len(), 2);
+        assert_eq!(msgs[0]["content"].as_array().unwrap().len(), 1);
         assert_eq!(msgs[1]["role"], "assistant");
         assert_eq!(msgs[1]["content"][0]["type"], "text");
         assert_eq!(msgs[2]["role"], "user");
         assert_eq!(msgs[2]["content"].as_array().unwrap().len(), 2);
+        assert_eq!(msgs[2]["content"][1]["cache_control"], json!({"type":"ephemeral"}));
+        assert_eq!(v["system"][0]["cache_control"], json!({"type":"ephemeral"}));
+        assert_eq!(v["tools"].as_array().unwrap().last().unwrap()["cache_control"], json!({"type":"ephemeral"}));
+
+        // Signed thinking_blocks persisted in meta replay natively even with extended thinking enabled.
+        let signed_history = [
+            json!({"role":"user","content":"extra context"}),
+            json!({
+                "role":"assistant",
+                "content":r#"{"op":"read_file","path":"a"}"#,
+                "meta":{
+                    "call_id":"tu_signed",
+                    "thinking_blocks":[{"type":"thinking","thinking":"plan","signature":"sig123"}]
+                }
+            }),
+            json!({"role":"user","content":r#"{"tool":"read_file","ok":true,"result":"data"}"#}),
+        ];
+        let signed_raw =
+            body("claude-sonnet-4-5", Some("high"), "w1", "t1", &signed_history, TurnKind::Node, None).unwrap();
+        let signed_v: Value = serde_json::from_slice(&signed_raw).unwrap();
+        assert_eq!(
+            signed_v["messages"][1]["content"],
+            json!([
+                {"type":"thinking","thinking":"plan","signature":"sig123"},
+                {"type":"tool_use","id":"tu_signed","name":"read_file","input":{"path":"a"}}
+            ])
+        );
 
         // When extended thinking is disabled (`effort = None`), tool turns replay as `tool_use` + `tool_result`.
         let native_raw = body("claude-sonnet-4-5", None, "w1", "t1", &history, TurnKind::Node, None).unwrap();
@@ -755,7 +929,7 @@ mod tests {
             native_msgs[2]["content"],
             json!([
                 {"type":"tool_result","tool_use_id":"call_1","content":history[2]["content"]},
-                {"type":"text","text":"Continue task t1."}
+                {"type":"text","text":"Continue task t1.","cache_control":{"type":"ephemeral"}}
             ])
         );
 
@@ -784,7 +958,8 @@ mod tests {
             json!({"type":"message_stop"}),
         ]);
         let decoded = decode_sse(&sse, TurnKind::Root).ok().unwrap();
-        assert_eq!(decoded, json!({"op":"finish","text":"anthropic ok"}));
+        assert_eq!(decoded.action, json!({"op":"finish","text":"anthropic ok"}));
+        assert_eq!(decoded.meta.as_ref().unwrap()["thinking_blocks"][0]["signature"], "sig");
 
         let sse_tool = frames(&[
             json!({"type":"message_start","message":{"id":"m2","type":"message","role":"assistant","stop_reason":null}}),
@@ -799,7 +974,7 @@ mod tests {
             json!({"type":"message_stop"}),
         ]);
         assert_eq!(
-            decode_sse(&sse_tool, TurnKind::Node).ok().unwrap(),
+            decode_sse(&sse_tool, TurnKind::Node).ok().unwrap().action,
             json!({"op":"edit_file","path":"doc.md","old":"a","new":"b"})
         );
 
@@ -810,7 +985,7 @@ mod tests {
             json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}),
             json!({"type":"message_stop"}),
         ]);
-        assert_eq!(decode_sse(&sse_zero_arg, TurnKind::Root).ok().unwrap(), json!({"op":"members"}));
+        assert_eq!(decode_sse(&sse_zero_arg, TurnKind::Root).ok().unwrap().action, json!({"op":"members"}));
 
         let tool_json_valid = json!({
             "type": "message",
@@ -820,7 +995,7 @@ mod tests {
         })
         .to_string();
         assert_eq!(
-            decode_json_response(tool_json_valid.as_bytes(), TurnKind::Node).unwrap(),
+            decode_json_response(tool_json_valid.as_bytes(), TurnKind::Node).unwrap().action,
             json!({"op":"finish","text":"json tool ok"})
         );
 
@@ -948,7 +1123,7 @@ mod tests {
             Duration::from_millis(1),
         )
         .unwrap();
-        assert_eq!(got, json!({"op":"members"}));
+        assert_eq!(got.action, json!({"op":"members"}));
         let bill_err = transact_with_retry(
             &base,
             Some("ant-key"),

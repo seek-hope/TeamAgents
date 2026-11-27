@@ -161,9 +161,9 @@ pub(super) fn whiteboard_entries(
     Ok((wb_seq, out))
 }
 
-pub(super) fn whiteboard_digest(db: &Connection, root: &str, seen_seq: i64) -> Result<Option<String>> {
+pub(super) fn whiteboard_digest(db: &Connection, root: &str, seen_seq: i64) -> Result<Option<(i64, String)>> {
     let (wb_seq, entries) = whiteboard_entries(db, root, None, None, None)?;
-    if wb_seq == 0 && entries.is_empty() {
+    if wb_seq <= seen_seq || (wb_seq == 0 && entries.is_empty()) {
         return Ok(None);
     }
     let unread = entries.iter().filter(|e| e["seq"].as_i64().unwrap_or(0) > seen_seq).count();
@@ -172,7 +172,7 @@ pub(super) fn whiteboard_digest(db: &Connection, root: &str, seen_seq: i64) -> R
     );
     if entries.is_empty() {
         out.push_str("(All previous entries were deleted.)\n");
-        return Ok(Some(out));
+        return Ok(Some((wb_seq, out)));
     }
     for (idx, e) in entries.iter().enumerate() {
         let key = e["key"].as_str().unwrap_or("?");
@@ -196,7 +196,7 @@ pub(super) fn whiteboard_digest(db: &Connection, root: &str, seen_seq: i64) -> R
         }
         out.push_str(&line);
     }
-    Ok(Some(out))
+    Ok(Some((wb_seq, out)))
 }
 
 pub(super) fn wake_wb_waiters(db: &Connection, root: &str) -> Result<()> {
@@ -243,11 +243,7 @@ pub(super) fn wake_wb_waiters(db: &Connection, root: &str) -> Result<()> {
             .cloned()
             .collect();
         if !matching.is_empty() || wait_key.is_none() {
-            db.execute(
-                "UPDATE tasks SET wb_wait_key=NULL,wb_wait_seq=NULL,wb_seen_seq=?2 WHERE id=?1",
-                params![task_id, wb_seq],
-            )
-            .db()?;
+            db.execute("UPDATE tasks SET wb_wait_key=NULL,wb_wait_seq=NULL WHERE id=?1", [task_id]).db()?;
             queue(db, task_id, json!({"whiteboard":true,"woke":"updated","seq":wb_seq,"entries":matching}))?;
             woke_any = true;
         }
@@ -266,11 +262,7 @@ pub(super) fn wake_wb_waiters(db: &Connection, root: &str) -> Result<()> {
         .db()?;
     if other_active == 0 {
         for (task_id, _, _) in waiters {
-            db.execute(
-                "UPDATE tasks SET wb_wait_key=NULL,wb_wait_seq=NULL,wb_seen_seq=?2 WHERE id=?1",
-                params![task_id, wb_seq],
-            )
-            .db()?;
+            db.execute("UPDATE tasks SET wb_wait_key=NULL,wb_wait_seq=NULL WHERE id=?1", [&task_id]).db()?;
             queue(
                 db,
                 &task_id,
@@ -442,16 +434,32 @@ fn insert_child(
     Ok(())
 }
 
-fn handoff(db: &Connection, root: &str, parent: &str, round: i64, context: &str, children: &Value) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn handoff(
+    db: &Connection,
+    root: &str,
+    parent: &str,
+    round: i64,
+    context: &str,
+    children: &Value,
+    inherit: bool,
+    action: &Value,
+    meta: Option<&Value>,
+) -> Result<()> {
     let children = children.as_array().ok_or("expected handoff children")?;
     if !(1..=MAX_CHILDREN).contains(&children.len()) {
         return Err(format!("handoff must name 1 to {MAX_CHILDREN} children"));
     }
+    let mut validated = Vec::with_capacity(children.len());
+    let mut batch_agents = HashSet::with_capacity(children.len());
     for child in children {
         let target = nonempty(field(child, "agent")?, "agent name")?;
         let prompt = nonempty(field(child, "text")?, "child assignment")?;
         if target.len() > MAX_AGENT_BYTES {
             return Err("child agent name exceeds 128 bytes".into());
+        }
+        if !batch_agents.insert(target) {
+            return Err(format!("member {target} already has a stage in this round"));
         }
         let used: bool = db
             .query_row(
@@ -466,12 +474,39 @@ fn handoff(db: &Connection, root: &str, parent: &str, round: i64, context: &str,
         // Existing public members can take new work alongside arbitrary named workers.
         db.execute("INSERT OR IGNORE INTO agents(name) VALUES (?1)", [target]).db()?;
         check_member(db, target).map_err(|_| "child unavailable".to_owned())?;
-        insert_child(db, root, parent, round, target, prompt, context)?;
+        validated.push((target, prompt));
+    }
+
+    node_message_with_meta(db, parent, "assistant", &action.to_string(), meta)?;
+    let (last_in, last_bytes, wb_seen): (i64, i64, i64) = db
+        .query_row("SELECT last_input_tokens,last_history_bytes,wb_seen_seq FROM tasks WHERE id=?1", [parent], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .db()?;
+    for (target, prompt) in validated {
+        if inherit {
+            let child_id = id();
+            db.execute(
+                "INSERT INTO tasks(id,root,parent,agent,prompt,handoff_context,status,round,last_input_tokens,last_history_bytes,wb_seen_seq)
+                 VALUES (?1,?2,?3,?4,?5,NULL,'queued',?6,?7,?8,?9)",
+                params![child_id, root, parent, target, prompt, round, last_in, last_bytes, wb_seen],
+            )
+            .db()?;
+            db.execute(
+                "INSERT INTO node_messages(task,role,content,meta)
+                 SELECT ?1,role,content,meta FROM node_messages WHERE task=?2 ORDER BY rowid",
+                params![child_id, parent],
+            )
+            .db()?;
+            node_message(db, &child_id, "user", r#"{"handoff":"accepted"}"#)?;
+        } else {
+            insert_child(db, root, parent, round, target, prompt, context)?;
+        }
     }
     Ok(())
 }
 
-pub(super) fn apply(db: &Connection, root: &str, task: &str, action: &Value) -> Result<()> {
+pub(super) fn apply(db: &Connection, root: &str, task: &str, action: &Value, meta: Option<&Value>) -> Result<()> {
     let (round, active_root, wb_seq): (i64, String, i64) = db
         .query_row("SELECT round,COALESCE(active_root,root),wb_seq FROM tree_runs WHERE root=?1", [root], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -483,7 +518,7 @@ pub(super) fn apply(db: &Connection, root: &str, task: &str, action: &Value) -> 
     }
     match op {
         "members" => {
-            node_message(db, task, "assistant", &action.to_string())?;
+            node_message_with_meta(db, task, "assistant", &action.to_string(), meta)?;
             return queue(db, task, json!({"members":members(db)?}));
         }
         "wb_read" => {
@@ -491,7 +526,7 @@ pub(super) fn apply(db: &Connection, root: &str, task: &str, action: &Value) -> 
             let prefix = action.get("prefix").and_then(Value::as_str);
             let since_seq = action.get("since_seq").and_then(Value::as_i64);
             let (seq, entries) = whiteboard_entries(db, root, key, prefix, since_seq)?;
-            node_message(db, task, "assistant", &action.to_string())?;
+            node_message_with_meta(db, task, "assistant", &action.to_string(), meta)?;
             db.execute("UPDATE tasks SET wb_seen_seq=?2 WHERE id=?1", params![task, seq]).db()?;
             return queue(db, task, json!({"whiteboard":true,"op":"wb_read","seq":seq,"entries":entries}));
         }
@@ -505,13 +540,13 @@ pub(super) fn apply(db: &Connection, root: &str, task: &str, action: &Value) -> 
                 db.query_row("SELECT agent FROM tasks WHERE id=?1", [task], |r| r.get(0)).db()?;
             let receipt =
                 wb_write_entry(db, root, round, Some(task), &author_agent, key, mode, kind, content, expected_version)?;
-            node_message(db, task, "assistant", &action.to_string())?;
+            node_message_with_meta(db, task, "assistant", &action.to_string(), meta)?;
             return queue(db, task, receipt);
         }
         "wb_wait" => {
             let wait_key = action.get("key").and_then(Value::as_str).map(valid_wb_key).transpose()?;
             let since_seq = action.get("since_seq").and_then(Value::as_i64).unwrap_or(wb_seq);
-            node_message(db, task, "assistant", &action.to_string())?;
+            node_message_with_meta(db, task, "assistant", &action.to_string(), meta)?;
             db.execute(
                 "UPDATE tasks SET status='waiting',wb_wait_key=?2,wb_wait_seq=?3 WHERE id=?1",
                 params![task, wait_key, since_seq],
@@ -534,16 +569,24 @@ pub(super) fn apply(db: &Connection, root: &str, task: &str, action: &Value) -> 
             }
             db.execute("UPDATE tasks SET status='waiting' WHERE id=?1", [task]).db()?;
         }
-        op @ ("handoff" | "finish") => {
+        "handoff" => {
             let text = nonempty(field(action, "text")?, "stage text")?;
-            if op == "handoff" {
-                handoff(db, root, task, round, text, &action["children"])?;
-            }
+            let inherit = match action.get("inherit_context") {
+                None | Some(Value::Null) => true,
+                Some(Value::Bool(b)) => *b,
+                Some(_) => return Err("handoff inherit_context must be a boolean".into()),
+            };
+            handoff(db, root, task, round, text, &action["children"], inherit, action, meta)?;
+            db.execute("UPDATE tasks SET status='done',result=?2 WHERE id=?1", params![task, text]).db()?;
+            return advance(db, root);
+        }
+        "finish" => {
+            let text = nonempty(field(action, "text")?, "stage text")?;
             db.execute("UPDATE tasks SET status='done',result=?2 WHERE id=?1", params![task, text]).db()?;
         }
         other => return Err(format!("action {other} unavailable for this tree stage")),
     }
-    node_message(db, task, "assistant", &action.to_string())?;
+    node_message_with_meta(db, task, "assistant", &action.to_string(), meta)?;
     advance(db, root)
 }
 
@@ -940,7 +983,16 @@ pub(super) fn claim_report(db: &Connection) -> Result<Option<Turn>> {
         db.execute("UPDATE tree_runs SET phase='reporting' WHERE root=?1", [&root]).db()?;
         let messages = vec![json!({"role":"user","content":input.to_string()})];
         let settings = root_model_settings(db, &root)?;
-        return Ok(Some(Turn { kind: TurnKind::Reporter, task, agent: "reporter".into(), messages, settings }));
+        return Ok(Some(Turn {
+            kind: TurnKind::Reporter,
+            root,
+            task,
+            agent: "reporter".into(),
+            messages,
+            settings,
+            last_input_tokens: 0,
+            last_history_bytes: 0,
+        }));
     }
 }
 
@@ -953,6 +1005,7 @@ struct SummarizerNode<'a> {
     result: &'a str,
     input_json: &'a str,
     assistant_json: Option<&'a str>,
+    assistant_meta: Option<&'a Value>,
 }
 
 fn create_summarizer_node(db: &Connection, node: &SummarizerNode<'_>) -> Result<()> {
@@ -972,12 +1025,12 @@ fn create_summarizer_node(db: &Connection, node: &SummarizerNode<'_>) -> Result<
     .db()?;
     node_message(db, node.reporter_id, "user", node.input_json)?;
     if let Some(asst) = node.assistant_json {
-        node_message(db, node.reporter_id, "assistant", asst)?;
+        node_message_with_meta(db, node.reporter_id, "assistant", asst, node.assistant_meta)?;
     }
     Ok(())
 }
 
-pub(super) fn finish_report(db: &Connection, root: &str, action: &Value) -> Result<()> {
+pub(super) fn finish_report(db: &Connection, root: &str, action: &Value, meta: Option<&Value>) -> Result<()> {
     if field(action, "op")? != "finish" {
         return Err("reporter may only finish".into());
     }
@@ -1005,6 +1058,7 @@ pub(super) fn finish_report(db: &Connection, root: &str, action: &Value) -> Resu
             result: text,
             input_json: &packet.to_string(),
             assistant_json: Some(&action.to_string()),
+            assistant_meta: meta,
         },
     )?;
     db.execute(
@@ -1051,6 +1105,7 @@ pub(super) fn fallback(db: &Connection, root: &str, reason: &str) -> Result<()> 
             result: &summary,
             input_json: &context.to_string(),
             assistant_json: None,
+            assistant_meta: None,
         },
     )?;
     db.execute(

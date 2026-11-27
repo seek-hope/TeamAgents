@@ -21,9 +21,14 @@ TEAMAGENTS_PROVIDER=chatgpt teamagents chat
 
 The daemon uses OpenAI's [subscription Responses API](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference). `TEAMAGENTS_MODEL` sets the initial model. With no selection, the daemon chooses the first visible model for your account. All workers and the reporter share the selected provider. Account eligibility and usage limits are set by OpenAI. TeamAgents keeps local authorization in `~/.teamagents-auth/`, outside the workspace. Use `teamagents auth logout` to remove local authorization. If a project already has a running daemon, let active tasks settle and run `teamagents stop` before changing providers.
 
-**API key (OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages).** Set `TEAMAGENTS_PROVIDER` to `api` (Chat Completions), `responses` (OpenAI Responses API), or `anthropic` (Anthropic Messages API):
+**API key (DeepSeek Responses, OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages).** Set `TEAMAGENTS_PROVIDER` to `deepseek` (DeepSeek Responses API), `api` (Chat Completions), `responses` (OpenAI Responses API), or `anthropic` (Anthropic Messages API):
 
 ```sh
+# DeepSeek Responses (`deepseek`, auto-selected first when DEEPSEEK_API_KEY is set)
+# Default model: deepseek-flash; default base URL: https://api.deepseek.com/v1
+# Set DEEPSEEK_API_KEY in this environment using your secret manager.
+teamagents chat
+
 # OpenAI Chat Completions (`api`) or OpenAI Responses (`responses`)
 export TEAMAGENTS_PROVIDER=responses   # or: api
 export OPENAI_BASE_URL=https://api.openai.com/v1  # default
@@ -39,7 +44,7 @@ export TEAMAGENTS_MODEL='claude-sonnet-4-5'          # or ANTHROPIC_MODEL
 teamagents chat
 ```
 
-By default, the daemon selects subscription access when signed in, `anthropic` when only `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` are set, and `api` otherwise. All four providers expose native single-action tool schemas (with raw JSON text fallback) so models do not have to hand-format large escapes inside prose. Non-loopback API endpoints require HTTPS and a key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`), while loopback endpoints may use HTTP without a key. For `anthropic`, reasoning efforts map to Anthropic `thinking` budgets (and `none` disables thinking). Model requests use a 600-second read timeout (30-second connect, 60-second write), follow up to 5 redirects, coordinate rate-limit waits across workers, and retry transient network/408/429/5xx/529 failures up to 5 attempts total; quota exhaustion triggers a 30-second circuit-breaker pause so queued branches settle cleanly until resumed with `continue`; HTTP 413 / context-overflow responses and oversized worker histories trigger automatic history compaction.
+By default (when `TEAMAGENTS_PROVIDER` is unset), the daemon selects `deepseek` whenever `DEEPSEEK_API_KEY` is set (defaulting to `deepseek-flash` over `/v1/responses`), else ChatGPT subscription access when signed in, else `anthropic` when only `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` are set, and `api` otherwise. All five providers share a unified static tool schema and identity-last prompt layout, fork parent conversation history by default across `handoff` (`inherit_context: true`, opt-out via `false`), replay native reasoning and cache hints (`prompt_cache_key`, Anthropic `cache_control`), and report per-node and root cache-hit telemetry (`usage`). Non-loopback API endpoints require HTTPS and a key (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`), while loopback endpoints may use HTTP without a key. For `anthropic`, reasoning efforts map to Anthropic `thinking` budgets (and `none` disables thinking). Model requests use a 600-second read timeout (30-second connect, 60-second write), follow up to 5 redirects, coordinate rate-limit waits across workers, and retry transient network/408/429/5xx/529 failures up to 5 attempts total; quota exhaustion triggers a 30-second circuit-breaker pause so queued branches settle cleanly until resumed with `continue`; HTTP 413 / context-overflow responses and worker histories reaching 90% of the model context window (`TEAMAGENTS_CONTEXT_WINDOW` override available) trigger automatic history compaction.
 
 ### Switch models and reasoning effort in chat
 
@@ -121,8 +126,8 @@ Shell commands accept an optional model-specified `timeout_ms` (`100..=600_000`,
 | Handoff / check / format retries | 64 / 10 / 5 | Max handoff children / max `--check` attempts / consecutive worker protocol retries (resets on accepted action) |
 | File read (`read_file`) & edit (`edit_file`) | 8 MiB (paginated read) | `edit_file` limit; `read_file` page size with optional `offset`/`limit` |
 | Shell timeout & output / IPC frame | 60s (max 600s) / 128 KiB / 8 MiB | Configurable `timeout_ms` / middle-truncated per-stream cap / IPC frame cap |
-| Model HTTP / payload / SSE stream | 600s / 2 MiB (12 MiB reporter) / 32 MiB | HTTP read timeout / request, response & action text / ChatGPT SSE stream limit |
-| Auto-compaction & whiteboard digest | 384 KiB (>=6 msgs) / 4 KiB | Soft auto-compaction trigger (plus HTTP 413/overflow) / transient board digest |
+| Model HTTP / payload / SSE stream | 600s / 8 MiB req, 2 MiB resp (12 MiB reporter) / 32 MiB | HTTP read timeout / worker request & response or action text / SSE stream limit |
+| Auto-compaction & whiteboard digest | 90% context window (>=6 msgs) / 4 KiB | Soft auto-compaction trigger (`TEAMAGENTS_CONTEXT_WINDOW` / 8 MiB ceiling, plus HTTP 413/overflow) / delta-only board digest |
 | Summarizer input / TUI events | 2 MiB / 8 MiB / 1000 | Leaf outputs limit / intent & clarifications limit / retained TUI events |
 
 One daemon writes each session's SQLite database with WAL and `synchronous=FULL`. If a started tool lacks a durable result, its outcome is unknown. Inspect the workspace and any external effects before starting new work. The daemon never replays an unknown operation. Cancellation cannot undo effects or prove that a command stopped. Call counts and concurrency do not bound token charges.

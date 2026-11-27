@@ -1,13 +1,20 @@
 //! OpenAI Responses API transport (`TEAMAGENTS_PROVIDER=responses`) and shared strict SSE/JSON decoder.
 use super::{
-    body, checked_post_request, decode_action, decode_tool_call_str, is_context_overflow_payload,
-    is_quota_exceeded_payload, is_retryable_status, note_rate_limit, retry_delay, send_with_redirects, wait_rate_limit,
-    AuthHeader, ModelError, ModelSettings, Provider, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT, STREAM_LIMIT, TIMEOUT,
+    body_with_cache, checked_post_request, checked_request, decode_action, decode_tool_call_str,
+    is_context_overflow_payload, is_local_host, is_quota_exceeded_payload, is_retryable_status, note_rate_limit,
+    retry_delay, send_with_redirects, wait_rate_limit, AuthHeader, ModelError, ModelOutput, ModelSettings, Provider,
+    UsageStats, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT, STREAM_LIMIT, TIMEOUT,
 };
 use crate::protocol::TurnKind;
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::HashSet, io::Read, thread, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Read,
+    sync::{Mutex, OnceLock},
+    thread,
+    time::Duration,
+};
 
 const INVALID: &str = "invalid or ambiguous Responses event stream; no action accepted";
 const TEXT_ONLY: &str = "Responses must return a single final assistant action tool call or JSON text without refusals";
@@ -31,7 +38,6 @@ pub(super) struct Item {
     pub phase: Option<String>,
     pub name: Option<String>,
     pub arguments: Option<String>,
-    #[allow(dead_code)]
     pub call_id: Option<String>,
     #[serde(default)]
     pub content: Vec<Part>,
@@ -188,8 +194,9 @@ pub(super) enum StreamDecodeErr {
     ProviderEvent { code: Option<String>, raw_json: String },
 }
 
-fn events(stream: &str, invalid_msg: &str) -> std::result::Result<Vec<Event>, StreamDecodeErr> {
+fn events(stream: &str, invalid_msg: &str) -> std::result::Result<(Vec<Event>, Option<Value>), StreamDecodeErr> {
     let mut events = Vec::new();
+    let mut raw_completed: Option<Value> = None;
     let mut data = String::new();
     let mut name = None;
     let mut done = false;
@@ -229,6 +236,12 @@ fn events(stream: &str, invalid_msg: &str) -> std::result::Result<Vec<Event>, St
                                 "response incomplete; no action accepted".into(),
                             )));
                         }
+                        "response.completed" => {
+                            raw_completed = serde_json::from_str::<Value>(&data)
+                                .ok()
+                                .and_then(|mut v| v.get_mut("response").map(Value::take));
+                            events.push(event);
+                        }
                         _ => events.push(event),
                     }
                 }
@@ -252,7 +265,48 @@ fn events(stream: &str, invalid_msg: &str) -> std::result::Result<Vec<Event>, St
     if !data.is_empty() || name.is_some() {
         return Err(inv());
     }
-    Ok(events)
+    Ok((events, raw_completed))
+}
+
+fn extract_reasoning_items(raw_response: &Value) -> Vec<Value> {
+    raw_response
+        .get("output")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter().filter(|it| it.get("type").and_then(Value::as_str) == Some("reasoning")).cloned().collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_responses_usage(raw_response: &Value) -> Option<UsageStats> {
+    let u = raw_response.get("usage")?.as_object()?;
+    let input_tokens = u.get("input_tokens").and_then(Value::as_u64)?;
+    let cached_tokens =
+        u.get("input_tokens_details").and_then(|d| d.get("cached_tokens")).and_then(Value::as_u64).unwrap_or(0);
+    let output_tokens = u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+    Some(UsageStats { input_tokens, cached_tokens, output_tokens })
+}
+
+fn build_meta(
+    reasoning: Vec<Value>,
+    fc_id: Option<&str>,
+    call_id: Option<&str>,
+    raw_arguments: Option<&str>,
+) -> Option<Value> {
+    let mut map = serde_json::Map::new();
+    if !reasoning.is_empty() {
+        map.insert("reasoning".into(), Value::Array(reasoning));
+    }
+    if let Some(id) = fc_id.filter(|s| !s.is_empty()) {
+        map.insert("fc_id".into(), Value::String(id.to_owned()));
+    }
+    if let Some(cid) = call_id.filter(|s| !s.is_empty()) {
+        map.insert("call_id".into(), Value::String(cid.to_owned()));
+    }
+    if let Some(args) = raw_arguments {
+        map.insert("raw_arguments".into(), Value::String(args.to_owned()));
+    }
+    (!map.is_empty()).then_some(Value::Object(map))
 }
 
 fn concat_texts(parts: &[&str]) -> std::result::Result<String, ModelError> {
@@ -272,11 +326,11 @@ pub(super) fn decode_sse(
     kind: TurnKind,
     text_only_msg: &str,
     invalid_msg: &str,
-) -> std::result::Result<Value, StreamDecodeErr> {
+) -> std::result::Result<ModelOutput, StreamDecodeErr> {
     let inv = || StreamDecodeErr::Model(ModelError::Fatal(invalid_msg.into()));
     let txt_err = || StreamDecodeErr::Model(ModelError::InvalidAction(text_only_msg.into()));
 
-    let mut events = events(stream, invalid_msg)?;
+    let (mut events, raw_completed) = events(stream, invalid_msg)?;
     let terminal = events.pop().filter(|e| e.kind == "response.completed").ok_or_else(|| {
         StreamDecodeErr::Model(ModelError::Fatal("stream ended without response.completed; no action accepted".into()))
     })?;
@@ -291,8 +345,21 @@ pub(super) fn decode_sse(
     })?;
 
     enum Reconcile<'a> {
-        Tool { name: &'a str, args: &'a str, remaining: &'a str, saw_delta: bool, idx: usize },
-        Msg { parts: Vec<&'a str>, remaining: Vec<&'a str>, saw_delta: Vec<bool>, idx: usize },
+        Tool {
+            fc_id: &'a str,
+            call_id: Option<&'a str>,
+            name: &'a str,
+            args: &'a str,
+            remaining: &'a str,
+            saw_delta: bool,
+            idx: usize,
+        },
+        Msg {
+            parts: Vec<&'a str>,
+            remaining: Vec<&'a str>,
+            saw_delta: Vec<bool>,
+            idx: usize,
+        },
     }
     let mut rec = match selected {
         SelectedAction::ToolCall(idx) => {
@@ -304,7 +371,15 @@ pub(super) fn decode_sse(
                     "response exceeds the size limit; no action accepted".into(),
                 )));
             }
-            Reconcile::Tool { name, args, remaining: args, saw_delta: false, idx }
+            Reconcile::Tool {
+                fc_id: &item.id,
+                call_id: item.call_id.as_deref(),
+                name,
+                args,
+                remaining: args,
+                saw_delta: false,
+                idx,
+            }
         }
         SelectedAction::FinalMessage(idx) => {
             let parts = completed.output[idx].output_texts().map_err(|_| txt_err())?;
@@ -389,7 +464,7 @@ pub(super) fn decode_sse(
                     Reconcile::Msg { idx, parts, .. } if index == *idx => {
                         if added {
                             if !got.is_final_message()
-                                || (got.phase.is_some() && got.phase != item.phase)
+                                || (got.phase.is_some() && item.phase.is_some() && got.phase != item.phase)
                                 || !matches!(got.status.as_deref(), None | Some("in_progress"))
                                 || !got.content.is_empty()
                             {
@@ -403,7 +478,7 @@ pub(super) fn decode_sse(
                         if added {
                             if got.kind != "message"
                                 || got.role.as_deref() != Some("assistant")
-                                || (got.phase.is_some() && got.phase != item.phase)
+                                || !matches!(got.phase.as_deref(), None | Some("commentary" | "final_answer"))
                                 || !matches!(got.status.as_deref(), None | Some("in_progress"))
                                 || !got.content.is_empty()
                             {
@@ -428,12 +503,22 @@ pub(super) fn decode_sse(
                     (3, usize::MAX, 6)
                 }
             }
+            "response.content_part.added" if item.kind == "reasoning" && event.item_id.is_some() => {
+                (2, event.content_index.unwrap_or(0), 2)
+            }
+            "response.reasoning_text.delta" if item.kind == "reasoning" && event.item_id.is_some() => {
+                (2, event.content_index.unwrap_or(0), 3)
+            }
+            "response.reasoning_text.done" if item.kind == "reasoning" && event.item_id.is_some() => {
+                (2, event.content_index.unwrap_or(0), 4)
+            }
+            "response.content_part.done" if item.kind == "reasoning" && event.item_id.is_some() => {
+                (2, event.content_index.unwrap_or(0), 5)
+            }
             "response.reasoning_summary_part.added"
             | "response.reasoning_summary_part.done"
             | "response.reasoning_summary_text.delta"
             | "response.reasoning_summary_text.done"
-            | "response.reasoning_text.delta"
-            | "response.reasoning_text.done"
             | "response.reasoning_summary.delta"
                 if item.kind == "reasoning" && event.item_id.is_some() =>
             {
@@ -528,12 +613,16 @@ pub(super) fn decode_sse(
         }
         position = Some(next);
     }
+    let reasoning = raw_completed.as_ref().map(extract_reasoning_items).unwrap_or_default();
+    let usage = raw_completed.as_ref().and_then(parse_responses_usage);
     match rec {
-        Reconcile::Tool { name, args, remaining, saw_delta, .. } => {
+        Reconcile::Tool { fc_id, call_id, name, args, remaining, saw_delta, .. } => {
             if saw_delta && !remaining.is_empty() {
                 return Err(inv());
             }
-            decode_tool_call_str(name, args, kind).map_err(StreamDecodeErr::Model)
+            let action = decode_tool_call_str(name, args, kind).map_err(StreamDecodeErr::Model)?;
+            let meta = build_meta(reasoning, Some(fc_id), call_id, Some(args));
+            Ok(ModelOutput { action, meta, usage })
         }
         Reconcile::Msg { parts, remaining, saw_delta, .. } => {
             for (saw, rem) in saw_delta.into_iter().zip(remaining) {
@@ -542,12 +631,14 @@ pub(super) fn decode_sse(
                 }
             }
             let combined = concat_texts(&parts).map_err(StreamDecodeErr::Model)?;
-            decode_action(&combined, kind).map_err(StreamDecodeErr::Model)
+            let action = decode_action(&combined, kind).map_err(StreamDecodeErr::Model)?;
+            let meta = build_meta(reasoning, None, None, None);
+            Ok(ModelOutput { action, meta, usage })
         }
     }
 }
 
-fn redacted_api_error(status: Option<u16>, code: Option<&str>, kind: TurnKind) -> ModelError {
+fn redacted_api_error(status: Option<u16>, code: Option<&str>, kind: TurnKind, key_env: &str) -> ModelError {
     if kind != TurnKind::Reporter && code == Some("context_length_exceeded") {
         return ModelError::NeedsCompaction("Responses context overflow".into());
     }
@@ -559,7 +650,10 @@ fn redacted_api_error(status: Option<u16>, code: Option<&str>, kind: TurnKind) -
     let detail = match code {
         Some("unsupported_value" | "invalid_request_error") => "request rejected (check model ID and reasoning effort)",
         _ => match status {
-            Some(401) => "authentication failed (check OPENAI_API_KEY)",
+            Some(401) => match key_env {
+                "DEEPSEEK_API_KEY" => "authentication failed (check DEEPSEEK_API_KEY)",
+                _ => "authentication failed (check OPENAI_API_KEY)",
+            },
             Some(403) => "access forbidden for this model or endpoint",
             Some(402) => "quota or billing limit exceeded; check provider billing and usage",
             Some(429) => "rate limit exceeded; retry later",
@@ -574,7 +668,7 @@ fn redacted_api_error(status: Option<u16>, code: Option<&str>, kind: TurnKind) -
     }
 }
 
-pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result::Result<Value, ModelError> {
+pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result::Result<ModelOutput, ModelError> {
     let raw: Value = serde_json::from_slice(bytes).map_err(|_| ModelError::Fatal(INVALID.into()))?;
     if let Some(error) = raw.get("error").filter(|e| !e.is_null()) {
         let code = error.get("code").and_then(Value::as_str);
@@ -587,8 +681,10 @@ pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result:
                 "Responses quota exceeded; pause requests and check provider billing and usage".into(),
             ));
         }
-        return Err(redacted_api_error(Some(200), code, kind));
+        return Err(redacted_api_error(Some(200), code, kind, "OPENAI_API_KEY"));
     }
+    let reasoning = extract_reasoning_items(&raw);
+    let usage = parse_responses_usage(&raw);
     let response: Response = serde_json::from_value(raw).map_err(|_| ModelError::Fatal(INVALID.into()))?;
     match select_action(&response).map_err(|e| match e {
         FinalActionErr::Invalid => ModelError::Fatal(INVALID.into()),
@@ -599,12 +695,16 @@ pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result:
             let item = &response.output[idx];
             let name = item.name.as_deref().ok_or_else(|| ModelError::InvalidAction(TEXT_ONLY.into()))?;
             let args = item.arguments.as_deref().ok_or_else(|| ModelError::InvalidAction(TEXT_ONLY.into()))?;
-            decode_tool_call_str(name, args, kind)
+            let action = decode_tool_call_str(name, args, kind)?;
+            let meta = build_meta(reasoning, Some(&item.id), item.call_id.as_deref(), Some(args));
+            Ok(ModelOutput { action, meta, usage })
         }
         SelectedAction::FinalMessage(idx) => {
             let parts = response.output[idx].output_texts().map_err(|_| ModelError::InvalidAction(TEXT_ONLY.into()))?;
             let text = concat_texts(&parts)?;
-            decode_action(&text, kind)
+            let action = decode_action(&text, kind)?;
+            let meta = build_meta(reasoning, None, None, None);
+            Ok(ModelOutput { action, meta, usage })
         }
     }
 }
@@ -630,7 +730,8 @@ fn handle_outcome(
     kind: TurnKind,
     attempt: usize,
     retry_base: Duration,
-) -> std::result::Result<Value, RetryErr> {
+    key_env: &str,
+) -> std::result::Result<ModelOutput, RetryErr> {
     let resp = match outcome {
         Ok(r) if (200..300).contains(&r.status()) => r,
         Ok(r) | Err(ureq::Error::Status(_, r)) => {
@@ -663,7 +764,7 @@ fn handle_outcome(
                 note_rate_limit(delay, retry_base);
                 return Err(RetryErr::Retryable(delay));
             }
-            return Err(RetryErr::Done(redacted_api_error(Some(status), code, kind)));
+            return Err(RetryErr::Done(redacted_api_error(Some(status), code, kind, key_env)));
         }
         Err(ureq::Error::Transport(_)) => {
             if attempt < HTTP_MAX_ATTEMPTS {
@@ -716,7 +817,7 @@ fn handle_outcome(
                         note_rate_limit(delay, retry_base);
                         return RetryErr::Retryable(delay);
                     }
-                    RetryErr::Done(redacted_api_error(None, code.as_deref(), kind))
+                    RetryErr::Done(redacted_api_error(None, code.as_deref(), kind, key_env))
                 }
             });
         }
@@ -727,14 +828,92 @@ fn handle_outcome(
     Err(RetryErr::Done(ModelError::Fatal("Responses HTTP 200: expected event stream or JSON response".into())))
 }
 
-pub(super) fn transact_with_retry(
+#[derive(Default)]
+struct WindowCache {
+    probed_bases: HashSet<String>,
+    windows: HashMap<String, u64>,
+}
+
+static DISCOVERED_WINDOWS: OnceLock<Mutex<WindowCache>> = OnceLock::new();
+
+pub(super) fn cached_context_window(model: &str) -> Option<u64> {
+    let cache = DISCOVERED_WINDOWS.get()?;
+    let guard = cache.lock().ok()?;
+    guard.windows.get(&model.to_ascii_lowercase()).copied()
+}
+
+pub(super) fn discover_context_windows(base: &str, key: Option<&str>, url_env: &str, key_env: &str) {
+    let Ok(parsed) = url::Url::parse(base) else {
+        return;
+    };
+    if parsed.host_str().is_some_and(is_local_host) {
+        return;
+    }
+    let cache = DISCOVERED_WINDOWS.get_or_init(Mutex::default);
+    let base_key = base.trim_end_matches('/').to_owned();
+    if let Ok(mut guard) = cache.lock() {
+        if !guard.probed_bases.insert(base_key.clone()) {
+            return;
+        }
+    } else {
+        return;
+    }
+    let models_url = format!("{base_key}/models");
+    let mut first_hop = true;
+    let Ok(Ok(resp)) = send_with_redirects(&models_url, None, |url, send_auth| {
+        let allow_query = !first_hop;
+        first_hop = false;
+        Ok(checked_request(
+            "GET",
+            url,
+            key,
+            send_auth,
+            Duration::from_secs(10),
+            allow_query,
+            url_env,
+            key_env,
+            AuthHeader::Bearer,
+        )?
+        .set("Accept", "application/json"))
+    }) else {
+        return;
+    };
+    if !(200..300).contains(&resp.status()) {
+        return;
+    }
+    let mut buf = Vec::new();
+    if resp.into_reader().take((LIMIT + 1) as u64).read_to_end(&mut buf).is_err() || buf.len() > LIMIT {
+        return;
+    }
+    let Ok(catalog) = serde_json::from_slice::<Value>(&buf) else {
+        return;
+    };
+    let Some(entries) = catalog.get("data").and_then(Value::as_array) else {
+        return;
+    };
+    if let Ok(mut guard) = cache.lock() {
+        for entry in entries {
+            if let (Some(id), Some(ctx)) =
+                (entry.get("id").and_then(Value::as_str), entry.get("context_window").and_then(Value::as_u64))
+            {
+                if ctx >= 1024 {
+                    guard.windows.insert(id.to_ascii_lowercase(), ctx);
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn transact_with_retry_for(
     base: &str,
     key: Option<&str>,
     timeout: Duration,
     bytes: &[u8],
     kind: TurnKind,
     retry_base: Duration,
-) -> std::result::Result<Value, ModelError> {
+    env_names: (&str, &str),
+) -> std::result::Result<ModelOutput, ModelError> {
+    let (url_env, key_env) = env_names;
     let initial = format!("{}/responses", base.trim_end_matches('/'));
     for attempt in 1..=HTTP_MAX_ATTEMPTS {
         wait_rate_limit(retry_base);
@@ -742,21 +921,12 @@ pub(super) fn transact_with_retry(
         let outcome = send_with_redirects(&initial, Some(bytes), |url, send_auth| {
             let allow_query = !first_hop;
             first_hop = false;
-            Ok(checked_post_request(
-                url,
-                key,
-                send_auth,
-                timeout,
-                allow_query,
-                "OPENAI_BASE_URL",
-                "OPENAI_API_KEY",
-                AuthHeader::Bearer,
-            )?
-            .set("Accept", "text/event-stream, application/json"))
+            Ok(checked_post_request(url, key, send_auth, timeout, allow_query, url_env, key_env, AuthHeader::Bearer)?
+                .set("Accept", "text/event-stream, application/json"))
         })
         .map_err(ModelError::Fatal)?;
-        match handle_outcome(outcome, kind, attempt, retry_base) {
-            Ok(action) => return Ok(action),
+        match handle_outcome(outcome, kind, attempt, retry_base, key_env) {
+            Ok(out) => return Ok(out),
             Err(RetryErr::Retryable(delay)) => thread::sleep(delay),
             Err(RetryErr::Done(err)) => return Err(err),
         }
@@ -764,22 +934,39 @@ pub(super) fn transact_with_retry(
     unreachable!("loop always returns within HTTP_MAX_ATTEMPTS")
 }
 
-pub(super) fn complete(
+#[cfg(test)]
+pub(super) fn transact_with_retry(
+    base: &str,
+    key: Option<&str>,
+    timeout: Duration,
+    bytes: &[u8],
+    kind: TurnKind,
+    retry_base: Duration,
+) -> std::result::Result<ModelOutput, ModelError> {
+    transact_with_retry_for(base, key, timeout, bytes, kind, retry_base, ("OPENAI_BASE_URL", "OPENAI_API_KEY"))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn complete_for_provider(
     base: &str,
     key: Option<&str>,
     settings: &ModelSettings,
     agent: &str,
     task: &str,
+    cache_key: Option<&str>,
     history: &[Value],
     kind: TurnKind,
-) -> std::result::Result<Value, ModelError> {
+    provider: Provider,
+    url_env: &str,
+    key_env: &str,
+) -> std::result::Result<ModelOutput, ModelError> {
     let model = settings
         .model
         .as_deref()
         .ok_or_else(|| ModelError::Fatal("set TEAMAGENTS_MODEL or select an API model with /model MODEL".into()))?;
-    let bytes = body(model, settings.effort.as_deref(), agent, task, history, kind, Provider::Responses)
+    let bytes = body_with_cache(model, settings.effort.as_deref(), agent, task, cache_key, history, kind, provider)
         .map_err(ModelError::Fatal)?;
-    transact_with_retry(base, key, TIMEOUT, &bytes, kind, HTTP_RETRY_BASE)
+    transact_with_retry_for(base, key, TIMEOUT, &bytes, kind, HTTP_RETRY_BASE, (url_env, key_env))
 }
 
 #[cfg(test)]
@@ -834,7 +1021,7 @@ mod tests {
             json!({"type":"response.completed","response":{"id":"r1","status":"completed","output":[msg("m1", Some("commentary"), c_text), msg("m2", Some("final_answer"), ACTION)]}}),
         ]);
         let parsed = decode_sse(&stream, TurnKind::Root, TEXT_ONLY, INVALID).ok().unwrap();
-        assert_eq!(parsed, json!({"op":"finish","text":"ok"}));
+        assert_eq!(parsed.action, json!({"op":"finish","text":"ok"}));
 
         let commentary_only = frames(&[
             json!({"type":"response.completed","response":{"id":"r2","status":"completed","output":[msg("m1", Some("commentary"), "Thinking...")]}}),
@@ -861,7 +1048,7 @@ mod tests {
             ]}}),
         ]);
         assert_eq!(
-            decode_sse(&fc_stream, TurnKind::Node, TEXT_ONLY, INVALID).ok().unwrap(),
+            decode_sse(&fc_stream, TurnKind::Node, TEXT_ONLY, INVALID).ok().unwrap().action,
             json!({"op":"read_file","path":"README.md","offset":1,"limit":50})
         );
 
@@ -946,7 +1133,76 @@ mod tests {
             Duration::from_millis(1),
         )
         .unwrap();
-        assert_eq!(got, json!({"op":"members"}));
+        assert_eq!(got.action, json!({"op":"members"}));
+
+        let ds_stream = frames(&[
+            json!({"type":"response.created","response":{"id":"r_ds","status":"in_progress","output":[]}}),
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"in_progress","content":[],"summary":[]}}),
+            json!({"type":"response.content_part.added","output_index":0,"item_id":"rs_1","content_index":0,"part":{"type":"reasoning_text","text":""}}),
+            json!({"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_1","content_index":0,"delta":"thinking "}),
+            json!({"type":"response.reasoning_text.done","output_index":0,"item_id":"rs_1","content_index":0,"text":"thinking deeply"}),
+            json!({"type":"response.content_part.done","output_index":0,"item_id":"rs_1","content_index":0,"part":{"type":"reasoning_text","text":"thinking deeply"}}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","status":"completed","content":[{"type":"reasoning_text","text":"thinking deeply"}],"summary":[],"encrypted_content":"enc_ds"}}),
+            json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_ds","call_id":"call_ds","name":"members","arguments":"","status":"in_progress"}}),
+            json!({"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_ds","arguments":"{}"}),
+            json!({"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_ds","call_id":"call_ds","name":"members","arguments":"{}","status":"completed"}}),
+            json!({"type":"response.completed","response":{
+                "id":"r_ds",
+                "status":"completed",
+                "usage":{"input_tokens":512,"input_tokens_details":{"cached_tokens":384},"output_tokens":24},
+                "output":[
+                    {"type":"reasoning","id":"rs_1","status":"completed","content":[{"type":"reasoning_text","text":"thinking deeply"}],"summary":[],"encrypted_content":"enc_ds"},
+                    {"type":"function_call","id":"fc_ds","call_id":"call_ds","name":"members","arguments":"{}","status":"completed"}
+                ]
+            }}),
+        ]);
+        let ds_out = decode_sse(&ds_stream, TurnKind::Node, TEXT_ONLY, INVALID).ok().unwrap();
+        assert_eq!(ds_out.action, json!({"op":"members"}));
+        assert_eq!(ds_out.usage, Some(UsageStats { input_tokens: 512, cached_tokens: 384, output_tokens: 24 }));
+        let meta = ds_out.meta.unwrap();
+        assert_eq!(meta["fc_id"], "fc_ds");
+        assert_eq!(meta["call_id"], "call_ds");
+        assert_eq!(meta["raw_arguments"], "{}");
+        assert_eq!(meta["reasoning"][0]["content"][0]["text"], "thinking deeply");
+
+        // DeepSeek emits `response.in_progress` and transitions narrating messages from `phase: final_answer`
+        // on `output_item.added` to `phase: commentary` on `output_item.done` before a `function_call`.
+        let ds_narrated = frames(&[
+            json!({"type":"response.created","response":{"id":"r_ds2","status":"in_progress","output":[]}}),
+            json!({"type":"response.in_progress","response":{"id":"r_ds2","status":"in_progress","output":[]}}),
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_2","status":"in_progress","content":[],"summary":[],"encrypted_content":"r_ds2-0"}}),
+            json!({"type":"response.content_part.added","output_index":0,"item_id":"rs_2","content_index":0,"part":{"type":"reasoning_text","text":""}}),
+            json!({"type":"response.reasoning_text.done","output_index":0,"item_id":"rs_2","content_index":0,"text":"plan"}),
+            json!({"type":"response.content_part.done","output_index":0,"item_id":"rs_2","content_index":0,"part":{"type":"reasoning_text","text":"plan"}}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_2","status":"completed","content":[{"type":"reasoning_text","text":"plan"}],"summary":[],"encrypted_content":"r_ds2-0"}}),
+            json!({"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"m_ds2","role":"assistant","phase":"final_answer","status":"in_progress","content":[]}}),
+            json!({"type":"response.content_part.added","output_index":1,"item_id":"m_ds2","content_index":0,"part":{"type":"output_text","text":""}}),
+            json!({"type":"response.output_text.delta","output_index":1,"item_id":"m_ds2","content_index":0,"delta":"Inspecting "}),
+            json!({"type":"response.output_text.delta","output_index":1,"item_id":"m_ds2","content_index":0,"delta":"file."}),
+            json!({"type":"response.output_text.done","output_index":1,"item_id":"m_ds2","content_index":0,"text":"Inspecting file."}),
+            json!({"type":"response.content_part.done","output_index":1,"item_id":"m_ds2","content_index":0,"part":{"type":"output_text","text":"Inspecting file."}}),
+            json!({"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"m_ds2","role":"assistant","phase":"commentary","status":"completed","content":[{"type":"output_text","text":"Inspecting file."}]}}),
+            json!({"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_ds2","call_id":"call_ds2","name":"members","arguments":"","status":"in_progress"}}),
+            json!({"type":"response.function_call_arguments.delta","output_index":2,"item_id":"fc_ds2","delta":"{}"}),
+            json!({"type":"response.function_call_arguments.done","output_index":2,"item_id":"fc_ds2","arguments":"{}"}),
+            json!({"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_ds2","call_id":"call_ds2","name":"members","arguments":"{}","status":"completed"}}),
+            json!({"type":"response.completed","response":{
+                "id":"r_ds2",
+                "status":"completed",
+                "usage":{"input_tokens":600,"input_tokens_details":{"cached_tokens":448},"output_tokens":30},
+                "output":[
+                    {"type":"reasoning","id":"rs_2","status":"completed","content":[{"type":"reasoning_text","text":"plan"}],"summary":[],"encrypted_content":"r_ds2-0"},
+                    {"type":"message","id":"m_ds2","role":"assistant","phase":"commentary","status":"completed","content":[{"type":"output_text","text":"Inspecting file."}]},
+                    {"type":"function_call","id":"fc_ds2","call_id":"call_ds2","name":"members","arguments":"{}","status":"completed"}
+                ]
+            }}),
+        ]);
+        let ds_narrated_out = decode_sse(&ds_narrated, TurnKind::Node, TEXT_ONLY, INVALID).ok().unwrap();
+        assert_eq!(ds_narrated_out.action, json!({"op":"members"}));
+        assert_eq!(
+            ds_narrated_out.usage,
+            Some(UsageStats { input_tokens: 600, cached_tokens: 448, output_tokens: 30 })
+        );
         let err_q = transact_with_retry(
             &base,
             Some("k"),

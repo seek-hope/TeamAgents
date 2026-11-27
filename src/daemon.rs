@@ -195,7 +195,7 @@ impl Drop for SocketGuard {
 }
 
 enum Completion {
-    Model(String, std::result::Result<Value, model::ModelError>),
+    Model(String, usize, std::result::Result<model::ModelOutput, model::ModelError>),
     Tool(String, Result<String>),
     Compacted { task: String, head_keep: usize, tail_keep: usize, summary: String },
 }
@@ -274,18 +274,32 @@ fn launch(
         } else if let Some(turn) = store.claim()? {
             if let Some((until, reason)) = quota_pause.as_ref() {
                 if Instant::now() < *until {
-                    notifier.send(Completion::Model(turn.task, Err(model::ModelError::QuotaExceeded(reason.clone()))));
+                    notifier.send(Completion::Model(
+                        turn.task,
+                        0,
+                        Err(model::ModelError::QuotaExceeded(reason.clone())),
+                    ));
                     return Ok(true);
                 }
                 *quota_pause = None;
             }
             let notifier = notifier.clone();
             thread::spawn(move || {
+                let history_bytes = model::history_bytes(&turn.messages);
                 let result = std::panic::catch_unwind(|| {
-                    model::complete(&turn.agent, &turn.task, &turn.messages, turn.kind, turn.settings.as_ref())
+                    model::complete(
+                        &turn.agent,
+                        &turn.task,
+                        &turn.root,
+                        &turn.messages,
+                        turn.kind,
+                        turn.settings.as_ref(),
+                        turn.last_input_tokens,
+                        turn.last_history_bytes,
+                    )
                 })
                 .unwrap_or_else(|_| Err(model::ModelError::Fatal("model worker panicked".into())));
-                notifier.send(Completion::Model(turn.task, result));
+                notifier.send(Completion::Model(turn.task, history_bytes, result));
             });
             return Ok(true);
         }
@@ -301,7 +315,7 @@ fn settle(
     quota_pause: &mut Option<(Instant, String)>,
 ) -> Result<()> {
     let id = match &done {
-        Completion::Model(id, _) | Completion::Tool(id, _) => id.as_str(),
+        Completion::Model(id, _, _) | Completion::Tool(id, _) => id.as_str(),
         Completion::Compacted { task, .. } => task.as_str(),
     };
     // A user cancellation can win while I/O is in flight. A late model response grants no authority.
@@ -310,13 +324,13 @@ fn settle(
     }
     match done {
         Completion::Tool(id, result) => store.tool_result(&id, result.as_deref().map_err(String::as_str)),
-        Completion::Model(id, Err(model::ModelError::Fatal(e))) => store.fail(&id, &e),
-        Completion::Model(id, Err(model::ModelError::QuotaExceeded(e))) => {
+        Completion::Model(id, _, Err(model::ModelError::Fatal(e))) => store.fail(&id, &e),
+        Completion::Model(id, _, Err(model::ModelError::QuotaExceeded(e))) => {
             *quota_pause = Some((Instant::now() + QUOTA_PAUSE, e.clone()));
             store.fail_quota(&id, &e)
         }
-        Completion::Model(id, Err(model::ModelError::InvalidAction(e))) => store.reject_action(&id, &e),
-        Completion::Model(id, Err(model::ModelError::NeedsCompaction(reason))) => {
+        Completion::Model(id, _, Err(model::ModelError::InvalidAction(e))) => store.reject_action(&id, &e),
+        Completion::Model(id, _, Err(model::ModelError::NeedsCompaction(reason))) => {
             if let Some(job) = store.prepare_compaction(&id)? {
                 let notifier = notifier.clone();
                 *active += 1;
@@ -340,13 +354,18 @@ fn settle(
         Completion::Compacted { task, head_keep, tail_keep, summary } => {
             store.apply_compaction(&task, head_keep, tail_keep, &summary)
         }
-        Completion::Model(id, Ok(action)) => {
-            let result = match action["op"].as_str() {
-                Some("read_file" | "edit_file" | "shell") => store.request_tool(&id, &action),
+        Completion::Model(id, history_bytes, Ok(output)) => {
+            if let Some(usage) = &output.usage {
+                store.record_usage(&id, usage, history_bytes)?;
+            }
+            let result = match output.action["op"].as_str() {
+                Some("read_file" | "edit_file" | "shell") => {
+                    store.request_tool_with_meta(&id, &output.action, output.meta.as_ref())
+                }
                 Some(
                     "ask" | "handoff" | "finish" | "members" | "spawn" | "delegate" | "send" | "wb_read" | "wb_write"
                     | "wb_wait",
-                ) => store.apply(&id, &action),
+                ) => store.apply_with_meta(&id, &output.action, output.meta.as_ref()),
                 _ => Err("unrecognized model action".into()),
             };
             if let Err(e) = result {

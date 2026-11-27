@@ -1,7 +1,11 @@
-use crate::{model::ModelSettings, protocol::TurnKind, Result};
+use crate::{
+    model::{ModelSettings, UsageStats},
+    protocol::TurnKind,
+    Result,
+};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
-use std::{path::Path, time::Duration};
+use std::{collections::HashSet, path::Path, time::Duration};
 use uuid::Uuid;
 
 mod tree;
@@ -104,11 +108,14 @@ pub struct Store {
 #[derive(Debug)]
 pub struct Turn {
     pub kind: TurnKind,
+    pub root: String,
     pub task: String,
     pub agent: String,
     pub messages: Vec<Value>,
     /// Pre-snapshot roots retain the provider's legacy environment-based selection.
     pub settings: Option<ModelSettings>,
+    pub last_input_tokens: u64,
+    pub last_history_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -195,6 +202,16 @@ const MIGRATE_V6: &str = "
 DROP INDEX IF EXISTS one_model_per_agent;
 ";
 
+const MIGRATE_V8: &str = "
+ALTER TABLE node_messages ADD COLUMN meta TEXT;
+ALTER TABLE messages ADD COLUMN meta TEXT;
+ALTER TABLE tasks ADD COLUMN last_input_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN last_history_bytes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN total_input_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN total_cached_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0;
+";
+
 fn model_settings_row(row: &Row<'_>) -> rusqlite::Result<ModelSettings> {
     Ok(ModelSettings { model: row.get(0)?, effort: row.get(1)? })
 }
@@ -251,14 +268,45 @@ fn members(db: &Connection) -> Result<Value> {
     Ok(Value::Array(names.collect::<rusqlite::Result<_>>().db()?))
 }
 
+fn message_with_meta(db: &Connection, agent: &str, role: &str, content: &str, meta: Option<&Value>) -> Result<()> {
+    let meta_json = meta.map(Value::to_string);
+    db.execute(
+        "INSERT INTO messages(agent,role,content,meta) VALUES (?1,?2,?3,?4)",
+        params![agent, role, content, meta_json],
+    )
+    .db()?;
+    Ok(())
+}
+
 fn message(db: &Connection, agent: &str, role: &str, content: &str) -> Result<()> {
-    db.execute("INSERT INTO messages(agent,role,content) VALUES (?1,?2,?3)", params![agent, role, content]).db()?;
+    message_with_meta(db, agent, role, content, None)
+}
+
+fn node_message_with_meta(db: &Connection, task: &str, role: &str, content: &str, meta: Option<&Value>) -> Result<()> {
+    let meta_json = meta.map(Value::to_string);
+    db.execute(
+        "INSERT INTO node_messages(task,role,content,meta) VALUES (?1,?2,?3,?4)",
+        params![task, role, content, meta_json],
+    )
+    .db()?;
     Ok(())
 }
 
 fn node_message(db: &Connection, task: &str, role: &str, content: &str) -> Result<()> {
-    db.execute("INSERT INTO node_messages(task,role,content) VALUES (?1,?2,?3)", params![task, role, content]).db()?;
-    Ok(())
+    node_message_with_meta(db, task, role, content, None)
+}
+
+fn history_msg(r: &Row<'_>) -> rusqlite::Result<Value> {
+    let role: String = r.get(0)?;
+    let content: String = r.get(1)?;
+    let meta: Option<String> = r.get(2)?;
+    let mut msg = json!({"role": role, "content": content});
+    if let Some(raw) = meta {
+        if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+            msg["meta"] = v;
+        }
+    }
+    Ok(msg)
 }
 
 fn report(db: &Connection, task: &str, body: Value) -> Result<()> {
@@ -368,7 +416,7 @@ fn operation(db: &Connection, task: &str, action: &Value, state: &str, round: i6
 fn schema_version(db: &Connection) -> Result<i64> {
     let app: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0)).db()?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).db()?;
-    if app == APP_ID && matches!(version, 1..=7) {
+    if app == APP_ID && matches!(version, 1..=8) {
         return Ok(version);
     }
     let tables: i64 = db.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0)).db()?;
@@ -425,11 +473,19 @@ impl Store {
             tx.execute_batch(tree::MIGRATE_V7).db()?;
             tx.pragma_update(None, "user_version", 7).db()?;
         }
+        if version < 8 {
+            tx.execute_batch(MIGRATE_V8).db()?;
+            tx.pragma_update(None, "user_version", 8).db()?;
+        }
         tx.query_row("SELECT 1 FROM settings,agents WHERE singleton=1 AND name='default'", [], |_| Ok(())).db()?;
         // Reject missing schema in the same transaction as the migration.
         tx.prepare(&format!("{TASK_VIEW} LIMIT 0")).db()?;
-        tx.prepare("SELECT role,content FROM messages LIMIT 0").db()?;
-        tx.prepare("SELECT role,content FROM node_messages LIMIT 0").db()?;
+        tx.prepare("SELECT role,content,meta FROM messages LIMIT 0").db()?;
+        tx.prepare("SELECT role,content,meta FROM node_messages LIMIT 0").db()?;
+        tx.prepare(
+            "SELECT last_input_tokens,last_history_bytes,total_input_tokens,total_cached_tokens,total_output_tokens FROM tasks LIMIT 0",
+        )
+        .db()?;
         tx.prepare("SELECT provider,model,effort FROM model_overrides LIMIT 0").db()?;
         tx.prepare("SELECT root,model,effort FROM root_model_settings LIMIT 0").db()?;
         tx.prepare("SELECT root,round,subtree_root FROM tree_rounds LIMIT 0").db()?;
@@ -594,6 +650,25 @@ impl Store {
                 .db()?;
             if blocked {
                 return Err("selected continuation node cannot be expanded".into());
+            }
+            let tail_op: Option<(String, String)> = db
+                .query_row(
+                    "SELECT role,content FROM node_messages WHERE task=?1 ORDER BY rowid DESC LIMIT 1",
+                    [&node_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .db()?;
+            if let Some((role, content)) = tail_op {
+                if role == "assistant"
+                    && serde_json::from_str::<Value>(&content)
+                        .ok()
+                        .and_then(|v| v["op"].as_str().map(str::to_owned))
+                        .as_deref()
+                        == Some("finish")
+                {
+                    node_message(db, &node_id, "user", r#"{"finished":true}"#)?;
+                }
             }
             let next_round = round + 1;
             db.execute(
@@ -803,6 +878,39 @@ impl Store {
                 .db()?;
             task["subtree_receipts"] = Value::Array(receipts.collect::<rusqlite::Result<_>>().db()?);
         }
+        let is_tree = task["kind"] != "legacy";
+        let is_root = task["root"].as_str() == Some(id);
+        let (inp, cached, out, last_in): (u64, u64, u64, u64) = if is_tree && is_root {
+            let (inp, cached, out) = tx
+                .query_row(
+                    "SELECT COALESCE(SUM(total_input_tokens),0), COALESCE(SUM(total_cached_tokens),0), COALESCE(SUM(total_output_tokens),0)
+                     FROM tasks WHERE root=?1",
+                    [id],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+                )
+                .db()?;
+            let last_in: i64 =
+                tx.query_row("SELECT last_input_tokens FROM tasks WHERE id=?1", [id], |r| r.get(0)).db()?;
+            (inp.max(0) as u64, cached.max(0) as u64, out.max(0) as u64, last_in.max(0) as u64)
+        } else {
+            let (inp, cached, out, last_in) = tx
+                .query_row(
+                    "SELECT total_input_tokens, total_cached_tokens, total_output_tokens, last_input_tokens
+                     FROM tasks WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
+                )
+                .db()?;
+            (inp.max(0) as u64, cached.max(0) as u64, out.max(0) as u64, last_in.max(0) as u64)
+        };
+        let hit_rate = if inp > 0 { cached as f64 / inp as f64 } else { 0.0 };
+        task["usage"] = json!({
+            "input_tokens": inp,
+            "cached_tokens": cached,
+            "output_tokens": out,
+            "cache_hit_rate": hit_rate,
+            "last_input_tokens": last_in
+        });
         tx.commit().db()?;
         Ok(task)
     }
@@ -812,13 +920,31 @@ impl Store {
             if let Some(reporter) = tree::claim_report(db)? {
                 return Ok(Some(reporter));
             }
-            let next = db.query_row(
-                "SELECT id,root,agent,prompt,introduced,round,EXISTS(SELECT 1 FROM tree_runs WHERE tree_runs.root=tasks.root) FROM tasks
-                 WHERE status='queued' AND model_reserved=0 ORDER BY rowid LIMIT 1",
-                [], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
-                           r.get::<_,String>(3)?, r.get::<_,bool>(4)?, r.get::<_,i64>(5)?, r.get::<_,bool>(6)?)),
-            ).optional().db()?;
-            let Some((task, root, agent, prompt, introduced, round, is_tree)) = next else { return Ok(None); };
+            let next = db
+                .query_row(
+                    "SELECT id,root,agent,prompt,introduced,round,last_input_tokens,last_history_bytes,
+                     EXISTS(SELECT 1 FROM tree_runs WHERE tree_runs.root=tasks.root)
+                     FROM tasks WHERE status='queued' AND model_reserved=0 ORDER BY rowid LIMIT 1",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, bool>(4)?,
+                            r.get::<_, i64>(5)?,
+                            r.get::<_, i64>(6)?,
+                            r.get::<_, i64>(7)?,
+                            r.get::<_, bool>(8)?,
+                        ))
+                    },
+                )
+                .optional()
+                .db()?;
+            let Some((task, root, agent, prompt, introduced, round, last_in, last_bytes, is_tree)) = next else {
+                return Ok(None);
+            };
             let active_root = if is_tree {
                 let active_root: String = db
                     .query_row("SELECT COALESCE(active_root,root) FROM tree_runs WHERE root=?1", [&root], |r| r.get(0))
@@ -840,10 +966,31 @@ impl Store {
                 let context: Option<String> =
                     db.query_row("SELECT handoff_context FROM tasks WHERE id=?1", [&task], |r| r.get(0)).db()?;
                 if is_tree {
-                    if let Some(text) = context {
-                        node_message(db, &task, "user", &text)?;
+                    let has_prefix: bool = db
+                        .query_row("SELECT EXISTS(SELECT 1 FROM node_messages WHERE task=?1)", [&task], |r| r.get(0))
+                        .db()?;
+                    if has_prefix {
+                        let is_forked_child: bool = db
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent WHERE t.id=?1 AND t.round=p.round)",
+                                [&task],
+                                |r| r.get(0),
+                            )
+                            .db()?;
+                        let intro = if is_forked_child {
+                            format!(
+                                "Agent: {agent}\nTask: {task}\n\nYou are child stage @{agent} spawned by the handoff above. Do not repeat completed parent work; focus strictly on your assigned scope (ask is unavailable on child stages).\n\n{prompt}"
+                            )
+                        } else {
+                            format!("Agent: {agent}\nTask: {task}\n\n{prompt}")
+                        };
+                        node_message(db, &task, "user", &intro)?;
+                    } else {
+                        if let Some(text) = context {
+                            node_message(db, &task, "user", &text)?;
+                        }
+                        node_message(db, &task, "user", &format!("Agent: {agent}\nTask: {task}\n\n{prompt}"))?;
                     }
-                    node_message(db, &task, "user", &prompt)?;
                 } else {
                     if let Some(text) = context {
                         message(db, &agent, "user", &text)?;
@@ -852,16 +999,12 @@ impl Store {
                 }
             }
             let mut messages: Vec<Value> = if is_tree {
-                let mut q = db.prepare("SELECT role,content FROM node_messages WHERE task=?1 ORDER BY rowid").db()?;
-                let rows = q.query_map([&task], |r| {
-                    Ok(json!({"role":r.get::<_,String>(0)?, "content":r.get::<_,String>(1)?}))
-                }).db()?;
+                let mut q = db.prepare("SELECT role,content,meta FROM node_messages WHERE task=?1 ORDER BY rowid").db()?;
+                let rows = q.query_map([&task], history_msg).db()?;
                 rows.collect::<rusqlite::Result<_>>().db()?
             } else {
-                let mut q = db.prepare("SELECT role,content FROM messages WHERE agent=?1 ORDER BY rowid").db()?;
-                let rows = q.query_map([&agent], |r| {
-                    Ok(json!({"role":r.get::<_,String>(0)?, "content":r.get::<_,String>(1)?}))
-                }).db()?;
+                let mut q = db.prepare("SELECT role,content,meta FROM messages WHERE agent=?1 ORDER BY rowid").db()?;
+                let rows = q.query_map([&agent], history_msg).db()?;
                 rows.collect::<rusqlite::Result<_>>().db()?
             };
             if introduced || is_tree {
@@ -893,12 +1036,13 @@ impl Store {
                     let seen_seq: i64 = db
                         .query_row("SELECT wb_seen_seq FROM tasks WHERE id=?1", [&task], |r| r.get(0))
                         .db()?;
-                    if let Some(digest) = tree::whiteboard_digest(db, &root, seen_seq)? {
+                    if let Some((wb_seq, digest)) = tree::whiteboard_digest(db, &root, seen_seq)? {
                         parts.push(digest);
+                        db.execute("UPDATE tasks SET wb_seen_seq=?2 WHERE id=?1", params![task, wb_seq]).db()?;
                     }
                 }
                 if !parts.is_empty() {
-                    // Inject transient task focus, repetition nudge, or whiteboard digest without mutating persisted history.
+                    // Inject transient protocol retry hint, repetition nudge, or delta whiteboard digest without mutating persisted history.
                     messages.push(json!({"role":"user","content":parts.join("\n\n")}));
                 }
             }
@@ -910,20 +1054,64 @@ impl Store {
                 TurnKind::Node
             };
             let settings = root_model_settings(db, &root)?;
-            Ok(Some(Turn { kind, task, agent, messages, settings }))
+            Ok(Some(Turn {
+                kind,
+                root,
+                task,
+                agent,
+                messages,
+                settings,
+                last_input_tokens: last_in.max(0) as u64,
+                last_history_bytes: last_bytes.max(0) as usize,
+            }))
         })
     }
 
-    pub fn apply(&mut self, task: &str, action: &Value) -> Result<()> {
+    pub fn record_usage(&mut self, task: &str, usage: &UsageStats, history_bytes: usize) -> Result<()> {
         self.transaction(|db| {
             if let Some(root) = tree::report_root(db, task)? {
-                return tree::finish_report(db, &root, action);
+                db.execute(
+                    "UPDATE tasks SET total_input_tokens=total_input_tokens+?2,
+                     total_cached_tokens=total_cached_tokens+?3,
+                     total_output_tokens=total_output_tokens+?4 WHERE id=?1",
+                    params![root, usage.input_tokens as i64, usage.cached_tokens as i64, usage.output_tokens as i64],
+                )
+                .db()?;
+            } else {
+                db.execute(
+                    "UPDATE tasks SET last_input_tokens=?2, last_history_bytes=?3,
+                     total_input_tokens=total_input_tokens+?2,
+                     total_cached_tokens=total_cached_tokens+?4,
+                     total_output_tokens=total_output_tokens+?5 WHERE id=?1",
+                    params![
+                        task,
+                        usage.input_tokens as i64,
+                        history_bytes as i64,
+                        usage.cached_tokens as i64,
+                        usage.output_tokens as i64
+                    ],
+                )
+                .db()?;
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn apply(&mut self, task: &str, action: &Value) -> Result<()> {
+        self.apply_with_meta(task, action, None)
+    }
+
+    pub fn apply_with_meta(&mut self, task: &str, action: &Value, meta: Option<&Value>) -> Result<()> {
+        self.transaction(|db| {
+            if let Some(root) = tree::report_root(db, task)? {
+                return tree::finish_report(db, &root, action, meta);
             }
             let agent = take_model(db, task)?;
             if let Some(root) = tree::work_root(db, task)? {
-                return tree::apply(db, &root, task, action);
+                return tree::apply(db, &root, task, action, meta);
             }
-            message(db, &agent, "assistant", &action.to_string())?;
+            message_with_meta(db, &agent, "assistant", &action.to_string(), meta)?;
             match field(action, "op")? {
                 "finish" => {
                     let text = nonempty(field(action, "text")?, "finish text")?;
@@ -1056,7 +1244,12 @@ impl Store {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn request_tool(&mut self, task: &str, action: &Value) -> Result<()> {
+        self.request_tool_with_meta(task, action, None)
+    }
+
+    pub fn request_tool_with_meta(&mut self, task: &str, action: &Value, meta: Option<&Value>) -> Result<()> {
         let op = field(action, "op")?;
         match op {
             "read_file" => {
@@ -1082,9 +1275,9 @@ impl Store {
                 )
                 .db()?;
             if tree::work_root(db, task)?.is_some() {
-                node_message(db, task, "assistant", &action.to_string())?;
+                node_message_with_meta(db, task, "assistant", &action.to_string(), meta)?;
             } else {
-                message(db, &agent, "assistant", &action.to_string())?;
+                message_with_meta(db, &agent, "assistant", &action.to_string(), meta)?;
             }
             operation(db, task, action, if auto || op == "read_file" { "ready" } else { "approval" }, round)
         })
@@ -1347,13 +1540,14 @@ impl Store {
         self.transaction(|db| {
             let agent = take_model(db, task)?;
             let is_tree = tree::work_root(db, task)?.is_some();
-            let history: Vec<(String, String)> = if is_tree {
-                let mut q = db.prepare("SELECT role,content FROM node_messages WHERE task=?1 ORDER BY rowid").db()?;
-                let rows = q.query_map([task], |r| Ok((r.get(0)?, r.get(1)?))).db()?;
+            let history: Vec<(String, String, Option<String>)> = if is_tree {
+                let mut q =
+                    db.prepare("SELECT role,content,meta FROM node_messages WHERE task=?1 ORDER BY rowid").db()?;
+                let rows = q.query_map([task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).db()?;
                 rows.collect::<rusqlite::Result<_>>().db()?
             } else {
-                let mut q = db.prepare("SELECT role,content FROM messages WHERE agent=?1 ORDER BY rowid").db()?;
-                let rows = q.query_map([&agent], |r| Ok((r.get(0)?, r.get(1)?))).db()?;
+                let mut q = db.prepare("SELECT role,content,meta FROM messages WHERE agent=?1 ORDER BY rowid").db()?;
+                let rows = q.query_map([&agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).db()?;
                 rows.collect::<rusqlite::Result<_>>().db()?
             };
             let len = history.len();
@@ -1367,24 +1561,44 @@ impl Store {
             .to_string();
             if is_tree {
                 db.execute("DELETE FROM node_messages WHERE task=?1", [task]).db()?;
-                for (role, content) in &history[..head_keep.min(len)] {
-                    node_message(db, task, role, content)?;
+                for (role, content, meta) in &history[..head_keep.min(len)] {
+                    db.execute(
+                        "INSERT INTO node_messages(task,role,content,meta) VALUES (?1,?2,?3,?4)",
+                        params![task, role, content, meta],
+                    )
+                    .db()?;
                 }
                 node_message(db, task, "user", &checkpoint)?;
-                for (role, content) in &history[tail_start..] {
-                    node_message(db, task, role, content)?;
+                for (role, content, meta) in &history[tail_start..] {
+                    db.execute(
+                        "INSERT INTO node_messages(task,role,content,meta) VALUES (?1,?2,?3,?4)",
+                        params![task, role, content, meta],
+                    )
+                    .db()?;
                 }
             } else {
                 db.execute("DELETE FROM messages WHERE agent=?1", [&agent]).db()?;
-                for (role, content) in &history[..head_keep.min(len)] {
-                    message(db, &agent, role, content)?;
+                for (role, content, meta) in &history[..head_keep.min(len)] {
+                    db.execute(
+                        "INSERT INTO messages(agent,role,content,meta) VALUES (?1,?2,?3,?4)",
+                        params![&agent, role, content, meta],
+                    )
+                    .db()?;
                 }
                 message(db, &agent, "user", &checkpoint)?;
-                for (role, content) in &history[tail_start..] {
-                    message(db, &agent, role, content)?;
+                for (role, content, meta) in &history[tail_start..] {
+                    db.execute(
+                        "INSERT INTO messages(agent,role,content,meta) VALUES (?1,?2,?3,?4)",
+                        params![&agent, role, content, meta],
+                    )
+                    .db()?;
                 }
             }
-            db.execute("UPDATE tasks SET status='queued' WHERE id=?1", [task]).db()?;
+            db.execute(
+                "UPDATE tasks SET status='queued', last_input_tokens=0, last_history_bytes=0 WHERE id=?1",
+                [task],
+            )
+            .db()?;
             Ok(())
         })
     }

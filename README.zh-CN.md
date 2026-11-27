@@ -21,17 +21,22 @@ TEAMAGENTS_PROVIDER=chatgpt teamagents chat
 
 守护进程通过 OpenAI 的[订阅 Responses API](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) 调用模型。`TEAMAGENTS_MODEL` 指定初始模型。如果没有指定模型，则自动选择账户目录中的第一个可见模型。工作节点与汇报节点都使用选定的服务。账户资格和额度由 OpenAI 决定。授权文件保存在工作区外的 `~/.teamagents-auth/`。`teamagents auth logout` 可清除本机授权。项目中如已有守护进程，请先等在途工作完成，再运行 `teamagents stop`，然后切换模型服务。
 
-**使用 API 密钥（OpenAI Chat Completions / OpenAI Responses / Anthropic Messages）。** 可通过 `TEAMAGENTS_PROVIDER` 选择 `api`（Chat Completions）、`responses`（OpenAI Responses API）或 `anthropic`（Anthropic Messages API）：
+**使用 API 密钥（DeepSeek Responses / OpenAI Chat Completions / OpenAI Responses / Anthropic Messages）。** 可通过 `TEAMAGENTS_PROVIDER` 选择 `deepseek`（DeepSeek Responses API）、`api`（Chat Completions）、`responses`（OpenAI Responses API）或 `anthropic`（Anthropic Messages API）：
 
 ```sh
-# OpenAI Chat Completions (`api`) 或 OpenAI Responses (`responses`)
+# DeepSeek Responses（`deepseek`，配置 DEEPSEEK_API_KEY 时默认最高优先级自动选中）
+# 默认模型：deepseek-flash；默认地址：https://api.deepseek.com/v1
+# 通过密钥管理工具在当前环境设置 DEEPSEEK_API_KEY。
+teamagents chat
+
+# OpenAI Chat Completions（`api`）或 OpenAI Responses（`responses`）
 export TEAMAGENTS_PROVIDER=responses   # 或 api
 export OPENAI_BASE_URL=https://api.openai.com/v1  # 默认地址
 export TEAMAGENTS_MODEL='your-provider-model-id'
 # 通过密钥管理工具在当前环境设置 OPENAI_API_KEY。
 teamagents chat
 
-# Anthropic Messages (`anthropic`)
+# Anthropic Messages（`anthropic`）
 export TEAMAGENTS_PROVIDER=anthropic
 export ANTHROPIC_BASE_URL=https://api.anthropic.com  # 默认地址
 export TEAMAGENTS_MODEL='claude-sonnet-4-5'          # 或设置 ANTHROPIC_MODEL
@@ -39,7 +44,7 @@ export TEAMAGENTS_MODEL='claude-sonnet-4-5'          # 或设置 ANTHROPIC_MODEL
 teamagents chat
 ```
 
-默认情况下，守护进程在已登录 ChatGPT 订阅时优先使用订阅；否则若仅配置了 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_BASE_URL` 则自动选择 `anthropic`；其余情况默认 `api`。四种服务均原生注入单步动作工具模式（Tool Calling，并保留原始 JSON 文本回退），避免长文本或代码编辑因手工转义出错。非回环 API 地址需要 HTTPS 和对应密钥（回环地址可使用 HTTP，也可不提供密钥）。在 `anthropic` 模式下，思考强度会映射为 Anthropic `thinking` 预算（`none` 关闭扩展思考）。模型请求读取超时为 600 秒（连接 30 秒、写入 60 秒），支持最多 5 次重定向，在多并发分支间共享限流退避窗口，并对瞬时网络故障及 408/429/5xx/529 状态最多重试至 5 次尝试；遇到额度耗尽会触发 30 秒熔断暂停以便各分支干净结算（可用 `continue` 恢复）；遇到 HTTP 413 / 上下文溢出或 worker 历史过长时会自动触发上下文压缩。
+未显式指定 `TEAMAGENTS_PROVIDER` 时，守护进程按以下优先级自动选择：只要配置了 `DEEPSEEK_API_KEY` 即优先使用 `deepseek`（默认模型 `deepseek-flash`，走 `/v1/responses`）；否则若已登录 ChatGPT 订阅则优先使用订阅；否则若仅配置了 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_BASE_URL` 则选择 `anthropic`；其余情况默认 `api`。五种服务共享统一的静态工具前缀与末尾身份布局，在 `handoff` 时默认写时复制（Fork）父节点已预热历史前缀（可选 `inherit_context: false` 关闭），原生回传推理链与缓存提示（`prompt_cache_key`、Anthropic `cache_control`），并在状态中汇总 `usage` 缓存命中率。非回环 API 地址需要 HTTPS 和对应密钥（回环地址可使用 HTTP，也可不提供密钥）。在 `anthropic` 模式下，思考强度会映射为 Anthropic `thinking` 预算（`none` 关闭扩展思考）。模型请求读取超时为 600 秒（连接 30 秒、写入 60 秒），支持最多 5 次重定向，在多并发分支间共享限流退避窗口，并对瞬时网络故障及 408/429/5xx/529 状态最多重试至 5 次尝试；遇到额度耗尽会触发 30 秒熔断暂停以便各分支干净结算（可用 `continue` 恢复）；遇到 HTTP 413 / 上下文溢出或达到模型上下文窗口的 90%（可用 `TEAMAGENTS_CONTEXT_WINDOW` 覆盖）时会自动触发上下文压缩。
 
 ### 在对话中切换模型和思考强度
 
@@ -121,8 +126,8 @@ Shell 命令支持模型自选 `timeout_ms`（`100..=600_000` 毫秒，默认 60
 | Handoff / 验收 / 格式纠正重试 | 64 / 10 / 5 | 单次最多分派子阶段数 / 最多验收检查次数 / Worker 连续协议纠错次数（成功即清零） |
 | 文件读取（`read_file`）与编辑（`edit_file`） | 8 MiB（支持分页） | `edit_file` 单文件上限；`read_file` 支持 `offset`/`limit` 分页读取 |
 | Shell 超时与输出 / IPC 帧 | 60s（最长 600s）/ 128 KiB / 8 MiB | 可配 `timeout_ms` / stdout/stderr 各流中间截断上限 / 守护进程 IPC 帧上限 |
-| 模型 HTTP / 请求响应 / SSE 流 | 600s / 2 MiB（Reporter 12 MiB）/ 32 MiB | HTTP 读取超时 / Worker 请求与响应及动作上限 / ChatGPT SSE 流上限 |
-| 自动上下文压缩 / 白板摘要 | 384 KiB（>=6 条）/ 4 KiB | 软触发自动压缩（另支持 HTTP 413/溢出触发）/ 焦点提示注入白板摘要上限 |
+| 模型 HTTP / 请求响应 / SSE 流 | 600s / 8 MiB 请求，2 MiB 响应（Reporter 12 MiB）/ 32 MiB | HTTP 读取超时 / Worker 请求与响应及动作上限 / SSE 流上限 |
+| 自动上下文压缩 / 白板摘要 | 模型窗口 90%（>=6 条）/ 4 KiB | 软触发自动压缩（支持 `/models` 窗口与 `TEAMAGENTS_CONTEXT_WINDOW`，封顶 8 MiB，另含 413/溢出触发）/ 增量白板摘要上限 |
 | Summarizer 输入 / TUI 事件 | 2 MiB / 8 MiB / 1000 | 汇总叶子输出总上限 / 意图与澄清总上限 / TUI 保留事件条数上限 |
 
 每个会话只有一个守护进程写 SQLite，使用 WAL 和 `synchronous=FULL`。已启动的工具如果没有持久化结果，其效果未知，守护进程不会自动重放。开始新任务前请检查工作区及可能发生的外部操作。取消任务不会撤销已有操作，也不能证明命令已经停止。模型调用次数和并发数都不等同于 token 费用上限。

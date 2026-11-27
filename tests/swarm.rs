@@ -72,8 +72,17 @@ impl Call {
         assert_eq!(body["model"], model);
         assert_eq!(body.get("reasoning_effort"), effort.map(Value::from).as_ref(), "model {model}");
         let messages = body["messages"].as_array().unwrap().clone();
-        let (agent, task) =
-            field(&messages[1], "content").strip_prefix("Agent: ").unwrap().split_once("\nTask: ").unwrap();
+        let (agent, task) = messages
+            .iter()
+            .rev()
+            .filter(|m| m["role"] == "user")
+            .find_map(|m| {
+                let s = m["content"].as_str()?;
+                let (agent, rest) = s.strip_prefix("Agent: ")?.split_once("\nTask: ")?;
+                let task = rest.split("\n\n").next().unwrap_or(rest);
+                Some((agent, task))
+            })
+            .unwrap_or_else(|| panic!("missing Agent/Task marker in messages: {messages:?}"));
         Self { socket, agent: agent.into(), id: task.into(), messages }
     }
     fn users(&self) -> impl Iterator<Item = &str> {
@@ -86,7 +95,12 @@ impl Call {
         self.users().any(|s| s.contains(text))
     }
     fn any_message(&self, text: &str) -> bool {
-        self.messages.iter().any(|m| m["content"].as_str().is_some_and(|s| s.contains(text)))
+        self.messages.iter().any(|m| {
+            m["content"].as_str().is_some_and(|s| s.contains(text))
+                || m["tool_calls"].as_array().is_some_and(|calls| {
+                    calls.iter().any(|tc| tc["function"]["arguments"].as_str().is_some_and(|s| s.contains(text)))
+                })
+        })
     }
     fn records(&self) -> impl Iterator<Item = Value> + '_ {
         self.users().filter_map(|s| serde_json::from_str(s).ok())
@@ -1030,7 +1044,8 @@ fn anthropic_provider_handles_thinking_stream_and_tools_end_to_end() {
     let (h0, body0, mut s0) = Call::read_http(s0, "/v1/messages");
     assert!(h0.to_ascii_lowercase().contains("x-api-key: ant-secret"));
     assert!(h0.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
-    assert!(body0["system"].as_str().unwrap().contains("root worker"));
+    assert!(body0["system"][0]["text"].as_str().unwrap().contains("worker"));
+    assert_eq!(body0["system"][0]["cache_control"], json!({"type":"ephemeral"}));
     assert_eq!(body0["tool_choice"], json!({"type":"any","disable_parallel_tool_use":true}));
     assert!(body0["tools"].as_array().unwrap().iter().any(|t| t["name"] == "edit_file"));
     let sse0 = sse_frames(&[
@@ -1065,14 +1080,14 @@ fn anthropic_provider_handles_thinking_stream_and_tools_end_to_end() {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|b| b["type"] == "tool_use" && b["name"] == "shell" && b["id"] == "call_1")
+                    .any(|b| b["type"] == "tool_use" && b["name"] == "shell" && b["id"] == "tu1")
         }) && msgs1.iter().any(|m| {
             m["role"] == "user"
                 && m["content"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|b| b["type"] == "tool_result" && b["tool_use_id"] == "call_1")
+                    .any(|b| b["type"] == "tool_result" && b["tool_use_id"] == "tu1")
         })
     );
     let json1 = json!({
@@ -1136,10 +1151,10 @@ fn api_provider_handles_native_tool_calls_end_to_end() {
     assert!(
         msgs2.windows(2).any(|w| {
             w[0]["role"] == "assistant"
-                && w[0]["tool_calls"][0]["id"] == "call_1"
+                && w[0]["tool_calls"][0]["id"] == "tc1"
                 && w[0]["tool_calls"][0]["function"]["name"] == "edit_file"
                 && w[1]["role"] == "tool"
-                && w[1]["tool_call_id"] == "call_1"
+                && w[1]["tool_call_id"] == "tc1"
         }),
         "expected native assistant tool_calls + tool pair, got: {msgs2:?}"
     );
@@ -1209,4 +1224,141 @@ fn quota_exceeded_pauses_remaining_turns_and_allows_continue() {
     let resumed = cont.json();
     assert_eq!(resumed["status"], "done");
     assert_eq!(resumed["result"], "Resumed after top-up");
+}
+
+#[test]
+fn deepseek_provider_forked_handoff_shares_prefix_replays_reasoning_and_tracks_cache_usage() {
+    let lab = Lab::new_with(
+        &[("DEEPSEEK_BASE_URL", "{URL}/v1"), ("DEEPSEEK_API_KEY", "ds-secret"), ("TEAMAGENTS_MODEL", "")],
+        false,
+    );
+    fs::write(lab.ws.join("seed.txt"), "SEED_CONTENT\n").unwrap();
+    let exec = lab.client(&["exec", "Inspect seed and fan out"]);
+
+    // Turn 0 (root): DeepSeek Responses API is auto-selected with model `deepseek-flash` & tool_choice `auto`.
+    let s0 = accept_raw(&lab.socket);
+    let (h0, body0, mut s0) = Call::read_http(s0, "/v1/responses");
+    assert!(h0.to_ascii_lowercase().contains("authorization: bearer ds-secret"));
+    assert_eq!(body0["model"], "deepseek-flash");
+    assert_eq!(body0["tool_choice"], "auto");
+    let cache_key = body0["prompt_cache_key"].as_str().unwrap().to_owned();
+    assert!(cache_key.starts_with("teamagents:"));
+    let ds_r0 = sse_frames(&[
+        json!({"type":"response.created","response":{"id":"ds_0","status":"in_progress","output":[]}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_0","status":"in_progress","content":[],"summary":[]}}),
+        json!({"type":"response.content_part.added","output_index":0,"item_id":"rs_0","content_index":0,"part":{"type":"reasoning_text","text":""}}),
+        json!({"type":"response.reasoning_text.done","output_index":0,"item_id":"rs_0","content_index":0,"text":"read seed first"}),
+        json!({"type":"response.content_part.done","output_index":0,"item_id":"rs_0","content_index":0,"part":{"type":"reasoning_text","text":"read seed first"}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_0","status":"completed","content":[{"type":"reasoning_text","text":"read seed first"}],"summary":[],"encrypted_content":"enc_0"}}),
+        json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read_file","arguments":"","status":"in_progress"}}),
+        json!({"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc_0","delta":r#"{"path":"#}),
+        json!({"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc_0","delta":r#""seed.txt"}"#}),
+        json!({"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_0","arguments":r#"{"path":"seed.txt"}"#}),
+        json!({"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read_file","arguments":r#"{"path":"seed.txt"}"#,"status":"completed"}}),
+        json!({"type":"response.completed","response":{
+            "id":"ds_0",
+            "status":"completed",
+            "usage":{"input_tokens":400,"input_tokens_details":{"cached_tokens":0},"output_tokens":30},
+            "output":[
+                {"type":"reasoning","id":"rs_0","status":"completed","content":[{"type":"reasoning_text","text":"read seed first"}],"summary":[],"encrypted_content":"enc_0"},
+                {"type":"function_call","id":"fc_0","call_id":"call_0","name":"read_file","arguments":r#"{"path":"seed.txt"}"#,"status":"completed"}
+            ]
+        }}),
+    ]);
+    write!(
+        s0,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ds_r0}",
+        ds_r0.len()
+    )
+    .unwrap();
+
+    // Turn 1 (root): verifies reasoning replay + function_call_output, then forks to 2 children.
+    let s1 = accept_raw(&lab.socket);
+    let (_, body1, mut s1) = Call::read_http(s1, "/v1/responses");
+    assert_eq!(body1["prompt_cache_key"], cache_key);
+    let input1 = body1["input"].as_array().unwrap();
+    assert_eq!(input1[1]["type"], "reasoning");
+    assert_eq!(input1[1]["content"][0]["text"], "read seed first");
+    assert_eq!(input1[2]["type"], "function_call");
+    assert_eq!(input1[2]["id"], "fc_0");
+    assert_eq!(input1[3]["type"], "function_call_output");
+    assert!(input1[3]["output"].as_str().unwrap().contains("SEED_CONTENT"));
+
+    let ho_args =
+        json!({"text":"seed verified","children":[{"agent":"a","text":"part a"},{"agent":"b","text":"part b"}]})
+            .to_string();
+    let ds_r1 = json!({
+        "id": "ds_1",
+        "status": "completed",
+        "usage": {"input_tokens": 600, "input_tokens_details": {"cached_tokens": 400}, "output_tokens": 40},
+        "output": [
+            {"type":"reasoning","id":"rs_1","status":"completed","content":[{"type":"reasoning_text","text":"forking"}],"summary":[],"encrypted_content":"enc_1"},
+            {"type":"function_call","id":"fc_1","call_id":"call_1","name":"handoff","arguments":ho_args,"status":"completed"}
+        ]
+    })
+    .to_string();
+    write!(
+        s1,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ds_r1}",
+        ds_r1.len()
+    )
+    .unwrap();
+
+    // Children `a` and `b` run concurrently with byte-identical static & forked parent prefixes!
+    let sc1 = accept_raw(&lab.socket);
+    let (_, bc1, mut sc1) = Call::read_http(sc1, "/v1/responses");
+    let sc2 = accept_raw(&lab.socket);
+    let (_, bc2, mut sc2) = Call::read_http(sc2, "/v1/responses");
+    assert_eq!(bc1["instructions"], body0["instructions"]);
+    assert_eq!(bc1["tools"], body0["tools"]);
+    assert_eq!(bc1["prompt_cache_key"], cache_key);
+    assert_eq!(bc2["prompt_cache_key"], cache_key);
+    let ic1 = bc1["input"].as_array().unwrap();
+    let ic2 = bc2["input"].as_array().unwrap();
+    assert_eq!(ic1.len(), ic2.len());
+    // Every prefix element before the final child-specific assignment must be byte-identical across forked siblings.
+    assert_eq!(ic1[..ic1.len() - 1], ic2[..ic2.len() - 1]);
+    assert!(ic1[ic1.len() - 2]["output"].as_str().unwrap().contains("accepted"));
+    assert_ne!(ic1.last(), ic2.last());
+
+    for (idx, sock) in [&mut sc1, &mut sc2].into_iter().enumerate() {
+        let resp = json!({
+            "id": format!("ds_c{idx}"),
+            "status": "completed",
+            "usage": {"input_tokens": 800, "input_tokens_details": {"cached_tokens": 600}, "output_tokens": 20},
+            "output": [{"type":"function_call","id":format!("fc_c{idx}"),"call_id":format!("call_c{idx}"),"name":"finish","arguments":format!(r#"{{"text":"child {idx} ok"}}"#),"status":"completed"}]
+        })
+        .to_string();
+        write!(
+            sock,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}",
+            resp.len()
+        )
+        .unwrap();
+    }
+
+    // Summarizer settles the tree and usage telemetry aggregates across root + children + summarizer.
+    let ss = accept_raw(&lab.socket);
+    let (_, bs, mut ss) = Call::read_http(ss, "/v1/responses");
+    assert_eq!(bs["prompt_cache_key"], cache_key);
+    let sum_resp = json!({
+        "id": "ds_sum",
+        "status": "completed",
+        "usage": {"input_tokens": 300, "input_tokens_details": {"cached_tokens": 100}, "output_tokens": 15},
+        "output": [{"type":"function_call","id":"fc_sum","call_id":"call_sum","name":"finish","arguments":r#"{"text":"deepseek tree ok"}"#,"status":"completed"}]
+    })
+    .to_string();
+    write!(
+        ss,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sum_resp}",
+        sum_resp.len()
+    )
+    .unwrap();
+
+    let out = exec.json();
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["result"], "deepseek tree ok");
+    assert_eq!(out["usage"]["input_tokens"], 2900);
+    assert_eq!(out["usage"]["cached_tokens"], 1700);
+    assert_eq!(out["usage"]["output_tokens"], 125);
 }
