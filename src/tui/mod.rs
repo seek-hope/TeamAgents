@@ -97,8 +97,8 @@ fn handle_command(client: &Client, cmd: UiCommand, tx: &Sender<BackendEvent>) ->
         UiCommand::LoadPlanModels => {
             let _ = tx.send(BackendEvent::PlanModels(crate::model::plan_models()));
         }
-        UiCommand::Submit { agent, text, review, check } => {
-            let outcome = match client.submit(&agent, &text, review, check.as_deref()) {
+        UiCommand::Submit { agent, text, review, staged, check } => {
+            let outcome = match client.submit_with_options(&agent, &text, review, check.as_deref(), staged) {
                 Ok(receipt) => {
                     let id = receipt["id"].as_str().map(str::to_owned);
                     let msg = format!("Submitted {} to @{agent}", id.as_deref().unwrap_or("task"));
@@ -106,6 +106,34 @@ fn handle_command(client: &Client, cmd: UiCommand, tx: &Sender<BackendEvent>) ->
                 }
                 Err(e) => {
                     BackendEvent::CommandOutcome { message: None, error: Some(e), select_task: None, refresh: false }
+                }
+            };
+            let _ = tx.send(outcome);
+        }
+        UiCommand::Continue { id, text, review, staged, check } => {
+            let outcome = match client.continue_with_options(&id, &text, review, check.as_deref(), staged) {
+                Ok(receipt) => {
+                    let root = receipt["id"].as_str().map(str::to_owned);
+                    let node = receipt["node"].as_str().unwrap_or(&id);
+                    let msg = format!("Continued {} via node {}", root.as_deref().unwrap_or(&id), preview(node, 14));
+                    BackendEvent::CommandOutcome { message: Some(msg), error: None, select_task: root, refresh: true }
+                }
+                Err(e) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(e), select_task: None, refresh: true }
+                }
+            };
+            let _ = tx.send(outcome);
+        }
+        UiCommand::WbWrite { root_id, key, mode, kind, content } => {
+            let outcome = match client.wb_write(&root_id, &key, &mode, kind.as_deref(), content.as_deref()) {
+                Ok(_) => BackendEvent::CommandOutcome {
+                    message: Some(format!("Whiteboard {mode}: {key}")),
+                    error: None,
+                    select_task: Some(root_id),
+                    refresh: true,
+                },
+                Err(e) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(e), select_task: None, refresh: true }
                 }
             };
             let _ = tx.send(outcome);
@@ -240,7 +268,7 @@ fn spawn_backend(client: Client, cmd_rx: Receiver<UiCommand>, evt_tx: Sender<Bac
     })
 }
 
-pub(crate) fn run(client: Client, agent: String, review: bool) -> Result<()> {
+pub(crate) fn run(client: Client, agent: String, review: bool, staged: bool) -> Result<()> {
     let workspace_name = client
         .workspace
         .file_name()
@@ -256,7 +284,7 @@ pub(crate) fn run(client: Client, agent: String, review: bool) -> Result<()> {
     let (evt_tx, evt_rx) = mpsc::channel();
     let worker = spawn_backend(client, cmd_rx, evt_tx);
 
-    let mut state = AppState::new(workspace_name, agent, review);
+    let mut state = AppState::new(workspace_name, agent, review, staged);
     let mut hits = HitMap::default();
     let mut dirty = true;
     let mut last_anim = Instant::now();

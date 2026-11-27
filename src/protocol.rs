@@ -125,6 +125,7 @@ pub(crate) enum StageKind {
     Root,
     Node,
     Repair,
+    Summarizer,
     Other(String),
 }
 
@@ -135,6 +136,7 @@ impl StageKind {
             "root" => Self::Root,
             "node" => Self::Node,
             "repair" => Self::Repair,
+            "summarizer" => Self::Summarizer,
             other => Self::Other(other.to_owned()),
         }
     }
@@ -145,6 +147,7 @@ impl StageKind {
             Self::Root => "root",
             Self::Node => "node",
             Self::Repair => "repair",
+            Self::Summarizer => "summarizer",
             Self::Other(s) => s.as_str(),
         }
     }
@@ -152,9 +155,9 @@ impl StageKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ActionPreview {
-    ReadFile { path: String },
+    ReadFile { path: String, offset: Option<u64>, limit: Option<u64> },
     EditFile { path: String, old: String, new: String },
-    Shell { command: String },
+    Shell { command: String, timeout_ms: Option<u64> },
     Verify { command: String },
     Other { op: String, summary: String },
 }
@@ -166,13 +169,20 @@ impl ActionPreview {
         }
         let op = value["op"].as_str().unwrap_or("?");
         Some(match op {
-            "read_file" => Self::ReadFile { path: value["path"].as_str().unwrap_or("?").to_owned() },
+            "read_file" => Self::ReadFile {
+                path: value["path"].as_str().unwrap_or("?").to_owned(),
+                offset: value.get("offset").and_then(Value::as_u64),
+                limit: value.get("limit").and_then(Value::as_u64),
+            },
             "edit_file" => Self::EditFile {
                 path: value["path"].as_str().unwrap_or("?").to_owned(),
                 old: value["old"].as_str().unwrap_or("").to_owned(),
                 new: value["new"].as_str().unwrap_or("").to_owned(),
             },
-            "shell" => Self::Shell { command: value["command"].as_str().unwrap_or("").to_owned() },
+            "shell" => Self::Shell {
+                command: value["command"].as_str().unwrap_or("").to_owned(),
+                timeout_ms: value.get("timeout_ms").and_then(Value::as_u64),
+            },
             "verify" => Self::Verify { command: value["command"].as_str().unwrap_or("").to_owned() },
             other => Self::Other { op: other.to_owned(), summary: value.to_string() },
         })
@@ -190,8 +200,8 @@ impl ActionPreview {
 
     pub fn label(&self) -> &str {
         match self {
-            Self::ReadFile { path } | Self::EditFile { path, .. } => path.as_str(),
-            Self::Shell { command } | Self::Verify { command } => command.as_str(),
+            Self::ReadFile { path, .. } | Self::EditFile { path, .. } => path.as_str(),
+            Self::Shell { command, .. } | Self::Verify { command } => command.as_str(),
             Self::Other { summary, .. } => summary.as_str(),
         }
     }
@@ -237,6 +247,30 @@ pub(crate) struct Clarification {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RoundRecord {
+    pub round: u64,
+    pub subtree_root: String,
+    pub prompt: String,
+    pub check: Option<String>,
+    pub outcome: Option<TaskStatus>,
+    pub verification: Option<Verification>,
+    pub result: Option<String>,
+    pub continuation_node: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WhiteboardEntry {
+    pub key: String,
+    pub kind: String,
+    pub content: String,
+    pub author_agent: String,
+    pub round: u64,
+    pub version: u64,
+    pub seq: u64,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TaskRecord {
     pub id: String,
     pub root: String,
@@ -255,15 +289,24 @@ pub(crate) struct TaskRecord {
     pub turns_used: Option<u64>,
     pub turn_budget: Option<u64>,
     pub policy: Option<Policy>,
+    pub sandbox: Option<String>,
     pub question: Option<String>,
     pub stage_error: Option<String>,
     pub verification: Option<Verification>,
     pub verification_note: Option<String>,
+    pub round: Option<u64>,
+    pub active_root: Option<String>,
+    pub continuation_node: Option<String>,
+    pub continuation_agent: Option<String>,
+    pub continuation_kind: Option<String>,
+    pub whiteboard_seq: u64,
+    pub whiteboard: Vec<WhiteboardEntry>,
     pub evidence: Vec<EvidenceEntry>,
     pub tree_nodes: Vec<TreeNode>,
     pub leaf_results: Vec<LeafResult>,
     pub subtree_receipts: Vec<SubtreeReceipt>,
     pub clarifications: Vec<Clarification>,
+    pub rounds: Vec<RoundRecord>,
 }
 
 impl TaskRecord {
@@ -347,6 +390,45 @@ impl TaskRecord {
                     .collect()
             })
             .unwrap_or_default();
+        let rounds = value["rounds"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|r| {
+                        Some(RoundRecord {
+                            round: r["round"].as_u64()?,
+                            subtree_root: r["subtree_root"].as_str()?.to_owned(),
+                            prompt: r["prompt"].as_str()?.to_owned(),
+                            check: opt_str(r, "check"),
+                            outcome: opt_str(r, "outcome").as_deref().map(TaskStatus::parse),
+                            verification: opt_str(r, "verification").as_deref().map(Verification::parse),
+                            result: opt_str(r, "result"),
+                            continuation_node: opt_str(r, "continuation_node"),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let whiteboard = value["whiteboard"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|r| {
+                        Some(WhiteboardEntry {
+                            key: r["key"].as_str()?.to_owned(),
+                            kind: r["kind"].as_str().unwrap_or("note").to_owned(),
+                            content: r["content"].as_str().unwrap_or("").to_owned(),
+                            author_agent: r["author_agent"].as_str().unwrap_or("?").to_owned(),
+                            round: r["round"].as_u64().unwrap_or(1),
+                            version: r["version"].as_u64().unwrap_or(1),
+                            seq: r["seq"].as_u64().unwrap_or(0),
+                            status: r["status"].as_str().unwrap_or("active").to_owned(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Ok(Self {
             id,
@@ -366,15 +448,24 @@ impl TaskRecord {
             turns_used: value["turns_used"].as_u64(),
             turn_budget: value["turn_budget"].as_u64(),
             policy: Policy::parse(value["policy"].as_str()),
+            sandbox: opt_str(value, "sandbox"),
             question: opt_str(value, "question"),
             stage_error: opt_str(value, "stage_error"),
             verification: opt_str(value, "verification").as_deref().map(Verification::parse),
             verification_note: opt_str(value, "verification_note"),
+            round: value["round"].as_u64(),
+            active_root: opt_str(value, "active_root"),
+            continuation_node: opt_str(value, "continuation_node"),
+            continuation_agent: opt_str(value, "continuation_agent"),
+            continuation_kind: opt_str(value, "continuation_kind"),
+            whiteboard_seq: value["whiteboard_seq"].as_u64().unwrap_or(0),
+            whiteboard,
             evidence,
             tree_nodes,
             leaf_results,
             subtree_receipts,
             clarifications,
+            rounds,
         })
     }
 
@@ -573,17 +664,68 @@ impl Client {
         ModelConfig::from_value(&self.call(body)?)
     }
 
-    pub fn submit(&self, agent: &str, text: &str, review: bool, check: Option<&str>) -> Result<Value> {
+    pub fn submit_with_options(
+        &self,
+        agent: &str,
+        text: &str,
+        review: bool,
+        check: Option<&str>,
+        staged: bool,
+    ) -> Result<Value> {
         if text.trim().is_empty() {
             return Err("a nonempty task prompt is required".into());
         }
         let mut body = json!({"op":"submit", "agent":agent, "text":text, "review":review});
+        if staged {
+            body["staged"] = json!(true);
+        }
         if let Some(command) = check {
             body["check"] = json!(command);
         }
         let receipt = self.call(body)?;
         field(&receipt, "id")?;
         Ok(receipt)
+    }
+
+    pub fn continue_with_options(
+        &self,
+        id: &str,
+        text: &str,
+        review: bool,
+        check: Option<&str>,
+        staged: bool,
+    ) -> Result<Value> {
+        if text.trim().is_empty() {
+            return Err("a nonempty task prompt is required".into());
+        }
+        let mut body = json!({"op":"continue", "id":id, "text":text, "review":review});
+        if staged {
+            body["staged"] = json!(true);
+        }
+        if let Some(command) = check {
+            body["check"] = json!(command);
+        }
+        let receipt = self.call(body)?;
+        field(&receipt, "id")?;
+        Ok(receipt)
+    }
+
+    pub fn wb_write(
+        &self,
+        id: &str,
+        key: &str,
+        mode: &str,
+        kind: Option<&str>,
+        content: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = json!({"op":"wb_write", "id":id, "key":key, "mode":mode});
+        if let Some(k) = kind {
+            body["kind"] = json!(k);
+        }
+        if let Some(c) = content {
+            body["content"] = json!(c);
+        }
+        self.call(body)
     }
 
     pub fn answer(&self, id: &str, text: &str) -> Result<Value> {
@@ -699,6 +841,15 @@ impl QuestionTracker {
         self.seen.remove(id);
     }
 
+    pub fn consume_stale_root(&mut self, root_id: &str) -> bool {
+        if self.questions.contains_key(root_id) && !self.seen.get(root_id).is_some_and(|(status, _)| status == "input")
+        {
+            self.questions.remove(root_id);
+            return true;
+        }
+        false
+    }
+
     pub fn reply_target(&mut self, agent: &str) -> Result<Option<String>> {
         // A different client may have answered or cancelled while this user typed.
         // Warn once before treating a line as a new task or redirecting it to the remaining root.
@@ -741,11 +892,27 @@ mod tests {
             "turns_used": 3,
             "turn_budget": 32,
             "verification": "passed",
+            "round": 2,
+            "active_root": "s1",
+            "continuation_node": "s1",
+            "continuation_agent": "summarizer",
+            "continuation_kind": "summarizer",
             "clarifications": [{"question": "Which target?", "answer": "Linux"}],
+            "rounds": [{
+                "round": 1,
+                "subtree_root": "r1",
+                "prompt": "Fix parser",
+                "check": "cargo test",
+                "outcome": "done",
+                "verification": "passed",
+                "result": "Parser fixed",
+                "continuation_node": "s1"
+            }],
             "evidence": [{"action": {"op": "verify", "command": "cargo test"}, "ok": true, "result": "ok"}],
             "tree_nodes": [
                 {"task": "r1", "parent": null, "agent": "default", "kind": "root", "status": "done"},
-                {"task": "c1", "parent": "r1", "agent": "tester", "kind": "node", "status": "future_state"}
+                {"task": "c1", "parent": "r1", "agent": "tester", "kind": "node", "status": "future_state"},
+                {"task": "s1", "parent": "r1", "agent": "summarizer-1", "kind": "summarizer", "status": "done"}
             ],
             "leaf_results": [{"task": "c1", "agent": "tester", "status": "done", "result": "tested"}],
             "subtree_receipts": [{"task": "c1", "agent": "tester", "op": "shell", "label": "cargo test", "ok": true}]
@@ -754,9 +921,17 @@ mod tests {
         assert_eq!(record.status, TaskStatus::Done);
         assert_eq!(record.policy, Some(Policy::Review));
         assert_eq!(record.verification, Some(Verification::Passed));
+        assert_eq!(record.round, Some(2));
+        assert_eq!(record.active_root.as_deref(), Some("s1"));
+        assert_eq!(record.continuation_node.as_deref(), Some("s1"));
+        assert_eq!(record.continuation_agent.as_deref(), Some("summarizer"));
+        assert_eq!(record.continuation_kind.as_deref(), Some("summarizer"));
+        assert_eq!(record.rounds.len(), 1);
+        assert_eq!(record.rounds[0].outcome, Some(TaskStatus::Done));
         assert_eq!(record.clarifications.len(), 1);
         assert_eq!(record.clarifications[0].answer, "Linux");
         assert_eq!(record.tree_nodes[1].status, TaskStatus::Other("future_state".into()));
+        assert_eq!(record.tree_nodes[2].kind, StageKind::Summarizer);
     }
 
     #[test]

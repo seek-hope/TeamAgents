@@ -41,10 +41,22 @@ pub(crate) const SLASH_COMMANDS: &[SlashSpec] = &[
         add_space: false,
     },
     SlashSpec {
+        name: "/staged",
+        usage: "/staged [on|off]",
+        summary: "Toggle copy-on-exit staged shell isolation (default: direct)",
+        add_space: false,
+    },
+    SlashSpec {
+        name: "/wb",
+        usage: "/wb [KEY TEXT|append KEY TEXT|resolve KEY|delete KEY]",
+        summary: "Open 5 Board or post/resolve a collaborative whiteboard note",
+        add_space: false,
+    },
+    SlashSpec {
         name: "/new",
-        usage: "/new TEXT",
-        summary: "Submit a new root task while clarification waits",
-        add_space: true,
+        usage: "/new [TEXT]",
+        summary: "Switch to a blank new session or submit TEXT directly",
+        add_space: false,
     },
     SlashSpec {
         name: "/answer",

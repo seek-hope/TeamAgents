@@ -1,9 +1,12 @@
 use super::*;
-use crate::tools::execute;
+use crate::tools::{execute, execute_with_mode};
 use serde_json::json;
 use std::os::unix::{fs::symlink, net::UnixListener};
 
 fn shell(root: &Path, cmd: &str) -> Result<String> {
+    execute_with_mode(root, &json!({"op":"shell","command":cmd}), true)
+}
+fn shell_direct(root: &Path, cmd: &str) -> Result<String> {
     execute(root, &json!({"op":"shell","command":cmd}))
 }
 fn read(root: &Path, name: &str) -> Result<String> {
@@ -137,4 +140,33 @@ fn rust_builds_from_workspace_sources_without_borrowing_host_cargo_home() {
     assert!(output.contains("stdout:\nok\n"), "{output}");
     assert!(ws.0.join("Cargo.lock").is_file());
     assert!(!ws.0.join("target").exists());
+}
+
+#[test]
+fn direct_mode_works_beyond_staging_limits_while_protecting_git_and_auth() {
+    let private = Scratch::new().unwrap();
+    let ws = Scratch::new().unwrap();
+    fs::create_dir_all(ws.0.join(".git/hooks")).unwrap();
+    fs::write(ws.0.join(".git/config"), "git-fixture").unwrap();
+    fs::create_dir_all(ws.0.join(".teamagents-auth")).unwrap();
+    fs::write(ws.0.join(".teamagents-auth/profile.json"), "secret-token").unwrap();
+    fs::create_dir_all(ws.0.join("admin_repo/objects")).unwrap();
+    fs::write(ws.0.join("admin_repo/HEAD"), "ref: refs/heads/main\n").unwrap();
+    // Create symlinks inside workspace to verify Direct mode does not fail like Stage copy.
+    symlink("target-missing", ws.0.join("sym")).unwrap();
+
+    // Direct shell reads git config, writes normal files, hides .teamagents-auth, and blocks .git/admin writes.
+    let out = shell_direct(
+        &ws.0,
+        "cat .git/config && test ! -e .teamagents-auth/profile.json && echo direct-ok > output.txt && test \"$HOME\" = /home/agent",
+    )
+    .unwrap();
+    assert!(out.contains("git-fixture"), "{out}");
+    assert_eq!(read(&ws.0, "output.txt").unwrap(), "direct-ok\n");
+    assert_eq!(fs::read_to_string(ws.0.join(".teamagents-auth/profile.json")).unwrap(), "secret-token");
+    assert!(shell_direct(&ws.0, "touch .git/hooks/evil").is_err());
+    assert!(shell_direct(&ws.0, "touch admin_repo/evil").is_err());
+    assert!(!ws.0.join(".git/hooks/evil").exists());
+    assert!(!ws.0.join("admin_repo/evil").exists());
+    drop(private);
 }

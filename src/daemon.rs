@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const FRAME: usize = 4 * 1024 * 1024;
+const FRAME: usize = 8 * 1024 * 1024;
 const SOCKET: &str = "swarm.sock";
 const PROTOCOL: u32 = 3;
 const INCOMPATIBLE: &str = "incompatible session protocol; stop the old daemon with its matching client, then restart";
@@ -77,7 +77,7 @@ fn read_frame(stream: &UnixStream) -> Result<Value> {
 fn write_frame(mut stream: &UnixStream, value: &Value) -> Result<()> {
     let mut bytes = serde_json::to_vec(value).map_err(err)?;
     if bytes.len() >= FRAME {
-        return Err("daemon frame exceeds 4 MiB".into());
+        return Err("daemon frame exceeds 8 MiB".into());
     }
     bytes.push(b'\n');
     stream.write_all(&bytes).map_err(err)
@@ -144,7 +144,7 @@ pub fn request(session: &Path, workspace: &Path, body: &Value) -> Result<Value> 
     // An old daemon ignores unrecognized fields. Negotiate using a read-only request
     // on the same connection before ever sending a mutating body.
     let mut hello = frame(&json!({"op":"hello"}));
-    let desired = if matches!(body["op"].as_str(), Some("submit" | "model")) {
+    let desired = if matches!(body["op"].as_str(), Some("submit" | "continue" | "model")) {
         hello["query_provider"] = json!(true);
         Some(model::provider_name()?)
     } else {
@@ -168,8 +168,11 @@ pub fn request(session: &Path, workspace: &Path, body: &Value) -> Result<Value> 
         // Protocol 3 daemons predating subscription support always use API billing.
         let actual = greeting["value"]["provider"].as_str().unwrap_or("api");
         if actual != desired {
-            let detail =
-                if body["op"] == "submit" { "No task was submitted." } else { "Model settings were not accessed." };
+            let detail = if matches!(body["op"].as_str(), Some("submit" | "continue")) {
+                "No task was submitted."
+            } else {
+                "Model settings were not accessed."
+            };
             return Err(format!("Session uses {actual}, but this client selected {desired}. {detail} Run teamagents stop in this workspace and restart with the intended provider."));
         }
     }
@@ -190,17 +193,10 @@ impl Drop for SocketGuard {
     }
 }
 
-fn limit(name: &str, default: u32, max: u32) -> Result<u32> {
-    match std::env::var(name) {
-        Err(std::env::VarError::NotPresent) => Ok(default),
-        Ok(s) if s.parse::<u32>().is_ok_and(|n| n > 0 && n <= max) => Ok(s.parse().expect("validated integer")),
-        _ => Err(format!("{name} must be an integer from 1 to {max}")),
-    }
-}
-
 enum Completion {
     Model(String, std::result::Result<Value, model::ModelError>),
     Tool(String, Result<String>),
+    Compacted { task: String, head_keep: usize, tail_keep: usize, summary: String },
 }
 
 #[derive(Clone)]
@@ -251,15 +247,18 @@ fn wait_for_activity(listener: &UnixListener, wake_rx: &UnixStream, timeout_ms: 
 fn launch(store: &mut Store, workspace: &Path, notifier: &Notifier, tool_first: bool) -> Result<bool> {
     for tool in [tool_first, !tool_first] {
         if tool {
-            if let Some((id, mut action)) = store.claim_tool()? {
+            if let Some(mut job) = store.claim_tool_job()? {
                 // Only the store can produce verify, from the user's original --check.
-                if action["op"] == "verify" {
-                    action["op"] = json!("shell");
+                if job.action["op"] == "verify" {
+                    job.action["op"] = json!("shell");
                 }
                 let workspace = workspace.to_path_buf();
                 let notifier = notifier.clone();
+                let id = job.task;
+                let action = job.action;
+                let staged = job.staged;
                 thread::spawn(move || {
-                    let result = std::panic::catch_unwind(|| tools::execute(&workspace, &action))
+                    let result = std::panic::catch_unwind(|| tools::execute_with_mode(&workspace, &action, staged))
                         .unwrap_or_else(|_| Err("tool worker panicked".into()));
                     notifier.send(Completion::Tool(id, result));
                 });
@@ -280,9 +279,10 @@ fn launch(store: &mut Store, workspace: &Path, notifier: &Notifier, tool_first: 
     Ok(false)
 }
 
-fn settle(store: &mut Store, done: Completion) -> Result<()> {
+fn settle(store: &mut Store, done: Completion, notifier: &Notifier, active: &mut usize) -> Result<()> {
     let id = match &done {
-        Completion::Model(id, _) | Completion::Tool(id, _) => id,
+        Completion::Model(id, _) | Completion::Tool(id, _) => id.as_str(),
+        Completion::Compacted { task, .. } => task.as_str(),
     };
     // A user cancellation can win while I/O is in flight. A late model response grants no authority.
     if store.discard_late_completion(id)? {
@@ -292,12 +292,37 @@ fn settle(store: &mut Store, done: Completion) -> Result<()> {
         Completion::Tool(id, result) => store.tool_result(&id, result.as_deref().map_err(String::as_str)),
         Completion::Model(id, Err(model::ModelError::Fatal(e))) => store.fail(&id, &e),
         Completion::Model(id, Err(model::ModelError::InvalidAction(e))) => store.reject_action(&id, &e),
+        Completion::Model(id, Err(model::ModelError::NeedsCompaction(reason))) => {
+            if let Some(job) = store.prepare_compaction(&id)? {
+                let notifier = notifier.clone();
+                *active += 1;
+                thread::spawn(move || {
+                    let summary = std::panic::catch_unwind(|| {
+                        model::compact_history(&job.agent, &job.task, &job.middle, job.settings.as_ref())
+                    })
+                    .unwrap_or_else(|_| model::fallback_compact(&job.middle));
+                    notifier.send(Completion::Compacted {
+                        task: job.task,
+                        head_keep: job.head_keep,
+                        tail_keep: job.tail_keep,
+                        summary,
+                    });
+                });
+                Ok(())
+            } else {
+                store.fail(&id, &reason)
+            }
+        }
+        Completion::Compacted { task, head_keep, tail_keep, summary } => {
+            store.apply_compaction(&task, head_keep, tail_keep, &summary)
+        }
         Completion::Model(id, Ok(action)) => {
             let result = match action["op"].as_str() {
                 Some("read_file" | "edit_file" | "shell") => store.request_tool(&id, &action),
-                Some("ask" | "handoff" | "finish" | "members" | "spawn" | "delegate" | "send") => {
-                    store.apply(&id, &action)
-                }
+                Some(
+                    "ask" | "handoff" | "finish" | "members" | "spawn" | "delegate" | "send" | "wb_read" | "wb_write"
+                    | "wb_wait",
+                ) => store.apply(&id, &action),
                 _ => Err("unrecognized model action".into()),
             };
             if let Err(e) = result {
@@ -355,9 +380,29 @@ fn dispatch(store: &mut Store, workspace: &Value, frame: &Value, active: usize) 
             let prompt = field(b, "text")?;
             let check = b.get("check").filter(|v| !v.is_null()).map(|_| field(b, "check")).transpose()?;
             let review = b["review"].as_bool().ok_or("expected boolean review policy")?;
+            let staged = b.get("staged").and_then(Value::as_bool).unwrap_or(false);
             let settings = store.model_settings(model::provider_name()?, model::default_model().as_deref())?;
-            let id = store.submit_with_model(agent, prompt, check, review, &settings)?;
+            let id = store.submit_with_options(agent, prompt, check, review, staged, &settings)?;
             json!({"id":id})
+        }
+        "continue" => {
+            let id = field(b, "id")?;
+            let prompt = field(b, "text")?;
+            let check = b.get("check").filter(|v| !v.is_null()).map(|_| field(b, "check")).transpose()?;
+            let review = b["review"].as_bool().ok_or("expected boolean review policy")?;
+            let staged = b.get("staged").and_then(Value::as_bool).unwrap_or(false);
+            let settings = store.model_settings(model::provider_name()?, model::default_model().as_deref())?;
+            let (root, node) = store.continue_tree_with_options(id, prompt, check, review, staged, &settings)?;
+            json!({"id":root, "node":node})
+        }
+        "whiteboard" => store.whiteboard(field(b, "id")?)?,
+        "wb_write" => {
+            let id = field(b, "id")?;
+            let key = field(b, "key")?;
+            let mode = b.get("mode").and_then(Value::as_str).unwrap_or("set");
+            let kind = b.get("kind").filter(|v| !v.is_null()).map(|_| field(b, "kind")).transpose()?;
+            let content = b.get("content").filter(|v| !v.is_null()).map(|_| field(b, "content")).transpose()?;
+            store.user_wb_write(id, key, mode, kind, content)?
         }
         "model" => configure_model(store, b)?,
         "members" => store.agents()?,
@@ -402,9 +447,6 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
         .open(loc.session.join("swarm.lock"))
         .map_err(err)?;
     lock.try_lock().map_err(|e| format!("session is already served or cannot be locked: {e}"))?;
-    let max_agents = limit("TEAMAGENTS_MAX_AGENTS", 8, 1024)?;
-    let budget = limit("TEAMAGENTS_TURN_BUDGET", 32, 10_000)?;
-    let concurrency = limit("TEAMAGENTS_CONCURRENCY", 4, 64)? as usize;
     let db = loc.session.join("swarm.sqlite3");
     for file in [
         &db,
@@ -423,7 +465,7 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
             Err(e) => return Err(err(e)),
         }
     }
-    let mut store = Store::open(&db, max_agents, budget)?;
+    let mut store = Store::open(&db)?;
     store.bind_workspace(&loc.workspace)?;
     store.recover()?;
     let socket = loc.socket();
@@ -449,7 +491,7 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
         drain_wake(&mut wake_rx);
         for done in rx.try_iter() {
             active -= 1;
-            settle(&mut store, done)?;
+            settle(&mut store, done, &notifier, &mut active)?;
             wake = true;
         }
         // Bound each batch so a busy client cannot starve the agents.
@@ -478,8 +520,10 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
                 write_frame(&stream, &json!({"value":welcome}))?;
                 let frame = read_frame(&stream)?;
                 let result = dispatch(&mut store, &workspace_identity, &frame, active)?;
-                wake |=
-                    matches!(frame["body"]["op"].as_str(), Some("submit" | "answer" | "approve" | "deny" | "cancel"));
+                wake |= matches!(
+                    frame["body"]["op"].as_str(),
+                    Some("submit" | "continue" | "answer" | "approve" | "deny" | "cancel" | "wb_write")
+                );
                 Ok(result)
             })();
             let (reply, stop) = match result {
@@ -495,12 +539,12 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
                 return Ok(());
             }
             if let Err(e) = write_frame(&stream, &reply) {
-                if e == "daemon frame exceeds 4 MiB" {
+                if e == "daemon frame exceeds 8 MiB" {
                     let _ = write_frame(&stream, &json!({"error":e}));
                 }
             }
         }
-        while wake && active < concurrency {
+        while wake {
             if !launch(&mut store, &loc.workspace, &notifier, tool_first)? {
                 wake = false;
                 break;
@@ -508,7 +552,7 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
             active += 1;
             tool_first = !tool_first;
         }
-        if !batch_full && !(wake && active < concurrency) {
+        if !batch_full && !wake {
             wait_for_activity(&listener, &wake_rx, 1000)?;
         }
     }

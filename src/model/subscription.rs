@@ -1,22 +1,34 @@
 //! Sign in with ChatGPT token sharing. This transport has no configurable origin or billing fallback.
-use super::{body, decode_action, http_agent, valid_model_id, ModelError, ModelSettings, Provider, LIMIT, TIMEOUT};
+use super::{
+    body, decode_action, http_agent, is_context_overflow_payload, is_retryable_status, retry_delay,
+    send_with_redirects, valid_model_id, ModelError, ModelSettings, Provider, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE,
+    LIMIT, TIMEOUT,
+};
 use crate::{protocol::TurnKind, Result};
 use ring::digest::{digest, Digest, SHA256};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::HashSet, io::Read, sync::Mutex};
+use std::{collections::HashSet, io::Read, sync::Mutex, thread, time::Duration};
 
 const MODELS: &str = "https://api.openai.com/v1/models";
 const RESPONSES: &str = "https://api.openai.com/v1/responses";
 const INVALID: &str = "invalid or ambiguous ChatGPT event stream; no action accepted";
 const TEXT_ONLY: &str = "ChatGPT must return a single final assistant text action without tools or refusals";
-const STREAM_LIMIT: usize = 16 * 1024 * 1024;
+const STREAM_LIMIT: usize = 32 * 1024 * 1024;
 
 fn authorize(req: ureq::Request, token: &str) -> Result<ureq::Request> {
     if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
         return Err("invalid ChatGPT access token; run teamagents auth login".into());
     }
     Ok(req.set("Authorization", &format!("Bearer {token}")).set("Accept-Encoding", "identity"))
+}
+
+fn auth_request(req: ureq::Request, token: &str, send_auth: bool) -> Result<ureq::Request> {
+    if send_auth {
+        authorize(req, token)
+    } else {
+        Ok(req.set("Accept-Encoding", "identity"))
+    }
 }
 
 fn recovery(status: Option<u16>, code: Option<&str>) -> String {
@@ -58,37 +70,131 @@ fn recovery(status: Option<u16>, code: Option<&str>) -> String {
     }
 }
 
-fn checked(response: std::result::Result<ureq::Response, ureq::Error>) -> Result<ureq::Response> {
+enum ReadError {
+    Io,
+    Oversize,
+}
+
+fn is_non_retryable_plan_code(code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some(
+            "subscription_sharing_usage_limit_exceeded"
+                | "subscription_sharing_unsupported_capability"
+                | "subscription_sharing_invalid_user"
+                | "subscription_sharing_user_not_eligible"
+                | "subscription_sharing_route_not_supported"
+                | "chatpass_v2_scope_not_authorized"
+                | "chatpass_v2_invalid_authorization_context"
+        )
+    )
+}
+
+enum RetryErr {
+    Http { retryable: bool, retry_after: Option<String>, message: String },
+    Compaction(String),
+}
+
+fn check_or_retry(
+    response: std::result::Result<ureq::Response, ureq::Error>,
+) -> std::result::Result<ureq::Response, RetryErr> {
     match response {
         Ok(r) if r.status() == 200 => Ok(r),
         Ok(r) | Err(ureq::Error::Status(_, r)) => {
             let status = r.status();
-            let details = bounded(r, 16 * 1024).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            let retry_after = r.header("Retry-After").map(str::to_owned);
+            let raw = bounded(r, 16 * 1024).ok();
+            let details = raw.as_deref().and_then(|b| serde_json::from_slice::<Value>(b).ok());
             let code = details.as_ref().and_then(|v| v.pointer("/error/code")).and_then(Value::as_str);
-            Err(recovery(Some(status), code))
+            if status == 413
+                || (matches!(status, 400 | 422)
+                    && (code == Some("context_length_exceeded")
+                        || raw.as_deref().is_some_and(is_context_overflow_payload)))
+            {
+                return Err(RetryErr::Compaction(format!("ChatGPT HTTP {status}: context overflow")));
+            }
+            let retryable = is_retryable_status(status) && !is_non_retryable_plan_code(code);
+            Err(RetryErr::Http { retryable, retry_after, message: recovery(Some(status), code) })
         }
-        Err(ureq::Error::Transport(_)) => Err("ChatGPT transport failed; request not retried".into()),
+        Err(ureq::Error::Transport(_)) => {
+            Err(RetryErr::Http { retryable: true, retry_after: None, message: "ChatGPT transport failed".into() })
+        }
     }
 }
 
-fn bounded(r: ureq::Response, limit: usize) -> Result<Vec<u8>> {
+fn read_bounded(r: ureq::Response, limit: usize) -> std::result::Result<Vec<u8>, ReadError> {
     let mut bytes = Vec::new();
-    r.into_reader()
-        .take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "ChatGPT response interrupted; request not retried")?;
+    r.into_reader().take((limit + 1) as u64).read_to_end(&mut bytes).map_err(|_| ReadError::Io)?;
     if bytes.len() > limit {
-        return Err("ChatGPT response exceeds the size limit; no action accepted".into());
+        return Err(ReadError::Oversize);
     }
     Ok(bytes)
 }
 
-pub(super) fn models(token: &str) -> Result<Vec<String>> {
-    discover(authorize(http_agent(TIMEOUT).get(MODELS), token)?)
+fn bounded(r: ureq::Response, limit: usize) -> Result<Vec<u8>> {
+    read_bounded(r, limit).map_err(|e| match e {
+        ReadError::Io => "ChatGPT response interrupted".into(),
+        ReadError::Oversize => "ChatGPT response exceeds the size limit; no action accepted".into(),
+    })
 }
 
+pub(super) fn models(token: &str) -> Result<Vec<String>> {
+    discover_with_retry(
+        MODELS,
+        |url, send_auth| auth_request(http_agent(TIMEOUT).get(url), token, send_auth),
+        HTTP_RETRY_BASE,
+    )
+}
+
+fn discover_with_retry(
+    initial_url: &str,
+    mut build: impl FnMut(&str, bool) -> Result<ureq::Request>,
+    retry_base: Duration,
+) -> Result<Vec<String>> {
+    for attempt in 1..=HTTP_MAX_ATTEMPTS {
+        let outcome = send_with_redirects(initial_url, None, |url, send_auth| {
+            Ok(build(url, send_auth)?.set("Accept", "application/json"))
+        })?;
+        let resp = match check_or_retry(outcome) {
+            Ok(r) => r,
+            Err(RetryErr::Http { retryable: true, retry_after, .. }) if attempt < HTTP_MAX_ATTEMPTS => {
+                thread::sleep(retry_delay(attempt, retry_after.as_deref(), retry_base));
+                continue;
+            }
+            Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message)) => return Err(message),
+        };
+        let bytes = match read_bounded(resp, LIMIT) {
+            Ok(b) => b,
+            Err(ReadError::Io) if attempt < HTTP_MAX_ATTEMPTS => {
+                thread::sleep(retry_delay(attempt, None, retry_base));
+                continue;
+            }
+            Err(ReadError::Io) => return Err("ChatGPT response interrupted".into()),
+            Err(ReadError::Oversize) => {
+                return Err("ChatGPT response exceeds the size limit; no action accepted".into())
+            }
+        };
+        let catalog: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid ChatGPT model catalog")?;
+        let entries = catalog["models"].as_array().ok_or("invalid ChatGPT model catalog")?;
+        let mut seen = HashSet::new();
+        return Ok(entries
+            .iter()
+            .filter(|m| m["visibility"] == "list")
+            .filter_map(|m| m["slug"].as_str())
+            .filter(|slug| valid_model_id(slug) && seen.insert(*slug))
+            .map(str::to_owned)
+            .collect());
+    }
+    unreachable!()
+}
+
+#[cfg(test)]
 fn discover(req: ureq::Request) -> Result<Vec<String>> {
-    let bytes = bounded(checked(req.set("Accept", "application/json").call())?, LIMIT)?;
+    let ok = match check_or_retry(req.set("Accept", "application/json").call()) {
+        Ok(r) => r,
+        Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message)) => return Err(message),
+    };
+    let bytes = bounded(ok, LIMIT)?;
     let catalog: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid ChatGPT model catalog")?;
     let entries = catalog["models"].as_array().ok_or("invalid ChatGPT model catalog")?;
     let mut seen = HashSet::new();
@@ -143,13 +249,20 @@ pub(super) fn complete(
     let model = CACHE.select(token, settings.model.as_deref(), || models(token)).map_err(ModelError::Fatal)?;
     let bytes = body(&model, settings.effort.as_deref(), agent, task, history, kind, Provider::ChatGpt)
         .map_err(ModelError::Fatal)?;
-    let req = authorize(http_agent(TIMEOUT).post(RESPONSES), token).map_err(ModelError::Fatal)?;
-    infer(req, &bytes, kind)
+    infer_with_retry(
+        RESPONSES,
+        |url, send_auth| auth_request(http_agent(TIMEOUT).post(url), token, send_auth),
+        &bytes,
+        kind,
+        HTTP_RETRY_BASE,
+    )
 }
 
-fn infer(req: ureq::Request, bytes: &[u8], kind: TurnKind) -> std::result::Result<Value, ModelError> {
-    let r = checked(req.set("Content-Type", "application/json").set("Accept", "text/event-stream").send_bytes(bytes))
-        .map_err(ModelError::Fatal)?;
+fn infer_response(
+    outcome: std::result::Result<ureq::Response, ureq::Error>,
+    kind: TurnKind,
+) -> std::result::Result<std::result::Result<Value, ModelError>, RetryErr> {
+    let r = check_or_retry(outcome)?;
     // Some gateways omit the SSE media type. Only a validated terminal event authorizes an action.
     let media = match r.header("Content-Type").map(|_| r.content_type().trim().to_ascii_lowercase()).as_deref() {
         Some("text/event-stream") => "text/event-stream",
@@ -160,24 +273,81 @@ fn infer(req: ureq::Request, bytes: &[u8], kind: TurnKind) -> std::result::Resul
         None => "missing Content-Type",
         _ => "other Content-Type",
     };
-    let bytes = bounded(r, STREAM_LIMIT).map_err(ModelError::Fatal)?;
-    let text = std::str::from_utf8(&bytes).ok().map(|s| s.strip_prefix('\u{feff}').unwrap_or(s));
+    let stream_bytes = match read_bounded(r, STREAM_LIMIT) {
+        Ok(b) => b,
+        Err(ReadError::Io) => {
+            return Err(RetryErr::Http {
+                retryable: true,
+                retry_after: None,
+                message: "ChatGPT response interrupted".into(),
+            })
+        }
+        Err(ReadError::Oversize) => {
+            return Ok(Err(ModelError::Fatal("ChatGPT response exceeds the size limit; no action accepted".into())))
+        }
+    };
+    let text = std::str::from_utf8(&stream_bytes).ok().map(|s| s.strip_prefix('\u{feff}').unwrap_or(s));
     if let Some(text) = text {
         let first = text.lines().find(|line| !line.is_empty()).unwrap_or("");
         let framed = ["event:", "data:", ":"].iter().any(|prefix| first.starts_with(prefix));
         if media == "text/event-stream" || (media != "text/html" && framed) {
-            return decode(text, kind);
+            return Ok(decode(text, kind));
         }
         if let Ok(json) = serde_json::from_str::<Value>(text) {
             if let Some(error) = json.get("error").filter(|e| !e.is_null()) {
-                return Err(ModelError::Fatal(recovery(Some(200), error.get("code").and_then(Value::as_str))));
+                let code = error.get("code").and_then(Value::as_str);
+                if kind != TurnKind::Reporter && code == Some("context_length_exceeded") {
+                    return Err(RetryErr::Compaction("ChatGPT HTTP 200: context overflow".into()));
+                }
+                return Ok(Err(ModelError::Fatal(recovery(Some(200), code))));
             }
-            return Err(ModelError::Fatal(format!(
+            return Ok(Err(ModelError::Fatal(format!(
                 "ChatGPT HTTP 200 ({media}): received JSON instead of a completed event stream"
-            )));
+            ))));
         }
     }
-    Err(ModelError::Fatal(format!("ChatGPT HTTP 200 ({media}): expected a ChatGPT event stream; no action accepted")))
+    Ok(Err(ModelError::Fatal(format!(
+        "ChatGPT HTTP 200 ({media}): expected a ChatGPT event stream; no action accepted"
+    ))))
+}
+
+fn infer_with_retry(
+    initial_url: &str,
+    mut build: impl FnMut(&str, bool) -> Result<ureq::Request>,
+    bytes: &[u8],
+    kind: TurnKind,
+    retry_base: Duration,
+) -> std::result::Result<Value, ModelError> {
+    for attempt in 1..=HTTP_MAX_ATTEMPTS {
+        let outcome = send_with_redirects(initial_url, Some(bytes), |url, send_auth| {
+            Ok(build(url, send_auth)?.set("Content-Type", "application/json").set("Accept", "text/event-stream"))
+        })
+        .map_err(ModelError::Fatal)?;
+        match infer_response(outcome, kind) {
+            Ok(outcome) => return outcome,
+            Err(RetryErr::Compaction(msg)) => {
+                if kind == TurnKind::Reporter {
+                    return Err(ModelError::Fatal(msg));
+                }
+                return Err(ModelError::NeedsCompaction(msg));
+            }
+            Err(RetryErr::Http { retryable: true, retry_after, .. }) if attempt < HTTP_MAX_ATTEMPTS => {
+                thread::sleep(retry_delay(attempt, retry_after.as_deref(), retry_base));
+            }
+            Err(RetryErr::Http { message, .. }) => return Err(ModelError::Fatal(message)),
+        }
+    }
+    unreachable!()
+}
+
+#[cfg(test)]
+fn infer(req: ureq::Request, bytes: &[u8], kind: TurnKind) -> std::result::Result<Value, ModelError> {
+    let outcome = req.set("Content-Type", "application/json").set("Accept", "text/event-stream").send_bytes(bytes);
+    match infer_response(outcome, kind) {
+        Ok(res) => res,
+        Err(RetryErr::Compaction(msg)) if kind != TurnKind::Reporter => Err(ModelError::NeedsCompaction(msg)),
+        Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message)) => Err(ModelError::Fatal(message)),
+    }
 }
 
 // Typed wire fields reject duplicates. Unknown metadata is never interpreted as an action.
@@ -663,12 +833,57 @@ mod tests {
     }
 
     #[test]
-    fn http_limits_redaction_redirect_and_deadline_fail_closed() {
-        let trap = TcpListener::bind("127.0.0.1:0").unwrap();
-        trap.set_nonblocking(true).unwrap();
-        let location = format!("Location: http://{}/secret", trap.local_addr().unwrap());
+    fn http_limits_redaction_redirect_and_retry_behave_safely() {
+        // Redirects (307) and transient 503 retries succeed without exposing secrets.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for idx in 0..3 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut r = BufReader::new(&socket);
+                let mut first = String::new();
+                r.read_line(&mut first).unwrap();
+                let mut size = 0;
+                for line in r.by_ref().lines() {
+                    let l = line.unwrap();
+                    if l.is_empty() {
+                        break;
+                    }
+                    if let Some((n, v)) = l.split_once(':') {
+                        if n.eq_ignore_ascii_case("Content-Length") {
+                            size = v.trim().parse().unwrap();
+                        }
+                    }
+                }
+                let mut b = vec![0; size];
+                r.read_exact(&mut b).unwrap();
+                if idx == 0 {
+                    write!(
+                        socket,
+                        "HTTP/1.1 503 Retry\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                } else if idx == 1 {
+                    write!(socket, "HTTP/1.1 307 Redir\r\nLocation: http://{addr}/redir\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    assert_eq!(first.trim_end(), "POST /redir HTTP/1.1");
+                    let body = frames(&[terminal(ACTION)]);
+                    write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                }
+            }
+        });
+        let retried = infer_with_retry(
+            &format!("http://{addr}/start"),
+            |url, send_auth| auth_request(http_agent(TIMEOUT).post(url), TOKEN, send_auth),
+            b"{}",
+            TurnKind::Root,
+            Duration::from_millis(1),
+        )
+        .unwrap();
+        assert_eq!(retried["text"], "ok");
+        server.join().unwrap();
+
         for (status, headers, payload, delay, expected) in [
-            (307, location.as_str(), String::new(), Duration::ZERO, "307"),
             (
                 403,
                 "Content-Type: application/json",
@@ -718,14 +933,13 @@ mod tests {
             server.join().unwrap();
         }
         // SSE framing larger than `LIMIT` (e.g. xhigh reasoning streams) still decodes when action text <= `LIMIT`.
-        let sse_over_1m = format!(":{}\r\n\r\n{}", " ".repeat(LIMIT + 64), frames(&[terminal(ACTION)]));
-        let (url, server) = serve(200, "Content-Type: text/event-stream", sse_over_1m, Duration::ZERO);
+        let sse_over_2m = format!(":{}\r\n\r\n{}", " ".repeat(LIMIT + 64), frames(&[terminal(ACTION)]));
+        let (url, server) = serve(200, "Content-Type: text/event-stream", sse_over_2m, Duration::ZERO);
         assert_eq!(
             infer(authorize(http_agent(TIMEOUT).post(&url), TOKEN).unwrap(), b"{}", TurnKind::Root).unwrap()["text"],
             "ok"
         );
         server.join().unwrap();
-        assert_eq!(trap.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
         for payload in ["{}", r#"{"data":[{"id":"api-model"}]}"#] {
             let (url, server) = serve(200, "Content-Type: application/json", payload.to_owned(), Duration::ZERO);
             assert!(discover(authorize(http_agent(TIMEOUT).get(&url), TOKEN).unwrap()).is_err());

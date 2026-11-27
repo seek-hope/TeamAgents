@@ -12,6 +12,9 @@ mod tui;
 
 type Result<T> = std::result::Result<T, String>;
 
+#[cfg(test)]
+mod formal_tests;
+
 fn main() -> std::process::ExitCode {
     match cli::run() {
         Ok(()) => std::process::ExitCode::SUCCESS,

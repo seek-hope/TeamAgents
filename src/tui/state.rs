@@ -14,7 +14,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const MAX_EVENTS: usize = 500;
+const MAX_EVENTS: usize = 1000;
 const TOAST_TICKS: u64 = 50;
 pub(crate) const DELETE_ARM_TICKS: u64 = 50;
 pub(crate) const EFFORT_OPTIONS: &[&str] = &["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -39,6 +39,7 @@ pub(crate) enum InspectorTab {
     Evidence,
     Tree,
     Events,
+    Board,
 }
 
 impl InspectorTab {
@@ -48,6 +49,7 @@ impl InspectorTab {
             '2' => Some(Self::Evidence),
             '3' => Some(Self::Tree),
             '4' => Some(Self::Events),
+            '5' => Some(Self::Board),
             _ => None,
         }
     }
@@ -57,16 +59,18 @@ impl InspectorTab {
             Self::Summary => Self::Evidence,
             Self::Evidence => Self::Tree,
             Self::Tree => Self::Events,
-            Self::Events => Self::Summary,
+            Self::Events => Self::Board,
+            Self::Board => Self::Summary,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::Summary => Self::Events,
+            Self::Summary => Self::Board,
             Self::Evidence => Self::Summary,
             Self::Tree => Self::Evidence,
             Self::Events => Self::Tree,
+            Self::Board => Self::Events,
         }
     }
 }
@@ -129,7 +133,9 @@ pub(crate) struct ArmedDelete {
 pub(crate) enum UiCommand {
     RefreshAll,
     FetchDetail(String),
-    Submit { agent: String, text: String, review: bool, check: Option<String> },
+    Submit { agent: String, text: String, review: bool, staged: bool, check: Option<String> },
+    Continue { id: String, text: String, review: bool, staged: bool, check: Option<String> },
+    WbWrite { root_id: String, key: String, mode: String, kind: Option<String>, content: Option<String> },
     Answer { root_id: String, text: String },
     Approve { approval_id: String, allow: bool },
     Cancel(String),
@@ -180,10 +186,19 @@ pub(crate) struct Toast {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContinuationTarget {
+    pub root_id: String,
+    pub node_id: String,
+    pub label: String,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HitTarget {
     SidebarPane,
     InspectorPane,
     ComposerPane { inner: Rect, scroll: u16 },
+    NewSession,
     SidebarToggle,
     SidebarTab(SidebarTab),
     SidebarSessionRow { task_id: String, root_id: String, toggle_fold: bool },
@@ -245,6 +260,7 @@ pub(crate) struct AppState {
     pub workspace_name: String,
     pub agent: String,
     pub review_mode: bool,
+    pub staged_mode: bool,
     pub armed_check: Option<String>,
     pub model: Option<ModelConfig>,
     pub palette: Palette,
@@ -281,11 +297,12 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    pub fn new(workspace_name: String, agent: String, review_mode: bool) -> Self {
+    pub fn new(workspace_name: String, agent: String, review_mode: bool, staged_mode: bool) -> Self {
         let mut state = Self {
             workspace_name,
             agent: agent.clone(),
             review_mode,
+            staged_mode,
             armed_check: None,
             model: None,
             palette: Palette::default_for_env(),
@@ -363,6 +380,49 @@ impl AppState {
             return Some(detail);
         }
         self.tasks.iter().find(|t| t.id == id)
+    }
+
+    pub fn selected_root_task(&self) -> Option<&TaskRecord> {
+        let selected = self.selected_task()?;
+        self.selected_detail
+            .as_ref()
+            .filter(|d| d.id == selected.root)
+            .or_else(|| self.tasks.iter().find(|t| t.id == selected.root))
+    }
+
+    pub fn continuation_target(&self) -> Option<ContinuationTarget> {
+        let selected = self.selected_task()?;
+        let root = self.selected_root_task()?;
+        if !root.status.is_terminal() || root.status == TaskStatus::Unknown {
+            return None;
+        }
+        let node_id = root.continuation_node.as_ref()?;
+        if selected.id != root.id && &selected.id != node_id {
+            return None;
+        }
+        let kind = root.continuation_kind.clone().unwrap_or_else(|| "leaf".into());
+        let label = root.continuation_agent.clone().unwrap_or_else(|| {
+            if kind == "summarizer" {
+                "summarizer".into()
+            } else {
+                root.agent.clone()
+            }
+        });
+        Some(ContinuationTarget { root_id: root.id.clone(), node_id: node_id.clone(), label, kind })
+    }
+
+    pub fn start_new_session(&mut self) {
+        self.selected_task_id = None;
+        self.pending_select_task = None;
+        self.selected_detail = None;
+        self.answering_root = None;
+        self.armed_delete = None;
+        self.inspector_scroll = 0;
+        if self.inspector_tab != InspectorTab::Events {
+            self.inspector_tab = InspectorTab::Summary;
+        }
+        self.focus = Focus::Composer;
+        self.set_toast("Started new session.", false);
     }
 
     pub fn pending_approvals(&self) -> Vec<&TaskRecord> {
@@ -578,9 +638,10 @@ impl AppState {
                 return;
             }
         }
-        self.selected_task_id = self.tree_rows.first().map(|r| r.task_id.clone());
+        self.selected_task_id = None;
+        self.selected_detail = None;
         self.sidebar_follow_selection = true;
-        if self.selected_task_id.is_none() && self.inspector_tab != InspectorTab::Events {
+        if self.inspector_tab != InspectorTab::Events {
             self.inspector_tab = InspectorTab::Summary;
         }
     }
@@ -675,6 +736,7 @@ impl AppState {
                             self.focus = Focus::Composer;
                         }
                     }
+                    HitTarget::NewSession => self.start_new_session(),
                     HitTarget::SidebarToggle => self.toggle_sidebar(),
                     HitTarget::OpenHelp => self.overlay = Overlay::Help,
                     HitTarget::SidebarTab(tab) => {
@@ -787,6 +849,10 @@ impl AppState {
                 self.overlay = if self.overlay == Overlay::Help { Overlay::None } else { Overlay::Help };
                 return Vec::new();
             }
+            KeyCode::Char('n') if ctrl => {
+                self.start_new_session();
+                return Vec::new();
+            }
             KeyCode::Char('b') if ctrl => {
                 self.armed_delete = None;
                 self.toggle_sidebar();
@@ -796,7 +862,7 @@ impl AppState {
                 self.armed_delete = None;
                 return self.open_approvals_modal();
             }
-            KeyCode::Char(d @ '1'..='4') if alt => {
+            KeyCode::Char(d @ '1'..='5') if alt => {
                 if let Some(tab) = InspectorTab::from_digit(d) {
                     self.inspector_tab = tab;
                     self.inspector_scroll = 0;
@@ -1149,7 +1215,7 @@ impl AppState {
             KeyCode::Down | KeyCode::Char('j') => self.move_sidebar(1, &mut cmds),
             KeyCode::Char('[') => self.sidebar_tab = SidebarTab::Trees,
             KeyCode::Char(']') => self.sidebar_tab = SidebarTab::Members,
-            KeyCode::Char(d @ '1'..='4') => {
+            KeyCode::Char(d @ '1'..='5') => {
                 if let Some(tab) = InspectorTab::from_digit(d) {
                     self.inspector_tab = tab;
                     self.inspector_scroll = 0;
@@ -1255,7 +1321,7 @@ impl AppState {
             }
             KeyCode::Char('[') => self.sidebar_tab = SidebarTab::Trees,
             KeyCode::Char(']') => self.sidebar_tab = SidebarTab::Members,
-            KeyCode::Char(d @ '1'..='4') => {
+            KeyCode::Char(d @ '1'..='5') => {
                 if let Some(tab) = InspectorTab::from_digit(d) {
                     self.inspector_tab = tab;
                     self.inspector_scroll = 0;
@@ -1277,12 +1343,15 @@ impl AppState {
                 if self.tree_rows.is_empty() {
                     return;
                 }
-                let cur = self
+                let next = match self
                     .selected_task_id
                     .as_deref()
                     .and_then(|id| self.tree_rows.iter().position(|r| r.task_id == id))
-                    .unwrap_or(0);
-                let next = (cur as isize + delta).clamp(0, self.tree_rows.len() as isize - 1) as usize;
+                {
+                    Some(cur) => (cur as isize + delta).clamp(0, self.tree_rows.len() as isize - 1) as usize,
+                    None if delta < 0 => self.tree_rows.len() - 1,
+                    None => 0,
+                };
                 let id = self.tree_rows[next].task_id.clone();
                 if self.selected_task_id.as_deref() != Some(id.as_str()) {
                     self.selected_task_id = Some(id.clone());
@@ -1368,26 +1437,56 @@ impl AppState {
             self.questions.clear_answered(&root_id);
             return vec![UiCommand::Answer { root_id, text: trimmed }];
         }
-        match self.questions.reply_target(&self.agent) {
-            Ok(Some(root_id)) => {
+        if let Some(selected) = self.selected_task().cloned() {
+            let root = self.selected_root_task().cloned().unwrap_or(selected.clone());
+            if root.is_waiting_input() {
                 let text = self.input.take_and_push_history();
                 let trimmed = text.trim().to_owned();
-                self.questions.clear_answered(&root_id);
-                vec![UiCommand::Answer { root_id, text: trimmed }]
+                self.questions.clear_answered(&root.id);
+                return vec![UiCommand::Answer { root_id: root.id, text: trimmed }];
             }
-            Ok(None) => {
+            if self.questions.consume_stale_root(&root.id) {
+                let msg =
+                    "A waiting question closed in another client. Nothing was sent. Check status or retry.".to_owned();
+                self.push_event(EventLevel::Error, &msg);
+                self.set_toast(msg, true);
+                return Vec::new();
+            }
+            if let Some(target) = self.continuation_target() {
                 let text = self.input.take_and_push_history();
                 let trimmed = text.trim().to_owned();
                 let check = self.armed_check.take();
-                vec![UiCommand::Submit { agent: self.agent.clone(), text: trimmed, review: self.review_mode, check }]
+                return vec![UiCommand::Continue {
+                    id: target.node_id,
+                    text: trimmed,
+                    review: self.review_mode,
+                    staged: self.staged_mode,
+                    check,
+                }];
             }
-            Err(err) => {
-                // Never discard user's typed text when refusing a stale or ambiguous reply.
-                self.push_event(EventLevel::Error, &err);
-                self.set_toast(err, true);
-                Vec::new()
-            }
+            let msg = if !root.status.is_terminal() {
+                "Session is still active; wait for it to settle or press Ctrl+N for a new session."
+            } else if root.status == TaskStatus::Unknown {
+                "Session outcome is unknown; press Ctrl+N to start a new session."
+            } else if root.continuation_node.is_none() {
+                "Session has no sole leaf or summarizer to continue; press Ctrl+N for a new session."
+            } else {
+                "Select the session root, sole leaf, or summarizer node to continue (or Ctrl+N for new session)."
+            };
+            self.push_event(EventLevel::Error, msg);
+            self.set_toast(msg, true);
+            return Vec::new();
         }
+        let text = self.input.take_and_push_history();
+        let trimmed = text.trim().to_owned();
+        let check = self.armed_check.take();
+        vec![UiCommand::Submit {
+            agent: self.agent.clone(),
+            text: trimmed,
+            review: self.review_mode,
+            staged: self.staged_mode,
+            check,
+        }]
     }
 
     fn execute_slash(&mut self, slash: &str) -> Vec<UiCommand> {
@@ -1427,11 +1526,22 @@ impl AppState {
                 }
                 vec![UiCommand::Answer { root_id, text }]
             }
+            ("new", None, None) => {
+                self.input.take_and_push_history();
+                self.start_new_session();
+                Vec::new()
+            }
             ("new", Some(_), _) => {
                 let text = args.to_owned();
                 self.input.take_and_push_history();
                 let check = self.armed_check.take();
-                vec![UiCommand::Submit { agent: self.agent.clone(), text, review: self.review_mode, check }]
+                vec![UiCommand::Submit {
+                    agent: self.agent.clone(),
+                    text,
+                    review: self.review_mode,
+                    staged: self.staged_mode,
+                    check,
+                }]
             }
             ("check", None, None) => {
                 self.input.take_and_push_history();
@@ -1469,6 +1579,29 @@ impl AppState {
                 self.set_toast(format!("Policy: {label}"), false);
                 Vec::new()
             }
+            ("staged", None, None) => {
+                self.input.take_and_push_history();
+                self.staged_mode = !self.staged_mode;
+                let label = if self.staged_mode { "staged" } else { "direct" };
+                self.push_event(EventLevel::Info, format!("Sandbox switched to {label}."));
+                self.set_toast(format!("Sandbox: {label}"), false);
+                Vec::new()
+            }
+            ("staged", Some(mode @ ("on" | "off")), None) => {
+                self.input.take_and_push_history();
+                self.staged_mode = mode == "on";
+                let label = if self.staged_mode { "staged" } else { "direct" };
+                self.push_event(EventLevel::Info, format!("Sandbox set to {label}."));
+                self.set_toast(format!("Sandbox: {label}"), false);
+                Vec::new()
+            }
+            ("wb", None, None) => {
+                self.input.take_and_push_history();
+                self.inspector_tab = InspectorTab::Board;
+                self.inspector_scroll = 0;
+                Vec::new()
+            }
+            ("wb", Some(_), _) => self.execute_wb_slash(args),
             ("stop", None, None) => {
                 self.input.take_and_push_history();
                 vec![UiCommand::StopDaemon]
@@ -1497,6 +1630,97 @@ impl AppState {
         self.input.clear();
         self.set_toast(msg, false);
         Vec::new()
+    }
+
+    fn execute_wb_slash(&mut self, args: &str) -> Vec<UiCommand> {
+        let Some(root_id) = self.selected_root_task().map(|r| r.id.clone()) else {
+            self.set_toast("Select a session first before writing to its whiteboard.", true);
+            return Vec::new();
+        };
+        let trimmed = args.trim();
+        let mut tokens = trimmed.split_whitespace();
+        let Some(first) = tokens.next() else {
+            return Vec::new();
+        };
+        let parse_kind_key = |raw: &str| -> (Option<String>, String) {
+            if let Some((k, rest)) = raw.split_once(':') {
+                if matches!(k, "note" | "contract" | "claim" | "question" | "decision") && !rest.is_empty() {
+                    return (Some(k.to_owned()), rest.to_owned());
+                }
+            }
+            (None, raw.to_owned())
+        };
+        let body_after = |verb: Option<&str>, raw_key: &str| -> String {
+            let after_verb = match verb {
+                Some(v) => trimmed.strip_prefix(v).unwrap_or(trimmed).trim_start(),
+                None => trimmed,
+            };
+            after_verb.strip_prefix(raw_key).unwrap_or("").trim().to_owned()
+        };
+        let cmd = match first {
+            "get" => {
+                self.input.take_and_push_history();
+                self.inspector_tab = InspectorTab::Board;
+                self.inspector_scroll = 0;
+                return Vec::new();
+            }
+            "resolve" => {
+                let Some(raw_key) = tokens.next() else {
+                    self.set_toast("Usage: /wb resolve KEY [NOTE]", true);
+                    return Vec::new();
+                };
+                let (kind, key) = parse_kind_key(raw_key);
+                let body = body_after(Some("resolve"), raw_key);
+                let content = (!body.is_empty()).then_some(body);
+                UiCommand::WbWrite { root_id, key, mode: "resolve".into(), kind, content }
+            }
+            "delete" | "del" => {
+                let Some(raw_key) = tokens.next() else {
+                    self.set_toast("Usage: /wb delete KEY", true);
+                    return Vec::new();
+                };
+                let (_, key) = parse_kind_key(raw_key);
+                UiCommand::WbWrite { root_id, key, mode: "delete".into(), kind: None, content: None }
+            }
+            "append" => {
+                let Some(raw_key) = tokens.next() else {
+                    self.set_toast("Usage: /wb append KEY TEXT", true);
+                    return Vec::new();
+                };
+                let (kind, key) = parse_kind_key(raw_key);
+                let body = body_after(Some("append"), raw_key);
+                if body.is_empty() {
+                    self.set_toast("Usage: /wb append KEY TEXT", true);
+                    return Vec::new();
+                }
+                UiCommand::WbWrite { root_id, key, mode: "append".into(), kind, content: Some(body) }
+            }
+            "set" => {
+                let Some(raw_key) = tokens.next() else {
+                    self.set_toast("Usage: /wb set [kind:]KEY TEXT", true);
+                    return Vec::new();
+                };
+                let (kind, key) = parse_kind_key(raw_key);
+                let body = body_after(Some("set"), raw_key);
+                if body.is_empty() {
+                    self.set_toast("Usage: /wb set [kind:]KEY TEXT", true);
+                    return Vec::new();
+                }
+                UiCommand::WbWrite { root_id, key, mode: "set".into(), kind, content: Some(body) }
+            }
+            raw_key => {
+                let (kind, key) = parse_kind_key(raw_key);
+                let body = body_after(None, raw_key);
+                if body.is_empty() {
+                    self.set_toast("Usage: /wb [set|append|resolve|del] [kind:]KEY TEXT", true);
+                    return Vec::new();
+                }
+                UiCommand::WbWrite { root_id, key, mode: "set".into(), kind, content: Some(body) }
+            }
+        };
+        self.input.take_and_push_history();
+        self.inspector_tab = InspectorTab::Board;
+        vec![cmd]
     }
 
     fn execute_model_slash(&mut self, args: &str) -> Vec<UiCommand> {
@@ -1619,8 +1843,8 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_tree_orders_newest_root_first_and_supports_collapse() {
-        let mut state = AppState::new("repo".into(), "default".into(), false);
+    fn rebuild_tree_orders_newest_root_first_stays_blank_on_open_and_supports_collapse() {
+        let mut state = AppState::new("repo".into(), "default".into(), false, false);
         let r1 = TaskRecord::from_value(&json!({"id":"r1","agent":"default","status":"done","prompt":"old"})).unwrap();
         let c1 =
             TaskRecord::from_value(&json!({"id":"c1","root":"r1","parent":"r1","agent":"a","status":"done"})).unwrap();
@@ -1632,6 +1856,27 @@ mod tests {
             model: Ok(ModelConfig { provider: "api".into(), model: Some("m".into()), effort: None }),
         });
         assert_eq!(state.tree_rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(), vec!["r2", "r1", "c1"]);
+        // Opening with historical sessions must stay in the fresh New Session view.
+        assert_eq!(state.selected_task_id, None);
+        assert!(cmds.is_empty());
+
+        // Plain input in New Session starts a new root even if another session existed.
+        state.input.set_text("fresh prompt");
+        let cmds = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            cmds,
+            vec![UiCommand::Submit {
+                agent: "default".into(),
+                text: "fresh prompt".into(),
+                review: false,
+                staged: false,
+                check: None
+            }]
+        );
+
+        // Moving selection from New Session picks the newest root row first.
+        state.focus = Focus::Sidebar;
+        let cmds = state.handle_key(key(KeyCode::Down));
         assert_eq!(state.selected_task_id.as_deref(), Some("r2"));
         assert!(cmds.contains(&UiCommand::FetchDetail("r2".into())));
 
@@ -1642,7 +1887,7 @@ mod tests {
 
     #[test]
     fn two_step_delete_arms_disarms_expires_and_confirms() {
-        let mut state = AppState::new("repo".into(), "default".into(), false);
+        let mut state = AppState::new("repo".into(), "default".into(), false, false);
         let r1 =
             TaskRecord::from_value(&json!({"id":"r1","agent":"default","status":"done","prompt":"First"})).unwrap();
         let r2 =
@@ -1660,8 +1905,10 @@ mod tests {
         assert!(state.armed_delete.is_none());
         assert_eq!(state.input.as_str(), "a");
 
-        // Sidebar first Del arms delete; moving selection disarms it.
+        // Select newest session (r2), then first Del arms delete; moving selection disarms it.
         state.focus = Focus::Sidebar;
+        state.handle_key(key(KeyCode::Down));
+        assert_eq!(state.selected_task_id.as_deref(), Some("r2"));
         assert!(state.handle_key(key(KeyCode::Delete)).is_empty());
         assert_eq!(state.armed_delete.as_ref().map(|d| d.root_id.as_str()), Some("r2"));
         assert!(state.toast.as_ref().is_some_and(|t| t.text.contains("Press Del again")));
@@ -1688,7 +1935,7 @@ mod tests {
 
     #[test]
     fn shortcuts_and_slash_commands_are_complementary_and_hitmap_dispatches_clicks() {
-        let mut state = AppState::new("repo".into(), "default".into(), false);
+        let mut state = AppState::new("repo".into(), "default".into(), false, false);
         let child = TaskRecord::from_value(&json!({
             "id": "c1", "root": "r1", "parent": "r1", "agent": "worker",
             "status": "approval", "approval_id": "appr-42",
@@ -1700,6 +1947,7 @@ mod tests {
             members: Ok(vec![]),
             model: Ok(ModelConfig { provider: "api".into(), model: None, effort: None }),
         });
+        state.selected_task_id = Some("c1".into());
 
         // Removed overlapping shortcuts no longer fire.
         state.handle_key(ctrl_key('o'));
@@ -1709,13 +1957,24 @@ mod tests {
         state.handle_key(ctrl_key('b'));
         assert!(state.sidebar_visible);
 
-        // /review works as a configuration slash command.
+        // /review and /staged work as configuration slash commands.
         state.input.set_text("/review on");
         state.handle_key(key(KeyCode::Enter));
         assert!(state.review_mode);
         state.input.set_text("/review off");
         state.handle_key(key(KeyCode::Enter));
         assert!(!state.review_mode);
+        state.input.set_text("/staged on");
+        state.handle_key(key(KeyCode::Enter));
+        assert!(state.staged_mode);
+        state.input.set_text("/staged off");
+        state.handle_key(key(KeyCode::Enter));
+        assert!(!state.staged_mode);
+
+        // /wb without args switches to Board tab.
+        state.input.set_text("/wb");
+        state.handle_key(key(KeyCode::Enter));
+        assert_eq!(state.inspector_tab, InspectorTab::Board);
 
         // Removed slash command gives a non-destructive shortcut hint.
         state.input.set_text("/quit");
@@ -1738,9 +1997,10 @@ mod tests {
 
     #[test]
     fn stale_clarification_refuses_submission_without_clearing_composer() {
-        let mut state = AppState::new("repo".into(), "default".into(), false);
+        let mut state = AppState::new("repo".into(), "default".into(), false, false);
         let q1 =
             TaskRecord::from_value(&json!({"id":"r1","agent":"default","status":"input","question":"Which?"})).unwrap();
+        state.selected_task_id = Some("r1".into());
         state.apply_backend_event(BackendEvent::Snapshot {
             tasks: Ok(vec![q1]),
             members: Ok(vec![]),
@@ -1759,10 +2019,75 @@ mod tests {
         assert_eq!(state.input.as_str(), "Linux");
         assert!(state.toast.as_ref().is_some_and(|t| t.is_error));
 
+        // Resetting to New Session via Ctrl+N submits the draft as a brand-new root.
+        state.handle_key(ctrl_key('n'));
+        assert_eq!(state.selected_task_id, None);
         let cmds = state.handle_key(key(KeyCode::Enter));
         assert_eq!(
             cmds,
-            vec![UiCommand::Submit { agent: "default".into(), text: "Linux".into(), review: false, check: None }]
+            vec![UiCommand::Submit {
+                agent: "default".into(),
+                text: "Linux".into(),
+                review: false,
+                staged: false,
+                check: None
+            }]
         );
+    }
+
+    #[test]
+    fn composer_continues_sole_leaf_or_summarizer_and_ctrl_n_resets_to_new_session() {
+        let mut state = AppState::new("repo".into(), "default".into(), false, false);
+        let r1 = TaskRecord::from_value(&json!({
+            "id": "r1", "root": "r1", "agent": "default", "status": "done", "kind": "root",
+            "prompt": "Round 1", "result": "Summarized",
+            "continuation_node": "sum-1", "continuation_agent": "summarizer", "continuation_kind": "summarizer"
+        }))
+        .unwrap();
+        let sum = TaskRecord::from_value(&json!({
+            "id": "sum-1", "root": "r1", "parent": "r1", "agent": "summarizer-1",
+            "status": "done", "kind": "summarizer"
+        }))
+        .unwrap();
+        state.apply_backend_event(BackendEvent::Snapshot {
+            tasks: Ok(vec![r1, sum]),
+            members: Ok(vec![Member { name: "default".into() }]),
+            model: Ok(ModelConfig { provider: "api".into(), model: None, effort: None }),
+        });
+        assert_eq!(state.selected_task_id, None);
+
+        // Select the root session and send follow-up input -> continues on sum-1.
+        state.selected_task_id = Some("r1".into());
+        state.input.set_text("follow up");
+        let cmds = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            cmds,
+            vec![UiCommand::Continue {
+                id: "sum-1".into(),
+                text: "follow up".into(),
+                review: false,
+                staged: false,
+                check: None
+            }]
+        );
+
+        // Also test /wb <kind>:<key> <text> emits WbWrite for the selected session root.
+        state.input.set_text("/wb decision:api Use JSON");
+        let wb_cmds = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            wb_cmds,
+            vec![UiCommand::WbWrite {
+                root_id: "r1".into(),
+                key: "api".into(),
+                mode: "set".into(),
+                kind: Some("decision".into()),
+                content: Some("Use JSON".into()),
+            }]
+        );
+
+        // /new with no arguments resets back to blank New Session.
+        state.input.set_text("/new");
+        assert!(state.handle_key(key(KeyCode::Enter)).is_empty());
+        assert_eq!(state.selected_task_id, None);
     }
 }

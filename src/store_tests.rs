@@ -13,8 +13,8 @@ impl Session {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn open(&self, agents: u32, budget: u32) -> Store {
-        Store::open(&self.0.join("swarm.db"), agents, budget).unwrap()
+    fn open(&self) -> Store {
+        Store::open(&self.0.join("swarm.db")).unwrap()
     }
 }
 impl Drop for Session {
@@ -32,7 +32,7 @@ impl Store {
         review: bool,
         tree: bool,
     ) -> Result<String> {
-        self.create_root(agent, prompt, check, review, tree.then_some(&ModelSettings::default()))
+        self.create_root(agent, prompt, check, review, false, tree.then_some(&ModelSettings::default()))
     }
 }
 
@@ -71,7 +71,7 @@ fn chat(turn: &Turn) -> String {
 #[test]
 fn private_histories_persist_and_only_explicit_messages_cross_agents() {
     let home = Session::new();
-    let mut s = home.open(2, 10);
+    let mut s = home.open();
     let root = legacy(&mut s, "default", "private alpha prompt").unwrap();
     spawn(&mut s, &root, "peer");
     claim(&mut s, &root);
@@ -79,7 +79,7 @@ fn private_histories_persist_and_only_explicit_messages_cross_agents() {
     claim(&mut s, &root);
     s.apply(&root, &json!({"op":"delegate","agent":"peer","text":"delegated scope"})).unwrap();
     drop(s);
-    let mut s = home.open(50, 50);
+    let mut s = home.open();
     s.recover().unwrap();
     let child = turn(&mut s);
     assert_eq!(child.agent, "peer");
@@ -120,7 +120,7 @@ fn private_histories_persist_and_only_explicit_messages_cross_agents() {
 #[test]
 fn failure_of_a_delegate_propagates_state_not_private_diagnostics() {
     let home = Session::new();
-    let mut s = home.open(2, 6);
+    let mut s = home.open();
     let root = legacy(&mut s, "default", "root").unwrap();
     spawn(&mut s, &root, "peer");
     claim(&mut s, &root);
@@ -135,9 +135,9 @@ fn failure_of_a_delegate_propagates_state_not_private_diagnostics() {
 }
 
 #[test]
-fn recursive_work_shares_one_root_budget_even_after_restart() {
+fn legacy_work_has_no_turn_budget_or_member_cap_across_restarts() {
     let home = Session::new();
-    let mut s = home.open(3, 5);
+    let mut s = home.open();
     let root = legacy(&mut s, "default", "root").unwrap();
     spawn(&mut s, &root, "b");
     spawn(&mut s, &root, "c");
@@ -148,33 +148,39 @@ fn recursive_work_shares_one_root_budget_even_after_restart() {
     s.apply(&child.task, &json!({"op":"delegate","agent":"c","text":"part two"})).unwrap();
     let leaf = turn(&mut s);
     assert_eq!(s.task(&leaf.task).unwrap()["turns_used"], 5);
+    assert!(s.task(&leaf.task).unwrap()["turn_budget"].is_null());
     drop(s);
-    let mut s = home.open(8, 100);
+    let mut s = home.open();
     s.recover().unwrap();
-    assert!(s.claim().unwrap().is_none());
-    for id in [&root, &child.task, &leaf.task] {
-        let t = s.task(id).unwrap();
-        assert_eq!(t["status"], "failed");
-        assert_eq!(t["turns_used"], 5);
-        assert_eq!(t["turn_budget"], 5);
-    }
-    assert!(s.task(&leaf.task).unwrap()["result"].as_str().unwrap().contains("budget"));
+    let reclaimed = claim(&mut s, &leaf.task);
+    assert_eq!(s.task(&leaf.task).unwrap()["turns_used"], 6);
+    assert!(s.task(&leaf.task).unwrap()["turn_budget"].is_null());
+    finish(&mut s, &reclaimed.task, "completed after restart");
+    assert_eq!(s.task(&leaf.task).unwrap()["status"], "done");
+    let resumed_child = claim(&mut s, &child.task);
+    finish(&mut s, &resumed_child.task, "child complete");
+    let resumed_root = claim(&mut s, &root);
+    finish(&mut s, &resumed_root.task, "root complete");
+    assert_eq!(s.task(&root).unwrap()["status"], "done");
+    assert_eq!(s.task(&root).unwrap()["turns_used"], 8);
     let next = legacy(&mut s, "c", "independent").unwrap();
     claim(&mut s, &next);
     assert_eq!(s.task(&next).unwrap()["turns_used"], 1);
-    assert!(s.apply(&next, &json!({"op":"spawn","agent":"extra"})).is_err());
+    assert!(s.task(&next).unwrap()["turn_budget"].is_null());
+    s.apply(&next, &json!({"op":"spawn","agent":"extra"})).unwrap();
+    assert_eq!(s.agents().unwrap().as_array().unwrap().len(), 4);
 }
 
 #[test]
-fn two_connections_contend_for_the_same_last_slot() {
+fn two_connections_spawn_new_members_concurrently_without_cap() {
     let home = Session::new();
-    let mut s = home.open(3, 8);
+    let mut s = home.open();
     let a = legacy(&mut s, "default", "A").unwrap();
     spawn(&mut s, &a, "b");
     let b = legacy(&mut s, "b", "B").unwrap();
     claim(&mut s, &a);
     claim(&mut s, &b);
-    let s2 = home.open(100, 100);
+    let s2 = home.open();
     let gate = Arc::new(Barrier::new(2));
     let run = |mut s: Store, task: String, name: &'static str, gate: Arc<Barrier>| {
         thread::spawn(move || {
@@ -184,35 +190,33 @@ fn two_connections_contend_for_the_same_last_slot() {
     };
     let x = run(s, a, "third", gate.clone());
     let y = run(s2, b, "another third", gate);
-    assert_ne!(x.join().unwrap().is_ok(), y.join().unwrap().is_ok());
-    assert_eq!(home.open(10, 10).agents().unwrap().as_array().unwrap().len(), 3);
+    assert!(x.join().unwrap().is_ok());
+    assert!(y.join().unwrap().is_ok());
+    assert_eq!(home.open().agents().unwrap().as_array().unwrap().len(), 4);
 }
 
 #[test]
-fn same_agent_serialization_extends_until_cancelled_calls_return() {
+fn same_agent_calls_run_concurrently_while_cancelled_calls_stay_fenced() {
     let home = Session::new();
-    let mut s = home.open(2, 9);
+    let mut s = home.open();
     let first = legacy(&mut s, "default", "first").unwrap();
     spawn(&mut s, &first, "other");
     let second = legacy(&mut s, "default", "second").unwrap();
     let parallel = legacy(&mut s, "other", "parallel").unwrap();
     claim(&mut s, &first);
-    let mut s2 = home.open(2, 9);
+    let mut s2 = home.open();
+    claim(&mut s2, &second);
     claim(&mut s2, &parallel);
-    assert!(s.claim().unwrap().is_none());
     s.cancel(&first).unwrap();
-    assert!(s2.claim().unwrap().is_none());
     assert!(s.apply(&first, &json!({"op":"send","agent":"other","text":"stale"})).is_err());
     s.release_cancelled(&first).unwrap();
-    claim(&mut s2, &second);
     s.request_tool(&second, &json!({"op":"read_file","path":"f"})).unwrap();
     s.claim_tool().unwrap().unwrap();
     let third = legacy(&mut s, "default", "third").unwrap();
     s.cancel(&second).unwrap();
     assert_eq!(s.task(&second).unwrap()["status"], "unknown");
-    assert!(s2.claim().unwrap().is_none());
-    s.release_cancelled(&second).unwrap();
     claim(&mut s2, &third);
+    s.release_cancelled(&second).unwrap();
     assert!(s.tool_result(&second, Ok("stale")).is_err());
     assert_eq!(s.task(&second).unwrap()["tool_state"], "unknown");
 }
@@ -220,14 +224,14 @@ fn same_agent_serialization_extends_until_cancelled_calls_return() {
 #[test]
 fn approvals_are_one_shot_exact_and_survive_all_pre_start_boundaries() {
     let home = Session::new();
-    let mut s = home.open(1, 8);
+    let mut s = home.open();
     let t = s.submit_root("default", "edit", None, true, false).unwrap();
     claim(&mut s, &t);
     let shell = json!({"op":"shell","command":"first command"});
     s.request_tool(&t, &shell).unwrap();
     assert!(s.claim_tool().unwrap().is_none());
     drop(s);
-    let mut s = home.open(9, 99);
+    let mut s = home.open();
     s.recover().unwrap();
     let task = s.task(&t).unwrap();
     let first = task["approval_id"].as_str().unwrap();
@@ -245,7 +249,7 @@ fn approvals_are_one_shot_exact_and_survive_all_pre_start_boundaries() {
     s.approve(second, true).unwrap();
     assert!(s.approve(second, true).is_err());
     drop(s);
-    let mut s = home.open(1, 1);
+    let mut s = home.open();
     s.recover().unwrap();
     assert_eq!(s.claim_tool().unwrap().unwrap(), (t.clone(), edit.clone()));
     assert!(s.claim_tool().unwrap().is_none());
@@ -259,7 +263,7 @@ fn approvals_are_one_shot_exact_and_survive_all_pre_start_boundaries() {
 #[test]
 fn uncertain_tool_recovers_once_and_invalidates_all_ancestors() {
     let home = Session::new();
-    let mut s = home.open(2, 8);
+    let mut s = home.open();
     let root = legacy(&mut s, "default", "root").unwrap();
     spawn(&mut s, &root, "peer");
     claim(&mut s, &root);
@@ -273,7 +277,7 @@ fn uncertain_tool_recovers_once_and_invalidates_all_ancestors() {
     assert!(task["approval_id"].is_null());
     assert_eq!(s.claim_tool().unwrap().unwrap(), (child.clone(), cmd.clone()));
     drop(s);
-    let mut s = home.open(2, 8);
+    let mut s = home.open();
     for _ in 0..2 {
         s.recover().unwrap();
         assert!(s.claim_tool().unwrap().is_none());
@@ -289,10 +293,10 @@ fn uncertain_tool_recovers_once_and_invalidates_all_ancestors() {
 #[test]
 fn checked_finish_is_gated_only_by_the_submitted_command_and_persists_its_receipt() {
     let home = Session::new();
-    let mut s = home.open(1, 1);
+    let mut s = home.open();
     let cmd = json!({"op":"verify","command":"my verifier"});
     for (check, expected_status, accepted) in
-        [(Ok("pass output"), "done", true), (Err("check failed"), "failed", false)]
+        [(Ok("pass output"), "done", true), (Err("check failed"), "queued", false)]
     {
         let task = legacy_checked(&mut s, "default", "assignment", Some("my verifier")).unwrap();
         claim(&mut s, &task);
@@ -307,29 +311,31 @@ fn checked_finish_is_gated_only_by_the_submitted_command_and_persists_its_receip
         assert_eq!(s.claim_tool().unwrap().unwrap(), (task.clone(), cmd.clone()));
         s.tool_result(&task, check).unwrap();
         drop(s);
-        s = home.open(1, 1);
+        s = home.open();
         s.recover().unwrap();
         assert!(s.claim_tool().unwrap().is_none());
         let t = s.task(&task).unwrap();
         assert_eq!(t["status"], expected_status);
         assert_eq!(t["evidence"], json!([{"action":cmd,"ok":accepted,"result":check.unwrap_or_else(|e|e)}]));
-        assert_eq!(t["verification"], if accepted { "passed" } else { "failed" });
+        assert_eq!(t["verification"], if accepted { "passed" } else { "pending" });
         if accepted {
             assert_eq!(t["result"], "proposed result");
         } else {
-            assert!(t["result"].as_str().unwrap().contains("check failed"));
+            assert!(t["result"].is_null());
+            let repaired = claim(&mut s, &task).task;
+            finish(&mut s, &repaired, "aborted");
         }
     }
 }
 
 #[test]
-fn failed_checks_queue_durable_repairs_until_success_or_the_third_attempt() {
+fn failed_checks_queue_durable_repairs_until_success_or_the_tenth_attempt() {
     for pass_last in [true, false] {
         let home = Session::new();
-        let mut s = home.open(1, 8);
+        let mut s = home.open();
         let task = legacy_checked(&mut s, "default", "fix", Some("run checks")).unwrap();
         let verify = json!({"op":"verify","command":"run checks"});
-        for attempt in 1..=3 {
+        for attempt in 1..=10 {
             let turn = claim(&mut s, &task);
             if attempt > 1 {
                 let previous = attempt - 1;
@@ -344,25 +350,25 @@ fn failed_checks_queue_durable_repairs_until_success_or_the_third_attempt() {
             }
             finish(&mut s, &task, &format!("proposal {attempt}"));
             assert_eq!(s.claim_tool().unwrap(), Some((task.clone(), verify.clone())));
-            let success = attempt == 3 && pass_last;
+            let success = attempt == 10 && pass_last;
             let diagnostics = format!("diagnostics {attempt}");
             s.tool_result(&task, if success { Ok("tests pass") } else { Err(&diagnostics) }).unwrap();
             drop(s);
-            s = home.open(1, 100);
+            s = home.open();
             s.recover().unwrap();
             assert!(s.claim_tool().unwrap().is_none());
             let status = s.task(&task).unwrap();
             assert_eq!(status["turns_used"], attempt);
             assert_eq!(status["evidence"].as_array().unwrap().len(), attempt as usize);
             assert_eq!(status["evidence"][attempt as usize - 1]["ok"], success);
-            if attempt < 3 {
+            if attempt < 10 {
                 assert_eq!(status["status"], "queued");
                 assert_eq!(status["verification"], "pending");
                 assert!(status["proposal"].is_null() && status["result"].is_null());
             } else if success {
                 assert_eq!(status["status"], "done");
                 assert_eq!(status["verification"], "passed");
-                assert_eq!(status["result"], "proposal 3");
+                assert_eq!(status["result"], "proposal 10");
             } else {
                 assert_eq!(status["status"], "failed");
                 assert_eq!(status["verification"], "failed");
@@ -377,13 +383,13 @@ fn failed_checks_queue_durable_repairs_until_success_or_the_third_attempt() {
 #[test]
 fn lost_check_never_accepts_or_requeues_the_proposal() {
     let home = Session::new();
-    let mut s = home.open(1, 8);
+    let mut s = home.open();
     let task = legacy_checked(&mut s, "default", "fix", Some("my check")).unwrap();
     claim(&mut s, &task);
     finish(&mut s, &task, "claim of success");
     assert_eq!(s.claim_tool().unwrap().unwrap().1, json!({"op":"verify","command":"my check"}));
     drop(s);
-    let mut s = home.open(1, 8);
+    let mut s = home.open();
     s.recover().unwrap();
     assert!(s.tool_result(&task, Ok("late pass")).is_err());
     assert!(s.claim().unwrap().is_none() && s.claim_tool().unwrap().is_none());
@@ -409,7 +415,7 @@ fn lost_check_never_accepts_or_requeues_the_proposal() {
 #[test]
 fn cancelled_tree_revokes_unstarted_effects_and_cannot_publish_a_late_result() {
     let home = Session::new();
-    let mut s = home.open(2, 6);
+    let mut s = home.open();
     let root = s.submit_root("default", "root", None, true, false).unwrap();
     spawn(&mut s, &root, "peer");
     claim(&mut s, &root);
@@ -457,9 +463,9 @@ fn migration_preserves_legacy_root_policy_pending_and_ready_operations() {
     }
     drop(db);
 
-    let mut s = home.open(1, 1);
+    let mut s = home.open();
     s.recover().unwrap();
-    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 4);
+    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 7);
     for t in s.tasks().unwrap().as_array().unwrap() {
         assert_eq!(t["policy"], "review");
     }
@@ -478,7 +484,7 @@ fn migration_preserves_legacy_root_policy_pending_and_ready_operations() {
     assert_eq!(s.claim_tool().unwrap(), Some(("a".into(), shell)));
     let new = s.submit("default", "new work").unwrap();
     drop(s);
-    let mut s = home.open(1, 1);
+    let mut s = home.open();
     assert_eq!(s.task(&new).unwrap()["policy"], "auto");
     assert_eq!(s.task("c").unwrap()["policy"], "review");
 }
@@ -489,7 +495,7 @@ fn migration_rolls_back_and_unknown_versions_do_not_open() {
     let db = legacy_database(&home);
     db.execute_batch("DROP TABLE messages").unwrap();
     let path = home.0.join("swarm.db");
-    assert!(Store::open(&path, 1, 1).is_err());
+    assert!(Store::open(&path).is_err());
     assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 1);
     assert_eq!(
         db.query_row("SELECT count(*) FROM sqlite_schema WHERE name='root_policies'", [], |r| r.get::<_, u32>(0))
@@ -500,10 +506,10 @@ fn migration_rolls_back_and_unknown_versions_do_not_open() {
     let other = Session::new();
     let path = other.0.join("swarm.db");
     let db = legacy_database(&other);
-    for (app, version) in [(APP_ID, 5), (APP_ID, 0), (0, 1), (0, 2), (42, 2)] {
+    for (app, version) in [(APP_ID, 8), (APP_ID, 0), (0, 1), (0, 2), (42, 2)] {
         db.pragma_update(None, "application_id", app).unwrap();
         db.pragma_update(None, "user_version", version).unwrap();
-        assert!(Store::open(&path, 1, 1).is_err());
+        assert!(Store::open(&path).is_err());
         assert_eq!(db.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0)).unwrap(), "delete");
     }
 }
@@ -514,9 +520,9 @@ fn reject_foreign_state_bind_workspace_and_keep_invalid_requests_atomic() {
     let path = home.0.join("foreign.db");
     let db = Connection::open(&path).unwrap();
     db.execute_batch("CREATE TABLE important(data);").unwrap();
-    assert!(Store::open(&path, 1, 1).is_err());
+    assert!(Store::open(&path).is_err());
     assert_eq!(db.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), "delete");
-    let mut s = home.open(1, 2);
+    let mut s = home.open();
     assert_eq!(s.db.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), "wal");
     assert_eq!(s.db.query_row("PRAGMA synchronous", [], |r| r.get::<_, i32>(0)).unwrap(), 2);
     s.bind_workspace(&home.0).unwrap();
@@ -534,7 +540,7 @@ fn reject_foreign_state_bind_workspace_and_keep_invalid_requests_atomic() {
     assert!(s.apply(&t, &json!({"op":"send","agent":"not here","text":"invalid attempt"})).is_err());
     assert_eq!(s.task(&t).unwrap(), before);
     drop(s);
-    let mut s = home.open(2, 99);
+    let mut s = home.open();
     assert!(s.bind_workspace(&other.0).is_err());
     s.recover().unwrap();
     let retried = claim(&mut s, &t);
@@ -556,14 +562,14 @@ fn packet(reporter: &Turn) -> Value {
 #[test]
 fn model_overrides_are_scoped_to_session_and_provider() {
     let home = Session::new();
-    let mut s = home.open(1, 4);
+    let mut s = home.open();
     let api = ModelSettings { model: Some("api-model".into()), effort: Some("high".into()) };
     let chatgpt = ModelSettings { model: None, effort: Some("medium".into()) };
     s.set_model_settings("api", &api).unwrap();
     s.set_model_settings("chatgpt", &chatgpt).unwrap();
     drop(s);
 
-    let mut s = home.open(1, 4);
+    let mut s = home.open();
     assert_eq!(s.model_settings("api", Some("env-model")).unwrap(), api);
     assert_eq!(s.model_settings("chatgpt", None).unwrap(), chatgpt);
     assert_eq!(
@@ -575,13 +581,13 @@ fn model_overrides_are_scoped_to_session_and_provider() {
     assert_eq!(s.model_settings("chatgpt", None).unwrap(), chatgpt);
 
     let other = Session::new();
-    assert_eq!(other.open(1, 4).model_settings("chatgpt", None).unwrap(), ModelSettings::default());
+    assert_eq!(other.open().model_settings("chatgpt", None).unwrap(), ModelSettings::default());
 }
 
 #[test]
 fn submitted_settings_survive_changes_and_restart_through_handoff_repair_and_report() {
     let home = Session::new();
-    let mut s = home.open(2, 8);
+    let mut s = home.open();
     let overrides = ModelSettings { model: None, effort: Some("low".into()) };
     s.set_model_settings("api", &overrides).unwrap();
     let submitted = s.model_settings("api", Some("at-submission")).unwrap();
@@ -589,7 +595,7 @@ fn submitted_settings_survive_changes_and_restart_through_handoff_repair_and_rep
     s.set_model_settings("api", &ModelSettings { model: Some("later-model".into()), effort: None }).unwrap();
     drop(s);
 
-    let mut s = home.open(2, 8);
+    let mut s = home.open();
     s.recover().unwrap();
     assert_eq!(claim(&mut s, &root).settings.as_ref(), Some(&submitted));
     handoff(&mut s, &root, &[("worker", "implement")]).unwrap();
@@ -615,7 +621,7 @@ fn submitted_settings_survive_changes_and_restart_through_handoff_repair_and_rep
 #[test]
 fn failed_snapshot_write_rolls_back_root_submission() {
     let home = Session::new();
-    let mut s = home.open(1, 4);
+    let mut s = home.open();
     s.db.execute_batch(
         "CREATE TRIGGER reject_snapshot BEFORE INSERT ON root_model_settings
         BEGIN SELECT RAISE(ABORT,'snapshot write failed'); END;",
@@ -635,19 +641,28 @@ fn schema_three_tree_keeps_legacy_model_selection_alongside_an_empty_snapshot() 
         .unwrap();
     db.execute_batch(MIGRATE_V2).unwrap();
     db.execute_batch(tree::MIGRATE_V3).unwrap();
+    db.execute("UPDATE settings SET max_agents=6", []).unwrap();
     db.execute("INSERT INTO tree_runs(root,reporter) VALUES ('old','report-old')", []).unwrap();
     db.pragma_update(None, "user_version", 3).unwrap();
     drop(db);
 
-    let mut s = home.open(2, 10);
+    let mut s = home.open();
     let new = s.submit_with_model("default", "new work", None, false, &ModelSettings::default()).unwrap();
     s.set_model_settings("api", &ModelSettings { model: Some("future-model".into()), effort: None }).unwrap();
     assert_eq!(claim(&mut s, "old").settings, None);
-    finish(&mut s, "old", "old result");
+    handoff(&mut s, "old", &[("o1", "1"), ("o2", "2")]).unwrap();
+    assert_eq!(claim(&mut s, &new).settings, Some(ModelSettings::default()));
+    let o1 = turn(&mut s).task;
+    let o2 = turn(&mut s).task;
+    finish(&mut s, &o1, "o1 result");
+    finish(&mut s, &o2, "o2 result");
     assert_eq!(claim(&mut s, "report-old").settings, None);
     finish(&mut s, "report-old", "old report");
-    assert_eq!(claim(&mut s, &new).settings, Some(ModelSettings::default()));
-    finish(&mut s, &new, "new result");
+    handoff(&mut s, &new, &[("n1", "1"), ("n2", "2")]).unwrap();
+    let n1 = turn(&mut s).task;
+    let n2 = turn(&mut s).task;
+    finish(&mut s, &n1, "n1 result");
+    finish(&mut s, &n2, "n2 result");
     let reporter = turn(&mut s);
     assert_eq!(reporter.kind, TurnKind::Reporter);
     assert_eq!(reporter.settings, Some(ModelSettings::default()));
@@ -661,11 +676,12 @@ fn schema_two_keeps_private_history_active_operations_and_legacy_actions() {
         INSERT INTO messages VALUES ('default','user','prior private history');
         INSERT INTO operations(id,task,action,state) VALUES ('op','old','{\"op\":\"shell\",\"command\":\"prior command\"}','ready');").unwrap();
     db.execute_batch(MIGRATE_V2).unwrap();
+    db.execute("UPDATE settings SET max_agents=4", []).unwrap();
     db.execute("UPDATE root_policies SET policy='auto'", []).unwrap();
     db.pragma_update(None, "user_version", 2).unwrap();
     drop(db);
 
-    let mut s = home.open(1, 1);
+    let mut s = home.open();
     s.recover().unwrap();
     assert_eq!(s.task("old").unwrap()["policy"], "auto");
     assert_eq!(s.claim_tool().unwrap(), Some(("old".into(), json!({"op":"shell","command":"prior command"}))));
@@ -682,8 +698,14 @@ fn schema_two_keeps_private_history_active_operations_and_legacy_actions() {
     assert!(chat(&claim(&mut s, "old")).contains("legacy result"));
     finish(&mut s, "old", "old finished");
     let root = s.submit("default", "fresh intent").unwrap();
-    assert_eq!(claim(&mut s, &root).kind, TurnKind::Root);
-    finish(&mut s, &root, "fresh public result");
+    let fresh_turn = claim(&mut s, &root);
+    assert_eq!(fresh_turn.kind, TurnKind::Root);
+    assert!(!chat(&fresh_turn).contains("prior private history") && !chat(&fresh_turn).contains("legacy"));
+    handoff(&mut s, &root, &[("w1", "1"), ("w2", "2")]).unwrap();
+    let w1 = turn(&mut s).task;
+    let w2 = turn(&mut s).task;
+    finish(&mut s, &w1, "fresh 1");
+    finish(&mut s, &w2, "fresh 2");
     let reporter = turn(&mut s);
     assert!(!chat(&reporter).contains("legacy") && !chat(&reporter).contains("prior private history"));
 }
@@ -691,7 +713,7 @@ fn schema_two_keeps_private_history_active_operations_and_legacy_actions() {
 #[test]
 fn handoff_is_atomic_and_sibling_stages_settle_concurrently_without_upward_messages() {
     let home = Session::new();
-    let mut s = home.open(4, 14);
+    let mut s = home.open();
     let root = s.submit("default", "private original intent").unwrap();
     claim(&mut s, &root);
     for op in ["spawn", "delegate", "send"] {
@@ -716,7 +738,7 @@ fn handoff_is_atomic_and_sibling_stages_settle_concurrently_without_upward_messa
     assert_eq!(status["status"], "waiting");
     assert_eq!(status["stage_status"], "done");
     let gate = Arc::new(Barrier::new(2));
-    let closes = [(s, b, "published b"), (home.open(1, 1), c, "published c")].map(|(mut store, node, text)| {
+    let closes = [(s, b, "published b"), (home.open(), c, "published c")].map(|(mut store, node, text)| {
         let gate = gate.clone();
         thread::spawn(move || {
             gate.wait();
@@ -726,7 +748,7 @@ fn handoff_is_atomic_and_sibling_stages_settle_concurrently_without_upward_messa
     for worker in closes {
         worker.join().unwrap();
     }
-    let mut s = home.open(1, 1);
+    let mut s = home.open();
     let reporter = turn(&mut s);
     let body = packet(&reporter);
     assert_eq!(body["intent"], "private original intent");
@@ -739,26 +761,35 @@ fn handoff_is_atomic_and_sibling_stages_settle_concurrently_without_upward_messa
     }
     assert!(s.request_tool(&reporter.task, &json!({"op":"shell","command":"bad"})).is_err());
     finish(&mut s, &reporter.task, "independent report");
-    assert_eq!(s.task(&root).unwrap()["result"], "independent report");
-    assert_eq!(s.tasks().unwrap().as_array().unwrap().len(), 3);
+    let settled = s.task(&root).unwrap();
+    assert_eq!(settled["result"], "independent report");
+    assert_eq!(settled["continuation_node"], reporter.task);
+    assert_eq!(settled["continuation_kind"], "summarizer");
+    assert_eq!(settled["leaf_results"].as_array().unwrap().len(), 2);
+    assert_eq!(s.tasks().unwrap().as_array().unwrap().len(), 4);
+    assert_eq!(s.task(&reporter.task).unwrap()["kind"], "summarizer");
     let next = s.submit("default", "new root").unwrap();
     let private = chat(&claim(&mut s, &next));
     assert!(!private.contains("published") && !private.contains("independent report"));
     finish(&mut s, &next, "new output");
-    let next_report = turn(&mut s);
-    assert!(!chat(&next_report).contains("private original intent") && !chat(&next_report).contains("published"));
+    // Single-leaf settlement skips reporter and keeps history isolated from prior sessions.
+    assert!(s.claim().unwrap().is_none());
+    let next_status = s.task(&next).unwrap();
+    assert_eq!(next_status["status"], "done");
+    assert_eq!(next_status["result"], "new output");
+    assert_eq!(next_status["continuation_node"], next);
 }
 
 #[test]
 fn clarifications_wait_durably_and_are_in_reporter_intent_only_for_their_root() {
     let home = Session::new();
-    let mut s = home.open(1, 12);
+    let mut s = home.open();
     let root = s.submit_checked("default", "choose a version", Some("exact check")).unwrap();
     let ask = json!({"op":"ask","text":"Which version?"});
     claim(&mut s, &root);
     s.apply(&root, &ask).unwrap();
     drop(s);
-    let mut s = home.open(1, 1);
+    let mut s = home.open();
     s.recover().unwrap();
     let status = s.task(&root).unwrap();
     assert_eq!(status["status"], "input");
@@ -771,7 +802,11 @@ fn clarifications_wait_durably_and_are_in_reporter_intent_only_for_their_root() 
     s.apply(&root, &json!({"op":"members"})).unwrap();
     claim(&mut s, &root);
     assert!(s.apply(&root, &ask).is_err());
-    finish(&mut s, &root, "public result");
+    handoff(&mut s, &root, &[("w1", "part 1"), ("w2", "part 2")]).unwrap();
+    let w1 = turn(&mut s);
+    let w2 = turn(&mut s);
+    finish(&mut s, &w1.task, "public result 1");
+    finish(&mut s, &w2.task, "public result 2");
     assert!(s.claim().unwrap().is_none());
     s.claim_tool().unwrap().unwrap();
     s.tool_result(&root, Ok("private check evidence")).unwrap();
@@ -788,7 +823,11 @@ fn clarifications_wait_durably_and_are_in_reporter_intent_only_for_their_root() 
     s.tool_result(&next, Err("private diagnostic")).unwrap();
     claim(&mut s, &next);
     assert!(s.apply(&next, &ask).is_err());
-    finish(&mut s, &next, "done");
+    handoff(&mut s, &next, &[("w1", "a"), ("w2", "b")]).unwrap();
+    let nw1 = turn(&mut s);
+    let nw2 = turn(&mut s);
+    finish(&mut s, &nw1.task, "done 1");
+    finish(&mut s, &nw2.task, "done 2");
     let reporter = turn(&mut s);
     assert_eq!(packet(&reporter)["clarifications"], json!([]));
     assert!(!chat(&reporter).contains("private diagnostic") && !chat(&reporter).contains("version 2"));
@@ -798,7 +837,7 @@ fn clarifications_wait_durably_and_are_in_reporter_intent_only_for_their_root() 
 fn failed_or_unknown_branch_allows_approved_sibling_to_settle_and_blocks_success() {
     for failed in [true, false] {
         let home = Session::new();
-        let mut s = home.open(3, 12);
+        let mut s = home.open();
         let root = s.submit_with_policy("default", "parent", Some("gated check"), true).unwrap();
         claim(&mut s, &root);
         handoff(&mut s, &root, &[("b", "first"), ("c", "second")]).unwrap();
@@ -812,7 +851,7 @@ fn failed_or_unknown_branch_allows_approved_sibling_to_settle_and_blocks_success
             s.request_tool(&b.task, &json!({"op":"read_file","path":"private path"})).unwrap();
             assert_eq!(s.claim_tool().unwrap().unwrap().0, b.task);
             drop(s);
-            s = home.open(1, 1);
+            s = home.open();
             s.recover().unwrap();
             s.recover().unwrap();
             assert!(s.tool_result(&b.task, Ok("late")).is_err());
@@ -839,27 +878,27 @@ fn failed_or_unknown_branch_allows_approved_sibling_to_settle_and_blocks_success
 }
 
 #[test]
-fn tree_checks_use_forward_private_repair_jobs_and_stop_after_three_attempts() {
+fn tree_checks_use_forward_private_repair_jobs_and_stop_after_ten_attempts() {
     for pass in [true, false] {
         let home = Session::new();
-        let mut s = home.open(1, 10);
+        let mut s = home.open();
         let root = s.submit_with_policy("default", "user intent", Some("exact command"), true).unwrap();
         claim(&mut s, &root);
         finish(&mut s, &root, "first public result");
         let verify = json!({"op":"verify","command":"exact command"});
-        for attempt in 1..=3 {
+        for attempt in 1..=10 {
             assert!(s.claim().unwrap().is_none());
             assert_eq!(s.claim_tool().unwrap(), Some((root.clone(), verify.clone())));
             let diag = format!("private check evidence {attempt}");
-            s.tool_result(&root, if attempt == 3 && pass { Ok(&diag) } else { Err(&diag) }).unwrap();
+            s.tool_result(&root, if attempt == 10 && pass { Ok(&diag) } else { Err(&diag) }).unwrap();
             drop(s);
-            s = home.open(1, 1);
+            s = home.open();
             s.recover().unwrap();
             assert!(s.claim_tool().unwrap().is_none());
             let status = s.task(&root).unwrap();
             assert_eq!(status["stage_status"], "done");
             assert_eq!(status["status"], "waiting");
-            if attempt < 3 {
+            if attempt < 10 {
                 let repair = turn(&mut s);
                 assert_eq!(repair.kind, TurnKind::Node);
                 assert_ne!(repair.agent, "default");
@@ -877,9 +916,9 @@ fn tree_checks_use_forward_private_repair_jobs_and_stop_after_three_attempts() {
         assert!(!chat(&reporter).contains("private check evidence"));
         finish(&mut s, &reporter.task, "check report");
         let status = s.task(&root).unwrap();
-        assert_eq!(status["evidence"].as_array().unwrap().len(), 3);
+        assert_eq!(status["evidence"].as_array().unwrap().len(), 10);
         assert_eq!(status["tree_nodes"][2]["kind"], "repair");
-        assert_eq!(status["turns_used"], 4);
+        assert_eq!(status["turns_used"], 11);
         assert_eq!(status["status"], body["outcome"]);
         assert_eq!(status["verification"], body["verification"]);
         assert!(s.claim_tool().unwrap().is_none());
@@ -890,42 +929,67 @@ fn tree_checks_use_forward_private_repair_jobs_and_stop_after_three_attempts() {
 
 #[test]
 fn tree_unknown_check_never_replays_and_reporter_never_turns_it_into_success() {
+    // 1-leaf lost check settles directly as unknown without continuation.
     let home = Session::new();
-    let mut s = home.open(1, 8);
+    let mut s = home.open();
     let root = s.submit_checked("default", "checked", Some("check")).unwrap();
     claim(&mut s, &root);
     finish(&mut s, &root, "work complete");
     s.claim_tool().unwrap().unwrap();
     drop(s);
-    let mut s = home.open(1, 1);
+    let mut s = home.open();
     s.recover().unwrap();
     assert!(s.tool_result(&root, Ok("late pass")).is_err());
-    let reporter = turn(&mut s);
-    assert_eq!(packet(&reporter)["verification"], "unknown");
-    assert_eq!(packet(&reporter)["outcome"], "unknown");
-    finish(&mut s, &reporter.task, "model claims success");
+    assert!(s.claim().unwrap().is_none());
     let status = s.task(&root).unwrap();
     assert_eq!(status["stage_status"], "done");
     assert_eq!(status["status"], "unknown");
-    assert!(s.claim_tool().unwrap().is_none() && s.claim().unwrap().is_none());
+    assert_eq!(status["verification"], "failed");
+    assert!(status["verification_note"].as_str().unwrap().contains("outcome is unknown"));
+    assert!(status["continuation_node"].is_null());
+    assert!(s.claim_tool().unwrap().is_none());
+
+    // 2-leaf lost check invokes reporter with unknown outcome and blocks continuation.
+    let home2 = Session::new();
+    let mut s2 = home2.open();
+    let r2 = s2.submit_checked("default", "checked two", Some("check")).unwrap();
+    claim(&mut s2, &r2);
+    handoff(&mut s2, &r2, &[("a", "1"), ("b", "2")]).unwrap();
+    let a = turn(&mut s2);
+    let b = turn(&mut s2);
+    finish(&mut s2, &a.task, "a complete");
+    finish(&mut s2, &b.task, "b complete");
+    s2.claim_tool().unwrap().unwrap();
+    drop(s2);
+    let mut s2 = home2.open();
+    s2.recover().unwrap();
+    let reporter = turn(&mut s2);
+    assert_eq!(packet(&reporter)["verification"], "unknown");
+    assert_eq!(packet(&reporter)["outcome"], "unknown");
+    finish(&mut s2, &reporter.task, "model claims success");
+    let st2 = s2.task(&r2).unwrap();
+    assert_eq!(st2["status"], "unknown");
+    assert!(st2["continuation_node"].is_null());
+    assert!(s2.claim_tool().unwrap().is_none() && s2.claim().unwrap().is_none());
 }
 
 #[test]
 fn tree_cancellation_fences_late_model_tool_check_and_reporter_callbacks() {
     for boundary in ["model", "approval", "started", "check_ready", "check_started", "reporter"] {
         let home = Session::new();
-        let mut s = home.open(2, 10);
+        let mut s = home.open();
         let root = s.submit_with_policy("default", "intent", Some("exact"), true).unwrap();
         claim(&mut s, &root);
-        handoff(&mut s, &root, &[("b", "task")]).unwrap();
-        let child = turn(&mut s);
-        let mut stale = child.task.clone();
+        handoff(&mut s, &root, &[("b", "task"), ("c", "task 2")]).unwrap();
+        let first = turn(&mut s);
+        let second = turn(&mut s);
+        let mut stale = first.task.clone();
         let mut approval = None;
         match boundary {
             "model" => (),
             "approval" | "started" => {
-                s.request_tool(&child.task, &json!({"op":"shell","command":"model command"})).unwrap();
-                let approval_id = s.task(&child.task).unwrap()["approval_id"].as_str().unwrap().to_owned();
+                s.request_tool(&first.task, &json!({"op":"shell","command":"model command"})).unwrap();
+                let approval_id = s.task(&first.task).unwrap()["approval_id"].as_str().unwrap().to_owned();
                 if boundary == "started" {
                     s.approve(&approval_id, true).unwrap();
                     s.claim_tool().unwrap().unwrap();
@@ -933,7 +997,8 @@ fn tree_cancellation_fences_late_model_tool_check_and_reporter_callbacks() {
                 approval = Some(approval_id);
             }
             _ => {
-                finish(&mut s, &child.task, "complete");
+                finish(&mut s, &first.task, "complete 1");
+                finish(&mut s, &second.task, "complete 2");
                 stale = root.clone();
                 if boundary != "check_ready" {
                     s.claim_tool().unwrap().unwrap();
@@ -961,42 +1026,57 @@ fn tree_cancellation_fences_late_model_tool_check_and_reporter_callbacks() {
 }
 
 #[test]
-fn tree_reports_have_one_durable_claim_shared_budget_and_deterministic_partial_results() {
-    for mode in ["budget_one", "report_reserved", "interrupted", "provider_error", "oversize"] {
+fn tree_reports_have_one_durable_claim_no_budget_cap_and_deterministic_partial_results() {
+    // A single leaf settles directly without invoking a summarizer turn.
+    let home_one = Session::new();
+    let mut s1 = home_one.open();
+    let r1 = s1.submit("default", "single direct").unwrap();
+    claim(&mut s1, &r1);
+    finish(&mut s1, &r1, "direct leaf result");
+    assert!(s1.claim().unwrap().is_none());
+    let st1 = s1.task(&r1).unwrap();
+    assert_eq!(st1["status"], "done");
+    assert_eq!(st1["result"], "direct leaf result");
+    assert_eq!(st1["turns_used"], 1);
+    assert!(st1["turn_budget"].is_null());
+    assert_eq!(st1["continuation_node"], r1);
+
+    for mode in ["interrupted", "provider_error", "oversize"] {
         let home = Session::new();
-        let budget = if mode == "budget_one" { 1 } else { 2 };
-        let mut s = home.open(2, budget);
+        let mut s = home.open();
         let root = s.submit("default", "intent").unwrap();
         claim(&mut s, &root);
-        if mode == "report_reserved" {
-            handoff(&mut s, &root, &[("peer", "branch")]).unwrap();
-        } else {
-            let output = if mode == "oversize" { "羽".repeat(100_000) } else { "public result".into() };
-            finish(&mut s, &root, &output);
-        }
+        handoff(&mut s, &root, &[("p1", "branch 1"), ("p2", "branch 2")]).unwrap();
         match mode {
-            "budget_one" | "oversize" => assert!(s.claim().unwrap().is_none()),
-            _ => {
+            "oversize" => {
+                let p1 = turn(&mut s);
+                let p2 = turn(&mut s);
+                finish(&mut s, &p1.task, &"羽".repeat(1_000_000));
+                finish(&mut s, &p2.task, "other");
+                assert!(s.claim().unwrap().is_none());
+            }
+            "interrupted" | "provider_error" => {
+                let p1 = turn(&mut s);
+                let p2 = turn(&mut s);
+                finish(&mut s, &p1.task, "public result 1");
+                finish(&mut s, &p2.task, "public result 2");
                 let reporter = turn(&mut s);
                 if mode == "interrupted" {
                     drop(s);
-                    s = home.open(1, 1);
+                    s = home.open();
                     s.recover().unwrap();
-                } else if mode == "report_reserved" {
-                    assert_eq!(packet(&reporter)["outcome"], "failed");
-                    finish(&mut s, &reporter.task, "budget insufficient for branch");
                 } else {
                     s.fail(&reporter.task, "private provider diagnostic").unwrap();
                 }
                 assert!(s.apply(&reporter.task, &json!({"op":"finish","text":"second attempt"})).is_err());
             }
+            _ => unreachable!(),
         }
         let status = s.task(&root).unwrap();
         assert_eq!(status["status"], "failed");
-        if mode != "report_reserved" {
-            assert!(status["result"].as_str().unwrap().contains("Partial report"));
-        }
-        assert_eq!(status["turns_used"], if mode == "oversize" { 1 } else { budget });
+        assert!(status["result"].as_str().unwrap().contains("Partial report"));
+        assert_eq!(status["turns_used"], if mode == "oversize" { 3 } else { 4 });
+        assert!(status["turn_budget"].is_null());
         assert!(!status.to_string().contains("private provider diagnostic"));
         if mode == "oversize" {
             assert!(status["leaf_results"][0]["result"].as_str().unwrap().contains("truncated"));
@@ -1010,7 +1090,7 @@ fn tree_reports_have_one_durable_claim_shared_budget_and_deterministic_partial_r
 #[test]
 fn delete_removes_completed_and_idle_trees_while_preserving_siblings_and_refusing_inflight() {
     let home = Session::new();
-    let mut s = home.open(4, 16);
+    let mut s = home.open();
     let overrides = ModelSettings { model: Some("m1".into()), effort: Some("high".into()) };
     let target = s.submit_with_model("default", "delete me", Some("cargo test"), true, &overrides).unwrap();
 
@@ -1039,21 +1119,33 @@ fn delete_removes_completed_and_idle_trees_while_preserving_siblings_and_refusin
     assert_eq!(s.claim_tool().unwrap().unwrap().0, target);
     s.tool_result(&target, Ok("passed")).unwrap();
     let reporter = turn(&mut s);
-    finish(&mut s, &reporter.task, "all green");
+    let reporter_id = reporter.task.clone();
+    finish(&mut s, &reporter_id, "all green");
+    let summarizer_agent = s.task(&reporter_id).unwrap()["agent"].as_str().unwrap().to_owned();
+    assert!(summarizer_agent.starts_with("summarizer-"));
 
     // Create a sibling root before deleting target.
     let sibling = s.submit_with_model("default", "keep sibling", None, false, &overrides).unwrap();
 
-    // Delete by child ID resolves and deletes the entire root tree and its internal repair agent.
+    // Delete by child ID resolves and deletes the entire root tree and its internal repair/summarizer agents.
     assert_eq!(s.delete(&child.task).unwrap(), target);
     assert!(s.task(&target).is_err());
     assert!(s.task(&child.task).is_err());
     assert_eq!(
-        s.db.query_row("SELECT count(*) FROM agents WHERE name=?1", [&repair_agent], |r| r.get::<_, i64>(0)).unwrap(),
+        s.db.query_row(
+            "SELECT count(*) FROM agents WHERE name IN (?1,?2)",
+            params![repair_agent, summarizer_agent],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
         0
     );
     assert_eq!(
         s.db.query_row("SELECT count(*) FROM clarifications WHERE root=?1", [&target], |r| r.get::<_, i64>(0)).unwrap(),
+        0
+    );
+    assert_eq!(
+        s.db.query_row("SELECT count(*) FROM tree_rounds WHERE root=?1", [&target], |r| r.get::<_, i64>(0)).unwrap(),
         0
     );
     // Sibling root and persistent members ("default", "worker") remain intact.
@@ -1083,48 +1175,329 @@ fn delete_removes_completed_and_idle_trees_while_preserving_siblings_and_refusin
     assert!(s.delete(&sibling).unwrap_err().contains("in flight"));
     s.tool_result(&sibling, Ok("ok")).unwrap();
     claim(&mut s, &sibling);
-    finish(&mut s, &sibling, "done");
+    handoff(&mut s, &sibling, &[("w2", "work 2"), ("w3", "work 3")]).unwrap();
+    let sw2 = turn(&mut s);
+    let sw3 = turn(&mut s);
+    finish(&mut s, &sw2.task, "done 2");
+    finish(&mut s, &sw3.task, "done 3");
     let _rep = turn(&mut s); // phase='reporting'
     assert!(s.delete(&sibling).unwrap_err().contains("in flight"));
     assert!(s.delete("nonexistent-id").unwrap_err().contains("unknown task"));
 }
 
 #[test]
-fn reject_action_queues_bounded_corrections_respects_budget_and_falls_back_for_reporter() {
+fn reject_action_queues_bounded_corrections_and_falls_back_for_reporter() {
     let home = Session::new();
-    // Budget 4 allows root turn 1 + correction turn 2 + correction turn 3? No, turn 4 is reserved for reporter,
-    // so with budget 4 worker can run at most 3 turns total (turns_used = 1, 2 -> budget_left = true; turns_used = 3 -> false).
-    // Use budget 6 so MAX_ACTION_REJECTIONS (2) caps before budget runs out.
-    let mut s = home.open(2, 6);
+    let mut s = home.open();
     let r = s.submit("default", "plain prompt with non-json text").unwrap();
     claim(&mut s, &r);
-    s.reject_action(&r, "err-1").unwrap();
-    let t2 = claim(&mut s, &r);
-    assert!(chat(&t2).contains("err-1"));
-    let last_msg = t2.messages.last().unwrap()["content"].as_str().unwrap();
-    assert!(last_msg.contains("Continue task") && last_msg.contains("protocol_error"));
-    s.reject_action(&r, "err-2").unwrap();
-    let t3 = claim(&mut s, &r);
-    assert!(chat(&t3).contains("err-2"));
-    // 3rd rejection exceeds MAX_ACTION_REJECTIONS (2) and fails the stage, queuing the reporter.
-    s.reject_action(&r, "err-3").unwrap();
+    for attempt in 1..=5 {
+        let err = format!("err-{attempt}");
+        s.reject_action(&r, &err).unwrap();
+        let rejected = claim(&mut s, &r);
+        assert!(chat(&rejected).contains(&err));
+        let last_msg = rejected.messages.last().unwrap()["content"].as_str().unwrap();
+        assert!(last_msg.contains("Continue task") && last_msg.contains("protocol_error"));
+    }
+    // 6th rejection exceeds MAX_ACTION_REJECTIONS (5) and settles 1-leaf root directly as failed.
+    s.reject_action(&r, "err-6").unwrap();
     let st = s.task(&r).unwrap();
     assert_eq!(st["stage_status"], "failed");
-    assert_eq!(st["stage_error"], "err-3");
+    assert_eq!(st["stage_error"], "err-6");
+    assert_eq!(st["status"], "failed");
+    assert!(s.claim().unwrap().is_none());
+
+    // Reporter rejection never retries; it falls back immediately to a partial failed report.
+    let r_multi = s.submit("default", "multi leaf").unwrap();
+    claim(&mut s, &r_multi);
+    handoff(&mut s, &r_multi, &[("a", "part a"), ("b", "part b")]).unwrap();
+    let ta = turn(&mut s);
+    let tb = turn(&mut s);
+    finish(&mut s, &ta.task, "done a");
+    finish(&mut s, &tb.task, "done b");
     let rep = turn(&mut s);
     assert_eq!(rep.kind, TurnKind::Reporter);
-    // Reporter rejection never retries; it falls back immediately to a partial failed report.
     s.reject_action(&rep.task, "reporter err").unwrap();
-    let settled = s.task(&r).unwrap();
+    let settled = s.task(&r_multi).unwrap();
     assert_eq!(settled["status"], "failed");
     assert!(settled["result"].as_str().unwrap().contains("Partial report"));
+}
 
-    // Worker rejection fails immediately when remaining budget only covers the reserved reporter call.
-    let tight_home = Session::new();
-    let mut tight = tight_home.open(1, 2);
-    let r2 = tight.submit("default", "tight budget").unwrap();
-    claim(&mut tight, &r2);
-    tight.reject_action(&r2, "no room for retry").unwrap();
-    assert_eq!(tight.task(&r2).unwrap()["stage_status"], "failed");
-    assert_eq!(tight.task(&r2).unwrap()["stage_error"], "no room for retry");
+#[test]
+fn new_sessions_have_isolated_node_histories() {
+    let home = Session::new();
+    let mut s = home.open();
+    let secret = "SECRET-SESSION-ONE-CONTEXT";
+    let first = s.submit("default", secret).unwrap();
+    let first_turn = claim(&mut s, &first);
+    assert!(chat(&first_turn).contains(secret));
+    finish(&mut s, &first, "first finished");
+
+    let second = s.submit("default", "second unrelated task").unwrap();
+    let second_turn = claim(&mut s, &second);
+    assert!(!chat(&second_turn).contains(secret) && !chat(&second_turn).contains("first finished"));
+    assert_eq!(second_turn.messages.len(), 1);
+}
+
+#[test]
+fn single_leaf_and_summarizer_continue_as_next_subtree_root_with_fresh_budget_and_member_reuse() {
+    let home = Session::new();
+    let mut s = home.open();
+
+    // Part A: 1-leaf branch settles at leaf `b`, which continues as Round-2 subtree root with fresh budget & member reuse.
+    let r1 = s.submit_checked("default", "round 1 initial", Some("verify r1")).unwrap();
+    claim(&mut s, &r1);
+    handoff(&mut s, &r1, &[("b", "do b")]).unwrap();
+    let b1 = turn(&mut s);
+    finish(&mut s, &b1.task, "b1 output");
+    assert_eq!(s.claim_tool().unwrap().unwrap().0, r1);
+    s.tool_result(&r1, Ok("r1 ok")).unwrap();
+    assert!(s.claim().unwrap().is_none()); // Skipped reporter cleanly!
+    let settled1 = s.task(&r1).unwrap();
+    assert_eq!(settled1["status"], "done");
+    assert_eq!(settled1["verification"], "passed");
+    assert_eq!(settled1["continuation_node"], b1.task);
+    assert_eq!(settled1["continuation_kind"], "leaf");
+    assert_eq!(settled1["continuation_agent"], "b");
+
+    // Continue at `b1` without --check: must NOT inherit Round 1's verification=passed, must allow `ask`, fresh budget, & reuse `default`/`b`!
+    let (cont_root, cont_node) =
+        s.continue_tree(&b1.task, "round 2 follow up", None, false, &ModelSettings::default()).unwrap();
+    assert_eq!((&cont_root, &cont_node), (&r1, &b1.task));
+    let mid_r2 = s.task(&r1).unwrap();
+    assert_eq!(mid_r2["round"], 2);
+    assert_eq!(mid_r2["verification"], "not_requested");
+    assert_eq!(mid_r2["turns_used"], 0);
+
+    let r2_root_turn = claim(&mut s, &b1.task);
+    assert_eq!(r2_root_turn.kind, TurnKind::Root);
+    assert!(chat(&r2_root_turn).contains("b1 output") && chat(&r2_root_turn).contains("round 2 follow up"));
+    // Can ask before using tools as the new subtree root, then reuse `default` in Round 2!
+    s.apply(&b1.task, &json!({"op":"ask","text":"Need Round 2 choice?"})).unwrap();
+    assert_eq!(s.task(&r1).unwrap()["status"], "input");
+    s.answer(&r1, "Use path X").unwrap();
+    let r2_resumed = claim(&mut s, &b1.task);
+    assert!(chat(&r2_resumed).contains("Use path X"));
+    handoff(&mut s, &b1.task, &[("default", "reused default"), ("c", "two leaves")]).unwrap();
+    let r2_def = turn(&mut s);
+    let r2_c = turn(&mut s);
+    finish(&mut s, &r2_def.task, "default r2 done");
+    finish(&mut s, &r2_c.task, "c r2 done");
+    let sum = turn(&mut s);
+    assert_eq!(sum.kind, TurnKind::Reporter);
+    assert!(packet(&sum)["clarifications"].to_string().contains("Use path X"));
+    finish(&mut s, &sum.task, "Round 2 summarized");
+    let settled2 = s.task(&r1).unwrap();
+    assert_eq!(settled2["status"], "done");
+    assert_eq!(settled2["prompt"], "round 1 initial");
+    assert_eq!(settled2["result"], "Round 2 summarized");
+    assert_eq!(settled2["continuation_node"], sum.task);
+    assert_eq!(settled2["continuation_kind"], "summarizer");
+    assert_eq!(settled2["rounds"].as_array().unwrap().len(), 2);
+
+    // Part B: Summarizer node itself becomes Round 3 subtree root and can hand off again & cancel cleanly across deep rounds.
+    let (_, sum_node) =
+        s.continue_tree(&r1, "round 3 from summarizer", None, false, &ModelSettings::default()).unwrap();
+    assert_eq!(sum_node, sum.task);
+    let r3_turn = claim(&mut s, &sum.task);
+    assert_eq!(r3_turn.kind, TurnKind::Root);
+    assert!(chat(&r3_turn).contains("Round 2 summarized") && chat(&r3_turn).contains("round 3 from summarizer"));
+    handoff(&mut s, &sum.task, &[("b", "reused b"), ("d", "extra worker")]).unwrap();
+    let _r3_b = turn(&mut s);
+    let _r3_d = turn(&mut s);
+    s.cancel(&r1).unwrap();
+    let settled3 = s.task(&r1).unwrap();
+    assert_eq!(settled3["status"], "cancelled");
+    assert!(settled3["continuation_node"].is_null()); // 2 leaves were cancelled -> no single leaf/summarizer.
+    assert!(s.continue_tree(&r1, "blocked", None, false, &ModelSettings::default()).is_err());
+
+    // Part C: `unknown` outcome cannot be continued.
+    let home_u = Session::new();
+    let mut su = home_u.open();
+    let ru = su.submit("default", "unknown op").unwrap();
+    claim(&mut su, &ru);
+    su.request_tool(&ru, &json!({"op":"shell","command":"ls"})).unwrap();
+    su.claim_tool().unwrap().unwrap();
+    drop(su);
+    let mut su = home_u.open();
+    su.recover().unwrap();
+    assert_eq!(su.task(&ru).unwrap()["status"], "unknown");
+    assert!(su.continue_tree(&ru, "nope", None, false, &ModelSettings::default()).is_err());
+}
+
+#[test]
+fn schema_four_database_migrates_cleanly_to_v6_and_allows_concurrent_same_agent() {
+    let home = Session::new();
+    let mut db = legacy_database(&home);
+    let tx = db.transaction().unwrap();
+    tx.execute_batch(MIGRATE_V2).unwrap();
+    tx.execute_batch(crate::store::tree::MIGRATE_V3).unwrap();
+    tx.execute_batch(MIGRATE_V4).unwrap();
+    tx.pragma_update(None, "user_version", 4).unwrap();
+    // Create a completed 1-leaf tree (r1 -> c1) and a completed 2-leaf tree (r2 -> d1, d2).
+    tx.execute("INSERT INTO agents(name) VALUES ('b'),('c')", []).unwrap();
+    tx.execute("INSERT INTO tasks(id,root,parent,agent,prompt,status,result) VALUES ('r1','r1',NULL,'default','one leaf','done','done root')", []).unwrap();
+    tx.execute("INSERT INTO tasks(id,root,parent,agent,prompt,status,result) VALUES ('c1','r1','r1','b','child','done','leaf answer')", []).unwrap();
+    tx.execute("INSERT INTO root_policies(root,policy) VALUES ('r1','auto')", []).unwrap();
+    tx.execute("INSERT INTO tree_runs(root,reporter,phase,outcome,result) VALUES ('r1','rep1','complete','done','leaf answer')", []).unwrap();
+
+    tx.execute("INSERT INTO tasks(id,root,parent,agent,prompt,status,result) VALUES ('r2','r2',NULL,'default','two leaves','done','done root 2')", []).unwrap();
+    tx.execute(
+        "INSERT INTO tasks(id,root,parent,agent,prompt,status,result) VALUES ('d1','r2','r2','b','c1','done','ans 1')",
+        [],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO tasks(id,root,parent,agent,prompt,status,result) VALUES ('d2','r2','r2','c','c2','done','ans 2')",
+        [],
+    )
+    .unwrap();
+    tx.execute("INSERT INTO root_policies(root,policy) VALUES ('r2','auto')", []).unwrap();
+    tx.execute("INSERT INTO tree_runs(root,reporter,phase,outcome,result) VALUES ('r2','rep2','complete','done','old ext report')", []).unwrap();
+    tx.commit().unwrap();
+    drop(db);
+
+    let mut s = home.open();
+    s.recover().unwrap();
+    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 7);
+    let t1 = s.task("r1").unwrap();
+    assert_eq!(t1["continuation_node"], "c1");
+    assert_eq!(t1["rounds"].as_array().unwrap().len(), 1);
+    let t2 = s.task("r2").unwrap();
+    assert!(t2["continuation_node"].is_null());
+    assert_eq!(t2["rounds"].as_array().unwrap().len(), 1);
+    let q1 = s.submit("default", "same 1").unwrap();
+    let q2 = s.submit("default", "same 2").unwrap();
+    let c1 = claim(&mut s, &q1);
+    let c2 = claim(&mut s, &q2);
+    assert_ne!(c1.task, c2.task);
+}
+
+#[test]
+fn collaborative_whiteboard_supports_cas_append_resolve_delete_digest_deadlock_free_wait_and_cleanup() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "coordinate siblings via whiteboard").unwrap();
+    claim(&mut s, &root);
+    handoff(&mut s, &root, &[("producer", "write contract"), ("consumer", "wait and read")]).unwrap();
+    let ta = turn(&mut s);
+    let tb = turn(&mut s);
+    assert_eq!(ta.agent, "producer");
+    assert_eq!(tb.agent, "consumer");
+
+    // `tb` parks on wb_wait while `ta` is still active (`other_active == 1`).
+    s.apply(&tb.task, &json!({"op":"wb_wait","key":"contract:"})).unwrap();
+    assert!(s.claim().unwrap().is_none());
+    assert_eq!(s.task(&tb.task).unwrap()["status"], "waiting");
+
+    // `ta` writes `contract:api`, waking `tb` with matching update.
+    s.apply(
+        &ta.task,
+        &json!({"op":"wb_write","key":"contract:api","mode":"set","kind":"contract","content":"v1 payload"}),
+    )
+    .unwrap();
+    let ta2 = claim(&mut s, &ta.task);
+    assert!(chat(&ta2).contains(r#""op":"wb_write""#) && chat(&ta2).contains(r#""version":1"#));
+
+    // CAS mismatch returns conflict without failing or mutating entry.
+    s.apply(
+        &ta.task,
+        &json!({"op":"wb_write","key":"contract:api","mode":"set","content":"bad overwrite","expected_version":0}),
+    )
+    .unwrap();
+    let ta3 = claim(&mut s, &ta.task);
+    assert!(chat(&ta3).contains(r#""conflict":true"#) && chat(&ta3).contains(r#""actual_version":1"#));
+
+    // Append, temporary delete, and resolve.
+    s.apply(&ta.task, &json!({"op":"wb_write","key":"contract:api","mode":"append","content":"line 2"})).unwrap();
+    claim(&mut s, &ta.task);
+    s.apply(&ta.task, &json!({"op":"wb_write","key":"temp:scratch","mode":"set","content":"scratch"})).unwrap();
+    claim(&mut s, &ta.task);
+    s.apply(&ta.task, &json!({"op":"wb_write","key":"temp:scratch","mode":"delete"})).unwrap();
+    claim(&mut s, &ta.task);
+    s.apply(
+        &ta.task,
+        &json!({"op":"wb_write","key":"contract:api","mode":"resolve","content":"v1 payload\nline 2 [locked]"}),
+    )
+    .unwrap();
+    claim(&mut s, &ta.task);
+
+    // `tb` woke with `updated` and receives the transient Collaborative Whiteboard Digest.
+    let tb2 = claim(&mut s, &tb.task);
+    let tb2_chat = chat(&tb2);
+    assert!(tb2_chat.contains("updated") && tb2_chat.contains("Collaborative Whiteboard Digest"));
+    s.apply(&tb.task, &json!({"op":"wb_read","prefix":"contract:","since_seq":0})).unwrap();
+    let tb3 = claim(&mut s, &tb.task);
+    assert!(chat(&tb3).contains("line 2 [locked]") && chat(&tb3).contains("resolved"));
+
+    // Finish `ta`, then `tb` waits on an unwritten key -> immediately wakes with `no_other_writers`.
+    finish(&mut s, &ta.task, "producer done");
+    s.apply(&tb.task, &json!({"op":"wb_wait","key":"never:written"})).unwrap();
+    let tb4 = claim(&mut s, &tb.task);
+    assert!(chat(&tb4).contains("no_other_writers"));
+    finish(&mut s, &tb.task, "consumer done");
+
+    // In-tree summarizer receives read-only `whiteboard` snapshot.
+    let sum = turn(&mut s);
+    assert_eq!(sum.kind, TurnKind::Reporter);
+    let pkt = packet(&sum);
+    let wb = pkt["whiteboard"].as_array().unwrap();
+    assert_eq!(wb.len(), 1);
+    assert_eq!(wb[0]["key"], "contract:api");
+    assert_eq!(wb[0]["status"], "resolved");
+    finish(&mut s, &sum.task, "round 1 summarized");
+
+    // Whiteboard persists across continuation rounds and accepts user writes, then cleans up on delete.
+    s.continue_tree(&sum.task, "round 2", None, false, &ModelSettings::default()).unwrap();
+    s.user_wb_write(&root, "user:note", "set", Some("decision"), Some("approved by user")).unwrap();
+    let board = s.whiteboard(&root).unwrap();
+    assert_eq!(board["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(s.task(&root).unwrap()["whiteboard"].as_array().unwrap().len(), 2);
+    claim(&mut s, &sum.task);
+    finish(&mut s, &sum.task, "round 2 done");
+    s.delete(&root).unwrap();
+    let remaining: i64 =
+        s.db.query_row("SELECT count(*) FROM whiteboard_entries WHERE root=?1", [&root], |r| r.get(0)).unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[test]
+fn compaction_prepares_and_applies_checkpoint_and_staged_tool_job_preserves_mode() {
+    let home = Session::new();
+    let mut s = home.open();
+    let r_direct = s.submit("default", "direct mode").unwrap();
+    assert_eq!(s.task(&r_direct).unwrap()["sandbox"], "direct");
+
+    claim(&mut s, &r_direct);
+    s.request_tool(&r_direct, &json!({"op":"shell","command":"echo hi"})).unwrap();
+    let job_direct = s.claim_tool_job().unwrap().unwrap();
+    assert!(!job_direct.staged);
+    s.tool_result(&r_direct, Ok("hi")).unwrap();
+
+    // Grow `r_direct`'s node_messages to >= 6 messages and verify prepare/apply compaction.
+    for i in 0..3 {
+        claim(&mut s, &r_direct);
+        s.request_tool(&r_direct, &json!({"op":"shell","command":format!("echo step {i}")})).unwrap();
+        let _ = s.claim_tool_job().unwrap().unwrap();
+        s.tool_result(&r_direct, Ok("ok")).unwrap();
+    }
+    let before = claim(&mut s, &r_direct);
+    let before_count = before.messages.len();
+    assert!(before_count >= 6);
+    let cjob = s.prepare_compaction(&r_direct).unwrap().unwrap();
+    assert!(!cjob.middle.is_empty());
+    s.apply_compaction(&r_direct, cjob.head_keep, cjob.tail_keep, "condensed middle steps").unwrap();
+    let after = claim(&mut s, &r_direct);
+    assert!(after.messages.len() < before_count);
+    assert!(chat(&after).contains("compacted_history") && chat(&after).contains("condensed middle steps"));
+    finish(&mut s, &r_direct, "direct compacted done");
+
+    let r_staged =
+        s.submit_with_options("default", "staged mode", None, false, true, &ModelSettings::default()).unwrap();
+    assert_eq!(s.task(&r_staged).unwrap()["sandbox"], "staged");
+    claim(&mut s, &r_staged);
+    s.request_tool(&r_staged, &json!({"op":"shell","command":"echo staged"})).unwrap();
+    let job_staged = s.claim_tool_job().unwrap().unwrap();
+    assert!(job_staged.staged);
+    s.tool_result(&r_staged, Ok("staged")).unwrap();
 }

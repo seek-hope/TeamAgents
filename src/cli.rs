@@ -15,9 +15,11 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(500);
 const HELP: &str = "TeamAgents — persistent agent sessions
 
-  teamagents [chat] [--review] [--plain] Submit prompts and receive final reports (TUI on TTY)
-  teamagents tui [--review]              Launch the interactive terminal interface
+  teamagents [chat] [--review] [--staged] [--plain] Submit prompts and receive final reports (TUI on TTY)
+  teamagents tui [--review] [--staged]   Launch the interactive terminal interface
   teamagents exec [OPTIONS] TEXT         Submit a task (use - or pipe stdin for text)
+  teamagents continue TASK_ID [OPTIONS] TEXT  Continue a settled leaf or summarizer as the next subtree
+  teamagents whiteboard ROOT_ID [set|append|resolve|delete KEY [TEXT]]  Inspect or update a tree whiteboard
   teamagents members | tasks             List session members or tasks
   teamagents status TASK_ID              Inspect progress, result and pending action
   teamagents answer ROOT_ID TEXT          Answer a root clarification and resume work
@@ -34,26 +36,26 @@ Options may appear before or after the command. Use -- before literal arguments.
   --agent NAME         Recipient for a new task or chat (default: default)
   --json               Print machine-readable JSON
   --plain              Use the line-oriented chat REPL even on a terminal (chat)
-  --detach             Return the submission receipt without waiting (exec)
-  --timeout SECONDS    Limit the wait after submission (exec waits indefinitely by default)
+  --detach             Return the submission receipt without waiting (exec and continue)
+  --timeout SECONDS    Limit the wait after submission (exec and continue wait indefinitely)
   --review             Require approval for each shell command and edit requested by
-                       the model on this root or its children (exec, chat, and tui)
-  --check COMMAND      Run this exact trusted command at proposed completion (exec).
-                       A failure returns diagnostics for repair, up to 3 check attempts
-                       within the root's shared model-turn budget.
+                       the model on this round or its children (exec, continue, chat, and tui)
+  --staged             Use copy-on-exit workspace staging instead of direct workspace-write bwrap
+  --check COMMAND      Run this exact trusted command at proposed completion (exec and continue).
+                       A failure returns diagnostics for repair, up to 10 check attempts.
 
-By default, agents work unattended in a workspace sandbox with network access for
-package installs and other project work. Shells cannot read private host files
-outside the workspace or inherit the daemon's provider key. Use a trusted workspace.
-Leaving or timing out keeps work running. Use status to reconnect and tasks to find
-pending approvals. When a root needs clarification, exec prints its question and exits.
-Use /model in chat to select the model and reasoning effort for new tasks.
-Use answer ROOT_ID TEXT to continue. Final reports distinguish claims from observed results.";
+By default, agents work unattended in a direct workspace-write bwrap sandbox (protecting .git/admin dirs
+and credential stores) with network access; pass --staged for isolated copy-on-exit staging. Leaves
+collaborate via the per-tree Collaborative Whiteboard (whiteboard ROOT_ID / TUI 5 Board).
+Leaving or timing out keeps work running. Use status to reconnect and tasks to find pending approvals.
+When a root needs clarification, exec prints its question and exits. Use /model in chat to select model
+and reasoning effort, answer ROOT_ID TEXT to clarify, or continue TASK_ID TEXT on a sole leaf/summarizer.";
 
-const CHAT_HELP: &str = "Enter a task, or reply to a single waiting question for your selected agent.
-Use /answer to select a question or /new to start separate work.
-/to NAME   /members   /tasks   /status TASK_ID   /cancel TASK_ID
-/answer ROOT_ID TEXT   /new TEXT   /approve APPROVAL_ID   /deny APPROVAL_ID   /help   /quit
+const CHAT_HELP: &str = "Opening chat starts a fresh session. In a settled session, plain input continues
+the sole leaf or summarizer node as the next subtree root (unless a question waits).
+/new [TEXT]   /to NAME   /members   /tasks   /status TASK_ID   /cancel TASK_ID
+/wb [KEY TEXT|append KEY TEXT|resolve KEY|delete KEY]   /staged [on|off]
+/answer ROOT_ID TEXT   /approve APPROVAL_ID   /deny APPROVAL_ID   /help   /quit
 /model shows the selection for new roots. /model list shows visible ChatGPT plan models.
 /model MODEL [EFFORT]   /model effort EFFORT   /model default";
 
@@ -73,6 +75,7 @@ enum AuthAction {
 struct ExecOptions {
     agent: String,
     review: bool,
+    staged: bool,
     check: Option<String>,
     detach: bool,
     timeout: Option<Duration>,
@@ -84,9 +87,11 @@ enum Command {
     Version,
     Auth(AuthAction),
     Daemon,
-    Chat { agent: String, review: bool, plain: bool },
-    Tui { agent: String, review: bool },
+    Chat { agent: String, review: bool, staged: bool, plain: bool },
+    Tui { agent: String, review: bool, staged: bool },
     Exec(ExecOptions),
+    Continue { id: String, opt: ExecOptions },
+    Whiteboard { id: String, write: Option<(String, String, Option<String>, Option<String>)> },
     Members,
     Tasks,
     Status { id: String },
@@ -103,6 +108,15 @@ struct Parsed {
     command: Command,
 }
 
+fn parse_wb_kind_key(raw: &str) -> (Option<String>, String) {
+    if let Some((k, rest)) = raw.split_once(':') {
+        if matches!(k, "note" | "contract" | "claim" | "question" | "decision") && !rest.is_empty() {
+            return (Some(k.to_owned()), rest.to_owned());
+        }
+    }
+    (None, raw.to_owned())
+}
+
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
     let mut session = None;
     let mut workspace = None;
@@ -111,6 +125,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
     let mut detach = false;
     let mut timeout = None;
     let mut review = false;
+    let mut staged = false;
     let mut plain = false;
     let mut check = None;
     let mut cmd_name = String::new();
@@ -143,6 +158,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
             }
             "--json" => json = true,
             "--review" => review = true,
+            "--staged" => staged = true,
             "--plain" => plain = true,
             "--detach" => detach = true,
             "--help" | "-h" => info = Some("help"),
@@ -163,11 +179,17 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
         cmd_name = "chat".into();
     }
 
-    if cmd_name != "exec" && (check.is_some() || detach || timeout.is_some()) {
-        return Err("--check, --timeout and --detach apply only to exec".into());
+    if !matches!(cmd_name.as_str(), "exec" | "continue") && (check.is_some() || detach || timeout.is_some()) {
+        return Err("--check, --timeout and --detach apply only to exec and continue".into());
     }
-    if review && !matches!(cmd_name.as_str(), "chat" | "exec" | "tui") {
-        return Err("--review applies only to exec, chat, and tui".into());
+    if review && !matches!(cmd_name.as_str(), "chat" | "exec" | "continue" | "tui") {
+        return Err("--review applies only to exec, continue, chat, and tui".into());
+    }
+    if staged && !matches!(cmd_name.as_str(), "chat" | "exec" | "continue" | "tui") {
+        return Err("--staged applies only to exec, continue, chat, and tui".into());
+    }
+    if cmd_name == "continue" && agent != "default" {
+        return Err("--agent applies only when starting a new session".into());
     }
     if plain && cmd_name != "chat" {
         return Err("--plain applies only to chat".into());
@@ -202,7 +224,37 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
                 _ => unreachable!("validated auth action"),
             })
         }
-        "exec" => Command::Exec(ExecOptions { agent, review, check, detach, timeout, args: pos_args }),
+        "exec" => Command::Exec(ExecOptions { agent, review, staged, check, detach, timeout, args: pos_args }),
+        "continue" => {
+            if pos_args.len() < 2 || pos_args[0].trim().is_empty() {
+                return Err("continue requires TASK_ID and a prompt (or - for stdin)".into());
+            }
+            let mut iter = pos_args.into_iter();
+            let id = iter.next().unwrap();
+            let args = iter.collect();
+            Command::Continue { id, opt: ExecOptions { agent, review, staged, check, detach, timeout, args } }
+        }
+        "whiteboard" | "wb" => {
+            let Some(id) = pos_args.first().filter(|s| !s.trim().is_empty()).cloned() else {
+                return Err("whiteboard requires ROOT_ID [set|append|resolve|delete KEY [TEXT]]".into());
+            };
+            let write = match pos_args.get(1).map(String::as_str) {
+                None => None,
+                Some(mode @ ("set" | "append" | "resolve" | "delete")) => {
+                    let Some(raw_key) = pos_args.get(2).filter(|s| !s.trim().is_empty()) else {
+                        return Err(format!("whiteboard {mode} requires KEY"));
+                    };
+                    let (kind, key) = parse_wb_kind_key(raw_key);
+                    let rest = if pos_args.len() > 3 { Some(pos_args[3..].join(" ")) } else { None };
+                    if matches!(mode, "set" | "append") && rest.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                        return Err(format!("whiteboard {mode} requires TEXT"));
+                    }
+                    Some((key, mode.to_owned(), kind, rest))
+                }
+                _ => return Err("whiteboard mode must be set, append, resolve, or delete".into()),
+            };
+            Command::Whiteboard { id, write }
+        }
         "answer" => {
             if pos_args.len() < 2 || pos_args[0].trim().is_empty() || pos_args[1..].iter().all(|s| s.trim().is_empty())
             {
@@ -229,8 +281,8 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
                 return Err(format!("{cmd_name} does not take arguments"));
             }
             match cmd_name.as_str() {
-                "chat" => Command::Chat { agent, review, plain },
-                "tui" => Command::Tui { agent, review },
+                "chat" => Command::Chat { agent, review, staged, plain },
+                "tui" => Command::Tui { agent, review, staged },
                 "daemon" => Command::Daemon,
                 "members" => Command::Members,
                 "tasks" => Command::Tasks,
@@ -300,8 +352,15 @@ fn task_text(task: &Value) -> String {
     if let Some(parent) = task["parent"].as_str() {
         out.push_str(&format!(" (child of {parent})"));
     }
-    if let (Some(used), Some(budget)) = (task["turns_used"].as_u64(), task["turn_budget"].as_u64()) {
-        out.push_str(&format!(" | root turns {used}/{budget}"));
+    if let Some(used) = task["turns_used"].as_u64() {
+        if let Some(round) = task["round"].as_u64().filter(|&r| r > 1) {
+            out.push_str(&format!(" | round {round}"));
+        }
+        if let Some(budget) = task["turn_budget"].as_u64() {
+            out.push_str(&format!(" | root turns {used}/{budget}"));
+        } else {
+            out.push_str(&format!(" | turns {used}"));
+        }
     }
     if let Some(stage) = task["stage_status"].as_str() {
         if task["parent"].is_null() && task["kind"] != "legacy" {
@@ -352,6 +411,10 @@ fn task_text(task: &Value) -> String {
             out.push_str(&format!("\n    {id} {agent} [{status}] {result}"));
         }
     }
+    if let Some(wb) = task["whiteboard"].as_array().filter(|rows| !rows.is_empty()) {
+        let seq = task["whiteboard_seq"].as_u64().unwrap_or(0);
+        out.push_str(&format!("\n  whiteboard: {} entry/entries (seq {seq})", wb.len()));
+    }
     append_evidence(&mut out, task);
     out
 }
@@ -375,7 +438,36 @@ fn render(op: &str, value: &Value, machine: bool) -> String {
             }
         }
         "status" => task_text(value),
+        "whiteboard" => {
+            let root = value["root"].as_str().unwrap_or("?");
+            let seq = value["seq"].as_u64().unwrap_or(0);
+            let Some(entries) = value["entries"].as_array() else {
+                return value.to_string();
+            };
+            if entries.is_empty() {
+                return format!("Whiteboard {root} (seq {seq}): empty.");
+            }
+            let mut out = format!("Whiteboard {root} (seq {seq}, {} entries):", entries.len());
+            for e in entries {
+                let kind = e["kind"].as_str().unwrap_or("note");
+                let key = e["key"].as_str().unwrap_or("?");
+                let ver = e["version"].as_u64().unwrap_or(1);
+                let eseq = e["seq"].as_u64().unwrap_or(0);
+                let author = e["author_agent"].as_str().unwrap_or("?");
+                let status = e["status"].as_str().unwrap_or("active");
+                let body = preview(e["content"].as_str().unwrap_or(""), 200);
+                out.push_str(&format!("\n  [{kind}] {key} (v{ver}, seq {eseq}, @{author}, {status}): {body}"));
+            }
+            out
+        }
+        "wb_write" => format!(
+            "Whiteboard {} {} (seq {})",
+            display_value(&value["mode"]),
+            display_value(&value["key"]),
+            value["seq"].as_u64().unwrap_or(0)
+        ),
         "submit" => format!("Submitted {}", display_value(&value["id"])),
+        "continue" => format!("Continued {} via node {}", display_value(&value["id"]), display_value(&value["node"])),
         _ if value["ok"] == true => "OK".into(),
         _ => display_value(value),
     }
@@ -409,13 +501,30 @@ fn prompt(args: &[String]) -> Result<String> {
 }
 
 fn exec(client: Client, opt: ExecOptions, machine: bool) -> Result<()> {
-    let receipt = client.submit(&opt.agent, &prompt(&opt.args)?, opt.review, opt.check.as_deref())?;
+    let receipt =
+        client.submit_with_options(&opt.agent, &prompt(&opt.args)?, opt.review, opt.check.as_deref(), opt.staged)?;
+    wait_for_root(client, receipt, "submit", &opt, machine)
+}
+
+fn continue_cmd(client: Client, id: &str, opt: ExecOptions, machine: bool) -> Result<()> {
+    let receipt =
+        client.continue_with_options(id, &prompt(&opt.args)?, opt.review, opt.check.as_deref(), opt.staged)?;
+    wait_for_root(client, receipt, "continue", &opt, machine)
+}
+
+fn wait_for_root(client: Client, receipt: Value, op: &str, opt: &ExecOptions, machine: bool) -> Result<()> {
     if opt.detach {
-        return output(&render("submit", &receipt, machine));
+        return output(&render(op, &receipt, machine));
     }
     let id = field(&receipt, "id")?.to_owned();
     if !machine {
-        eprintln!("{}", sanitize_terminal(&format!("Submitted {id}. Reconnect with status {id}.")));
+        let banner = if op == "continue" {
+            let node = receipt["node"].as_str().unwrap_or(id.as_str());
+            format!("Continued {id} via node {node}. Reconnect with status {id}.")
+        } else {
+            format!("Submitted {id}. Reconnect with status {id}.")
+        };
+        eprintln!("{}", sanitize_terminal(&banner));
         if opt.review {
             eprintln!("Use tasks in another client to review pending actions, including child approvals.");
         }
@@ -527,11 +636,14 @@ fn model_command(client: &Client, args: &str, machine: bool) -> Result<()> {
     output(&text)
 }
 
-fn chat_plain(client: &Client, initial_agent: &str, review: bool, machine: bool) -> Result<()> {
+fn chat_plain(client: &Client, initial_agent: &str, review: bool, initial_staged: bool, machine: bool) -> Result<()> {
     let mut agent = initial_agent.to_owned();
+    let mut staged = initial_staged;
+    let mut active_root: Option<String> = None;
     if !machine && io::stdin().is_terminal() {
         let mode = if review { "individual action review" } else { "unattended" };
-        output(&format!("Chatting with {agent} ({mode}). Enter a task, or /help for commands."))?;
+        let sb = if staged { "staged" } else { "direct" };
+        output(&format!("New session with {agent} ({mode}, {sb}). Enter a task, or /help for commands."))?;
     }
     let tracker = Mutex::new(QuestionTracker::default());
     let show = |task: &Value| {
@@ -549,13 +661,13 @@ fn chat_plain(client: &Client, initial_agent: &str, review: bool, machine: bool)
         tracker.lock().unwrap().clear_answered(id);
         Ok(())
     };
-    let submit = |agent: &str, text: &str| {
-        let receipt = client.submit(agent, text, review, None)?;
+    let submit = |agent: &str, text: &str, staged: bool| -> Result<String> {
+        let receipt = client.submit_with_options(agent, text, review, None, staged)?;
+        let id = field(&receipt, "id")?.to_owned();
         if machine || review {
-            output(&render("submit", &receipt, machine))
-        } else {
-            Ok(())
+            output(&render("submit", &receipt, machine))?;
         }
+        Ok(id)
     };
     let (stop, stopped) = mpsc::channel::<()>();
     thread::scope(|scope| {
@@ -601,7 +713,93 @@ fn chat_plain(client: &Client, initial_agent: &str, review: bool, machine: bool)
                         let (_, text) = args.split_once(char::is_whitespace).unwrap();
                         answer(id, text.trim_start())
                     }
-                    ("new", Some(_), _) => submit(&agent, args),
+                    ("new", None, None) => {
+                        active_root = None;
+                        output(&if machine {
+                            json!({"new_session":true}).to_string()
+                        } else {
+                            "Started a new session. Enter a task, or /help for commands.".into()
+                        })
+                    }
+                    ("staged", None, None) => {
+                        staged = !staged;
+                        output(&if machine {
+                            json!({"staged": staged}).to_string()
+                        } else {
+                            format!("Sandbox mode: {}.", if staged { "staged" } else { "direct" })
+                        })
+                    }
+                    ("staged", Some(mode @ ("on" | "off")), None) => {
+                        staged = mode == "on";
+                        output(&if machine {
+                            json!({"staged": staged}).to_string()
+                        } else {
+                            format!("Sandbox mode set to {}.", if staged { "staged" } else { "direct" })
+                        })
+                    }
+                    ("wb", _, _) => {
+                        let Some(root_id) = active_root.as_deref() else {
+                            return Err("start or select a session first before using /wb".into());
+                        };
+                        if args.is_empty() {
+                            command(client, "whiteboard", Some(root_id), machine)
+                        } else {
+                            let mut wb_parts = args.split_whitespace();
+                            let first = wb_parts.next().unwrap();
+                            let value = match first {
+                                "resolve" => {
+                                    let Some(raw_key) = wb_parts.next() else {
+                                        return Err("/wb resolve requires KEY".into());
+                                    };
+                                    let (kind, key) = parse_wb_kind_key(raw_key);
+                                    let rest = args
+                                        .split_once("resolve")
+                                        .unwrap()
+                                        .1
+                                        .trim_start()
+                                        .split_once(raw_key)
+                                        .map(|(_, t)| t.trim())
+                                        .filter(|t| !t.is_empty());
+                                    client.wb_write(root_id, &key, "resolve", kind.as_deref(), rest)?
+                                }
+                                "delete" => {
+                                    let Some(raw_key) = wb_parts.next() else {
+                                        return Err("/wb delete requires KEY".into());
+                                    };
+                                    let (_, key) = parse_wb_kind_key(raw_key);
+                                    client.wb_write(root_id, &key, "delete", None, None)?
+                                }
+                                "append" => {
+                                    let Some(raw_key) = wb_parts.next() else {
+                                        return Err("/wb append requires KEY TEXT".into());
+                                    };
+                                    let (kind, key) = parse_wb_kind_key(raw_key);
+                                    let body = args
+                                        .split_once("append")
+                                        .unwrap()
+                                        .1
+                                        .trim_start()
+                                        .split_once(raw_key)
+                                        .map(|(_, t)| t.trim())
+                                        .unwrap_or("");
+                                    client.wb_write(root_id, &key, "append", kind.as_deref(), Some(body))?
+                                }
+                                raw_key => {
+                                    let (kind, key) = parse_wb_kind_key(raw_key);
+                                    let body = args.split_once(raw_key).map(|(_, t)| t.trim()).unwrap_or("");
+                                    client.wb_write(root_id, &key, "set", kind.as_deref(), Some(body))?
+                                }
+                            };
+                            output(&render("wb_write", &value, machine))
+                        }
+                    }
+                    ("new", Some(_), _) => match submit(&agent, args, staged) {
+                        Ok(id) => {
+                            active_root = Some(id);
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    },
                     ("tasks" | "members", None, None) | ("status" | "cancel" | "approve" | "deny", Some(_), None) => {
                         command(client, op, arg, machine)
                     }
@@ -611,7 +809,28 @@ fn chat_plain(client: &Client, initial_agent: &str, review: bool, machine: bool)
                 let target = tracker.lock().unwrap().reply_target(&agent);
                 match target {
                     Ok(Some(id)) => answer(&id, line),
-                    Ok(None) => submit(&agent, line),
+                    Ok(None) => {
+                        if let Some(root_id) = active_root.as_deref() {
+                            match client.continue_with_options(root_id, line, review, None, staged) {
+                                Ok(receipt) => {
+                                    if machine || review {
+                                        output(&render("continue", &receipt, machine))
+                                    } else {
+                                        Ok(())
+                                    }
+                                }
+                                Err(e) => Err(e),
+                            }
+                        } else {
+                            match submit(&agent, line, staged) {
+                                Ok(id) => {
+                                    active_root = Some(id);
+                                    Ok(())
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    }
                     Err(e) => Err(e),
                 }
             };
@@ -646,22 +865,28 @@ fn run_cli() -> Result<()> {
     let interactive_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     match cmd {
         Command::Daemon => daemon::serve(&client.session, &client.workspace),
-        Command::Tui { agent, review } => {
+        Command::Tui { agent, review, staged } => {
             if !interactive_tty {
                 return Err(
                     "tui requires an interactive terminal; use `teamagents chat --plain` or `teamagents exec`".into()
                 );
             }
-            crate::tui::run(client, agent, review)
+            crate::tui::run(client, agent, review, staged)
         }
-        Command::Chat { agent, review, plain } => {
+        Command::Chat { agent, review, staged, plain } => {
             if !global.json && !plain && interactive_tty {
-                crate::tui::run(client, agent, review)
+                crate::tui::run(client, agent, review, staged)
             } else {
-                chat_plain(&client, &agent, review, global.json)
+                chat_plain(&client, &agent, review, staged, global.json)
             }
         }
         Command::Exec(opt) => exec(client, opt, global.json),
+        Command::Continue { id, opt } => continue_cmd(client, &id, opt, global.json),
+        Command::Whiteboard { id, write: None } => command(&client, "whiteboard", Some(&id), global.json),
+        Command::Whiteboard { id, write: Some((key, mode, kind, content)) } => {
+            let value = client.wb_write(&id, &key, &mode, kind.as_deref(), content.as_deref())?;
+            output(&render("wb_write", &value, global.json))
+        }
         Command::Answer { root_id, text } => {
             let value = client.answer(&root_id, &text)?;
             output(&render("answer", &value, global.json))
@@ -727,17 +952,36 @@ mod tests {
             Command::Chat { plain: true, review: true, .. }
         ));
         assert!(matches!(
-            options(&["--review", "tui", "--agent", "builder"]).unwrap().command,
-            Command::Tui { ref agent, review: true } if agent == "builder"
+            options(&["--review", "--staged", "tui", "--agent", "builder"]).unwrap().command,
+            Command::Tui { ref agent, review: true, staged: true } if agent == "builder"
+        ));
+        assert!(matches!(
+            options(&["exec", "--staged", "run"]).unwrap().command,
+            Command::Exec(ref opt) if opt.staged
+        ));
+        assert!(matches!(
+            options(&["whiteboard", "r1", "set", "contract:api", "v1 schema"]).unwrap().command,
+            Command::Whiteboard { ref id, write: Some((ref key, ref mode, Some(ref kind), Some(ref text))) }
+                if id == "r1" && key == "api" && mode == "set" && kind == "contract" && text == "v1 schema"
         ));
         assert!(matches!(
             options(&["delete", "r1"]).unwrap().command,
             Command::Delete { ref id } if id == "r1"
         ));
+        assert!(matches!(
+            options(&["continue", "n1", "--review", "--check", "cargo test", "--detach", "follow", "up"]).unwrap().command,
+            Command::Continue { ref id, ref opt }
+                if id == "n1" && opt.review && opt.detach && opt.check.as_deref() == Some("cargo test")
+                && prompt(&opt.args).unwrap() == "follow up"
+        ));
         for args in [
             &["deny"][..],
             &["delete"],
             &["delete", "r1", "extra"],
+            &["continue"],
+            &["continue", "n1"],
+            &["continue", " ", "follow up"],
+            &["continue", "--agent", "worker", "n1", "follow up"],
             &["answer"],
             &["answer", "t1"],
             &["answer", "t1", " "],
@@ -745,6 +989,7 @@ mod tests {
             &["exec", "--timeout", "-1"],
             &["--check", "x", "tasks"],
             &["tasks", "--review"],
+            &["tasks", "--staged"],
             &["chat", "--timeout", "1"],
             &["exec", "--plain"],
             &["tasks", "--plain"],

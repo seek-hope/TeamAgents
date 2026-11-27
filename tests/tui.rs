@@ -308,8 +308,19 @@ fn tui_submits_cjk_approves_resizes_clicks_deletes_and_exits_cleanly() {
     let _stop_guard = StopGuard(stop_peer.clone());
     let peer_stop = stop_peer.clone();
     let peer = thread::spawn(move || {
-        let mut tasks = json!([]);
+        let old_root = json!({
+            "id": "old-1", "root": "old-1", "agent": "default", "status": "done",
+            "stage_status": "done", "kind": "root", "prompt": "Old History",
+            "result": "Old output", "continuation_node": "old-1",
+            "continuation_agent": "default", "continuation_kind": "leaf",
+            "turns_used": 1, "turn_budget": 32
+        });
+        let mut tasks = json!([old_root.clone()]);
+        let mut whiteboard: Vec<Value> = Vec::new();
+        let mut wb_seq: u64 = 0;
         let mut approved = false;
+        let mut continued = false;
+        let mut seen_wb_write = false;
         let mut seen_status_done = false;
         let mut deleted = false;
         while !peer_stop.load(Ordering::Relaxed) {
@@ -332,6 +343,7 @@ fn tui_submits_cjk_approves_resizes_clicks_deletes_and_exits_cleanly() {
                     assert_eq!(body["text"], "修复 parser");
                     assert_eq!(body["agent"], "default");
                     tasks = json!([
+                        old_root.clone(),
                         {
                             "id": "r1", "root": "r1", "agent": "default", "status": "waiting",
                             "stage_status": "done", "kind": "root", "prompt": "修复 parser",
@@ -345,15 +357,69 @@ fn tui_submits_cjk_approves_resizes_clicks_deletes_and_exits_cleanly() {
                     ]);
                     json!({"id": "r1"})
                 }
+                "continue" => {
+                    assert_eq!(body["id"], "c1");
+                    assert_eq!(body["text"], "追加测试");
+                    continued = true;
+                    tasks = json!([
+                        old_root.clone(),
+                        {
+                            "id": "r1", "root": "r1", "agent": "default", "status": "done",
+                            "stage_status": "done", "kind": "root", "prompt": "修复 parser",
+                            "result": "Round 2 tests added.", "round": 2,
+                            "continuation_node": "c1", "continuation_agent": "worker",
+                            "continuation_kind": "leaf", "turns_used": 1, "turn_budget": 32, "sandbox": "direct"
+                        }
+                    ]);
+                    json!({"id": "r1", "node": "c1"})
+                }
+                "wb_write" => {
+                    assert_eq!(body["id"], "r1");
+                    assert_eq!(body["key"], "ui:note");
+                    assert_eq!(body["mode"], "set");
+                    assert_eq!(body["content"], "hello_board");
+                    wb_seq += 1;
+                    seen_wb_write = true;
+                    let entry = json!({
+                        "key": "ui:note",
+                        "kind": body.get("kind").and_then(Value::as_str).unwrap_or("note"),
+                        "content": "hello_board",
+                        "author_agent": "user",
+                        "round": 2,
+                        "version": 1,
+                        "seq": wb_seq,
+                        "status": "active"
+                    });
+                    whiteboard = vec![entry.clone()];
+                    json!({"whiteboard": true, "op": "wb_write", "ok": true, "mode": "set", "key": "ui:note", "seq": wb_seq, "entry": entry})
+                }
                 "status" => {
                     let id = body["id"].as_str().unwrap();
-                    if id == "r1" && approved && !deleted {
+                    if id == "r1" && continued && !deleted {
+                        json!({
+                            "id": "r1", "root": "r1", "agent": "default", "status": "done",
+                            "stage_status": "done", "kind": "root", "prompt": "修复 parser",
+                            "result": "Round 2 tests added.", "round": 2, "turns_used": 1, "turn_budget": 32,
+                            "continuation_node": "c1", "continuation_agent": "worker",
+                            "continuation_kind": "leaf",
+                            "sandbox": "direct",
+                            "whiteboard_seq": wb_seq,
+                            "whiteboard": whiteboard.clone(),
+                            "rounds": [
+                                {"round": 1, "subtree_root": "r1", "prompt": "修复 parser", "outcome": "done", "result": "All 12 tests passed."},
+                                {"round": 2, "subtree_root": "c1", "prompt": "追加测试", "outcome": "done", "result": "Round 2 tests added."}
+                            ],
+                            "evidence": [], "leaf_results": [], "subtree_receipts": []
+                        })
+                    } else if id == "r1" && approved && !deleted {
                         seen_status_done = true;
                         json!({
                             "id": "r1", "root": "r1", "agent": "default", "status": "done",
                             "stage_status": "done", "kind": "root", "prompt": "修复 parser",
                             "result": "All 12 tests passed.", "turns_used": 3, "turn_budget": 32,
                             "policy": "review", "verification": "not_requested",
+                            "continuation_node": "c1", "continuation_agent": "worker",
+                            "continuation_kind": "leaf",
                             "evidence": [], "leaf_results": [], "subtree_receipts": []
                         })
                     } else if id == "c1" {
@@ -377,9 +443,12 @@ fn tui_submits_cjk_approves_resizes_clicks_deletes_and_exits_cleanly() {
                     assert_eq!(body["id"], "appr-7");
                     approved = true;
                     tasks = json!([
+                        old_root.clone(),
                         {
                             "id": "r1", "root": "r1", "agent": "default", "status": "done",
                             "stage_status": "done", "kind": "root", "prompt": "修复 parser",
+                            "continuation_node": "c1", "continuation_agent": "worker",
+                            "continuation_kind": "leaf",
                             "turns_used": 3, "turn_budget": 32
                         }
                     ]);
@@ -388,14 +457,17 @@ fn tui_submits_cjk_approves_resizes_clicks_deletes_and_exits_cleanly() {
                 "delete" => {
                     assert_eq!(body["id"], "r1");
                     deleted = true;
-                    tasks = json!([]);
+                    tasks = json!([old_root.clone()]);
                     json!({"ok": true, "root": "r1"})
                 }
                 other => panic!("unexpected op: {other}"),
             };
             writeln!(conn, "{}", json!({"value": reply})).unwrap();
         }
-        assert!(approved && seen_status_done && deleted, "expected approval, status done, and delete");
+        assert!(
+            approved && continued && seen_wb_write && seen_status_done && deleted,
+            "expected approval, continue, wb_write, status done, and delete"
+        );
     });
 
     let (mut master, slave) = open_pty();
@@ -445,7 +517,10 @@ fn tui_submits_cjk_approves_resizes_clicks_deletes_and_exits_cleanly() {
     });
 
     let timeout = Duration::from_secs(8);
-    wait_for_text(&output, 0, 112, 32, "fixture-model", timeout);
+    // Even after the initial snapshot loads a settled session ("Old History"), TUI stays in New Session.
+    let initial = wait_for_text(&output, 0, 112, 32, "Old History", timeout);
+    assert!(initial.text().contains("New session"));
+    assert!(initial.text().contains("fixture-model"));
 
     master.write_all("修复 parser\r".as_bytes()).unwrap();
     master.flush().unwrap();
@@ -458,19 +533,49 @@ fn tui_submits_cjk_approves_resizes_clicks_deletes_and_exits_cleanly() {
     wait_for_text(&output, 0, 112, 32, "+ fix", timeout);
     master.write_all(b"a").unwrap();
     master.flush().unwrap();
-    wait_for_text(&output, 0, 112, 32, "All 12 tests passed.", timeout);
+    wait_for_text(&output, 0, 112, 32, "Continue @worker", timeout);
+
+    // Sending follow-up input in settled session routes directly to the sole leaf (`c1`).
+    master.write_all("追加测试\r".as_bytes()).unwrap();
+    master.flush().unwrap();
+    wait_for_text(&output, 0, 112, 32, "Round 2 tests added.", timeout);
+
+    // Toggle /staged on and edit/inspect collaborative whiteboard via /wb.
+    let after_cont_screen = output.0.lock().unwrap().len();
+    master.write_all("/staged on\r".as_bytes()).unwrap();
+    master.flush().unwrap();
+    wait_for_text(&output, after_cont_screen, 112, 32, "· staged", timeout);
+    master.write_all("/wb set ui:note hello_board\r".as_bytes()).unwrap();
+    master.flush().unwrap();
+    wait_for_text(&output, after_cont_screen, 112, 32, "hello_board", timeout);
+    // Switch back to Summary tab (Alt+1) before returning to New session via Ctrl+N.
+    master.write_all(b"\x1b1").unwrap();
+    master.flush().unwrap();
+    wait_for_text(&output, after_cont_screen, 112, 32, "Round 2 tests added.", timeout);
+
+    // Ctrl+N switches back to a blank New Session, then clicking "修复 parser" re-selects r1.
+    let after_cont = output.0.lock().unwrap().len();
+    master.write_all(&[0x0e]).unwrap();
+    master.flush().unwrap();
+    let blank_again = wait_for_text(&output, after_cont, 112, 32, "New session", timeout);
+    let (r1_col, r1_row) = blank_again.find_cell("修复").expect("r1 visible in sidebar");
+    send_sgr_click(&mut master, r1_col + 1, r1_row);
+    wait_for_text(&output, after_cont, 112, 32, "Round 2 tests added.", timeout);
+    // Focus Inspector (Tab from Sidebar) so narrow viewport renders Inspector + "☰ Sessions" pill.
+    master.write_all(b"\t").unwrap();
+    master.flush().unwrap();
 
     // Resize PTY across the 96-col responsive breakpoint and verify SGR click on exact rendered tab coordinates.
     let offset = output.0.lock().unwrap().len();
     let narrow_ws = libc::winsize { ws_row: 26, ws_col: 90, ws_xpixel: 0, ws_ypixel: 0 };
     assert_eq!(unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &narrow_ws) }, 0);
     wait_for_text(&output, offset, 90, 26, "☰ Sessions", timeout);
-    let resized_screen = wait_for_text(&output, offset, 90, 26, "4 Log", timeout);
+    let resized_screen = wait_for_text(&output, offset, 90, 26, "5 Board", timeout);
     let (ev_col, ev_row) = resized_screen.find_cell("Evidence").expect("Evidence tab visible after resize");
     send_sgr_click(&mut master, ev_col + 1, ev_row);
     wait_for_text(&output, offset, 90, 26, "Runtime-observed execution receipts", timeout);
 
-    // Click "Sessions" toggle to focus sidebar, then Del×2 to arm and delete r1.
+    // Click "Sessions" toggle to focus sidebar, then Del×2 to arm and delete r1 (returns to New session).
     let (sess_col, sess_row) = resized_screen.find_cell("Sessions").expect("Sessions toggle visible");
     send_sgr_click(&mut master, sess_col + 1, sess_row);
     wait_for_text(&output, offset, 90, 26, "Agents (1)", timeout);
@@ -479,7 +584,7 @@ fn tui_submits_cjk_approves_resizes_clicks_deletes_and_exits_cleanly() {
     wait_for_text(&output, offset, 90, 26, "Press Del again", timeout);
     master.write_all(b"\x1b[3~").unwrap();
     master.flush().unwrap();
-    wait_for_text(&output, offset, 90, 26, "No sessions yet.", timeout);
+    wait_for_text(&output, offset, 90, 26, "Deleted session r1", timeout);
 
     // Exit cleanly with Ctrl+Q.
     master.write_all(&[0x11]).unwrap();

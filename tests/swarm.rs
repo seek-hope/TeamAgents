@@ -76,6 +76,9 @@ impl Call {
     fn contains(&self, text: &str) -> bool {
         self.users().any(|s| s.contains(text))
     }
+    fn any_message(&self, text: &str) -> bool {
+        self.messages.iter().any(|m| m["content"].as_str().is_some_and(|s| s.contains(text)))
+    }
     fn records(&self) -> impl Iterator<Item = Value> + '_ {
         self.users().filter_map(|s| serde_json::from_str(s).ok())
     }
@@ -153,9 +156,6 @@ struct Lab {
 }
 impl Lab {
     fn new() -> Self {
-        Self::with_budget(None)
-    }
-    fn with_budget(budget: Option<u32>) -> Self {
         let tmp = Temp(std::env::temp_dir().join(format!("tree-{}", Uuid::new_v4())));
         fs::create_dir(&tmp.0).unwrap();
         let ws = tmp.0.join("repo");
@@ -164,7 +164,7 @@ impl Lab {
         let socket = TcpListener::bind("127.0.0.1:0").unwrap();
         socket.set_nonblocking(true).unwrap();
         let mut lab = Self { daemon: None, socket, tmp, ws, session };
-        lab.start(budget);
+        lab.start();
         lab
     }
     fn cmd(&self) -> Command {
@@ -185,12 +185,9 @@ impl Lab {
         }
         c
     }
-    fn start(&mut self, budget: Option<u32>) {
+    fn start(&mut self) {
         assert!(self.daemon.is_none());
         let mut c = self.cmd();
-        if let Some(n) = budget {
-            c.env("TEAMAGENTS_TURN_BUDGET", n.to_string());
-        }
         c.arg("daemon").stdout(Stdio::null()).stderr(Stdio::inherit());
         let mut p = Process::spawn(c);
         let until = Instant::now() + LIMIT;
@@ -202,7 +199,7 @@ impl Lab {
     }
     fn restart(&mut self) {
         drop(self.daemon.take());
-        self.start(None);
+        self.start();
     }
     fn client(&self, args: &[&str]) -> Process {
         let mut c = self.cmd();
@@ -314,7 +311,9 @@ fn siblings_overlap_grow_a_lower_branch_and_report_partial_failure_once() {
     let assets_id = assets.id.clone();
     assert!(assets.contains("Inspect assets"));
     assert_eq!(lab.status(&assets_id)["parent"], layout_id);
-    drop(api); // Fail this provider exchange while the other leaf remains in flight.
+    drop(api); // Exhaust all 3 transient HTTP retry attempts while the other leaf stays in flight.
+    drop(lab.next(&api_id));
+    drop(lab.next(&api_id));
     lab.wait(&api_id, "failed");
     assert_eq!(lab.status(root)["status"], "waiting");
     assert_eq!(lab.status(&assets_id)["status"], "running");
@@ -347,10 +346,7 @@ fn assert_exec_model(lab: &Lab, prompt: &str, model: &str, effort: Option<&str>)
     let worker = lab.call_with_model(model, effort);
     assert!(worker.contains(prompt));
     worker.reply(finish("Work complete"));
-    let reporter = lab.call_with_model(model, effort);
-    assert_eq!(reporter.report_input()["intent"], prompt);
-    reporter.reply(finish("Reported"));
-    assert_eq!(exec.json()["result"], "Reported");
+    assert_eq!(exec.json()["result"], "Work complete");
 }
 
 #[test]
@@ -412,11 +408,13 @@ fn model_selection_survives_restart_and_stays_with_the_chat_tree() {
     let resumed = lab.call_with_model("reviewer", Some("high"));
     assert_eq!(resumed.id, root);
     assert!(resumed.contains("Version 2"));
-    resumed.reply(handoff("Review version 2", &[("reader", "Read the notes")]));
-    let child = lab.call_with_model("reviewer", Some("high"));
-    assert_eq!(child.agent, "reader");
-    assert_eq!(lab.status(&child.id)["parent"], root);
-    child.reply(finish("Notes reviewed"));
+    resumed.reply(handoff("Review version 2", &[("reader1", "Read part 1"), ("reader2", "Read part 2")]));
+    let c1 = lab.call_with_model("reviewer", Some("high"));
+    let c2 = lab.call_with_model("reviewer", Some("high"));
+    assert_eq!(lab.status(&c1.id)["parent"], root);
+    assert_eq!(lab.status(&c2.id)["parent"], root);
+    c1.reply(finish("Notes 1 reviewed"));
+    c2.reply(finish("Notes 2 reviewed"));
     let reporter = lab.call_with_model("reviewer", Some("high"));
     assert_eq!(reporter.report_input()["intent"], prompt);
     reporter.reply(finish("Review complete"));
@@ -444,21 +442,13 @@ fn root_only_waits_for_answer_and_reporter_across_reconnect() {
     let resumed = lab.next(root);
     assert!(resumed.contains(&answer));
     resumed.reply(finish("unverified leaf answer"));
-    let reporter = lab.call();
-    assert_ne!(reporter.id, root);
-    let input = reporter.report_input();
-    assert_eq!(input["intent"], "Choose a platform");
-    assert!(input["clarifications"].to_string().contains(&answer));
-    assert_eq!(input["leaf_results"].as_array().unwrap().len(), 1);
-    assert_eq!(input["leaf_results"][0]["result"], "unverified leaf answer");
-    assert_eq!(lab.status(root)["status"], "waiting");
-    reporter.reply(finish("Final report about the selected platform"));
     let result = lab.wait(root, "done");
-    assert_eq!(result["result"], "Final report about the selected platform");
+    assert_eq!(result["result"], "unverified leaf answer");
+    assert_eq!(result["continuation_node"], root);
     assert_eq!(result["policy"], "auto");
     assert_eq!(result["verification"], "not_requested");
     assert_eq!(result["evidence"], json!([]));
-    assert_eq!(result["turns_used"], 3);
+    assert_eq!(result["turns_used"], 2);
 }
 
 #[test]
@@ -491,14 +481,9 @@ fn review_survives_disconnect_and_restart_before_exact_shell_and_check() {
     let other_id = other_root.id.clone();
     assert_ne!(other_id, root);
     other_root.reply(finish("independent answer"));
-    let other_report = lab.call();
-    let input = other_report.report_input();
-    assert_eq!(input["leaf_results"].as_array().unwrap().len(), 1);
-    assert_eq!(input["leaf_results"][0]["task"], other_id);
-    other_report.reply(finish("Independent report"));
     let other_result = second.json();
     assert_eq!(other_result["id"], other_id);
-    assert_eq!(other_result["result"], "Independent report");
+    assert_eq!(other_result["result"], "independent answer");
     assert!(client.child().try_wait().unwrap().is_none());
     drop(client);
     lab.restart();
@@ -510,12 +495,10 @@ fn review_survives_disconnect_and_restart_before_exact_shell_and_check() {
     let completed = lab.next(&leaf);
     completed.observed("shell", &token);
     completed.reply(finish(&token));
-    let reporter = lab.call();
-    assert_eq!(reporter.report_input()["leaf_results"][0]["result"], token);
-    assert_eq!(fs::read(lab.ws.join("accepted")).unwrap(), b"checked");
-    reporter.reply(finish("Artifact verified"));
     let result = lab.wait(&root, "done");
-    assert_eq!(result["result"], "Artifact verified");
+    assert_eq!(fs::read(lab.ws.join("accepted")).unwrap(), b"checked");
+    assert_eq!(result["result"], token);
+    assert_eq!(result["continuation_node"], leaf);
     assert_eq!(result["verification"], "passed");
     verify_receipts(&result, check, &[true]);
     let receipts = result["subtree_receipts"].as_array().unwrap();
@@ -566,6 +549,7 @@ fn failed_authorized_check_creates_distinct_repair_before_reporting() {
     reporter.reply(finish("Corrected answer verified"));
     let task = lab.wait(root, "done");
     assert_eq!(task["verification"], "passed");
+    assert_eq!(task["continuation_kind"], "summarizer");
     verify_receipts(&task, check, &[false, true]);
     assert_eq!(lab.status(&repair_id)["evidence"][0]["action"], edit);
     assert_eq!(fs::read_to_string(lab.ws.join("answer.txt")).unwrap(), token);
@@ -585,10 +569,8 @@ fn denied_and_cancelled_review_actions_never_execute() {
             let continued = lab.next(root);
             assert!(continued.records().any(|v| v["tool_denied"] == true));
             continued.reply(finish("permission denied"));
-            let reporter = lab.call();
-            assert_eq!(reporter.report_input()["leaf_results"][0]["result"], "permission denied");
-            reporter.reply(finish("No command was authorized"));
-            lab.wait(root, "done");
+            let settled = lab.wait(root, "done");
+            assert_eq!(settled["result"], "permission denied");
         } else {
             lab.wait(root, "cancelled");
         }
@@ -598,33 +580,29 @@ fn denied_and_cancelled_review_actions_never_execute() {
 }
 
 #[test]
-fn attempt_cap_and_shared_budget_limit_checked_repairs() {
+fn attempt_cap_limits_checked_repairs() {
     let check = "printf x >> attempts; printf 'still missing' >&2; test -f missing.txt";
-    // A budget of three pays for root + one repair + reporter. More budget permits
-    // another forward repair, but cannot buy a fourth check.
-    for (budget, attempts) in [(3, 2), (8, 3)] {
-        let lab = Lab::with_budget(Some(budget));
-        let receipt = lab.json(&["exec", "--detach", "--check", check, "Produce the missing file"]);
-        let root = field(&receipt, "id");
-        lab.next(root).reply(finish("first claim"));
-        let mut stages = vec![root.to_string()];
-        for _ in 1..attempts {
-            let repair = lab.call();
-            assert_ne!(repair.agent, "reporter");
-            assert!(!stages.contains(&repair.id));
-            assert!(repair.contains("still missing"));
-            stages.push(repair.id.clone());
-            repair.reply(finish("repair claim"));
-        }
-        let reporter = lab.call();
-        reporter.report_input();
-        reporter.reply(finish("No artifact passed the check"));
-        let task = lab.wait(root, "failed");
-        assert_eq!(task["verification"], "failed");
-        assert_eq!(task["turns_used"], attempts + 1);
-        verify_receipts(&task, check, &vec![false; attempts]);
-        assert_eq!(fs::read(lab.ws.join("attempts")).unwrap(), vec![b'x'; attempts]);
+    let lab = Lab::new();
+    let receipt = lab.json(&["exec", "--detach", "--check", check, "Produce the missing file"]);
+    let root = field(&receipt, "id");
+    lab.next(root).reply(finish("first claim"));
+    let mut stages = vec![root.to_string()];
+    for _ in 1..10 {
+        let repair = lab.call();
+        assert_ne!(repair.agent, "reporter");
+        assert!(!stages.contains(&repair.id));
+        assert!(repair.contains("still missing"));
+        stages.push(repair.id.clone());
+        repair.reply(finish("repair claim"));
     }
+    let reporter = lab.call();
+    reporter.report_input();
+    reporter.reply(finish("No artifact passed the check"));
+    let task = lab.wait(root, "failed");
+    assert_eq!(task["verification"], "failed");
+    assert_eq!(task["turns_used"], 11);
+    verify_receipts(&task, check, &[false; 10]);
+    assert_eq!(fs::read(lab.ws.join("attempts")).unwrap(), b"xxxxxxxxxx");
 }
 
 #[test]
@@ -651,11 +629,8 @@ fn root_and_handoff_can_fix_the_same_checkout_installer() {
         let edited = lab.next(&id);
         edited.observed("edit_file", "");
         edited.reply(finish("installer fixed"));
-        let reporter = lab.call();
-        assert_eq!(reporter.report_input()["leaf_results"][0]["result"], "installer fixed");
-        reporter.reply(finish("Installer help restored"));
         let root = attached.json();
-        assert_eq!(root["result"], "Installer help restored");
+        assert_eq!(root["result"], "installer fixed");
         assert_eq!(root["verification"], "passed");
         verify_receipts(&root, CHECK, &[true]);
         assert_eq!(fs::read_to_string(target).unwrap(), INSTALLER);
@@ -667,12 +642,16 @@ fn reporter_cannot_run_a_workspace_tool() {
     let lab = Lab::new();
     let receipt = lab.json(&["exec", "--detach", "Identify a platform"]);
     let root = field(&receipt, "id");
-    lab.next(root).reply(finish("Linux"));
+    lab.next(root).reply(handoff("split lookup", &[("w1", "Check arch"), ("w2", "Check os")]));
+    let w1 = lab.call();
+    let w2 = lab.call();
+    w1.reply(finish("x86_64"));
+    w2.reply(finish("Linux"));
     let reporter = lab.call();
-    assert_eq!(reporter.report_input()["leaf_results"][0]["result"], "Linux");
+    assert_eq!(reporter.report_input()["leaf_results"].as_array().unwrap().len(), 2);
     reporter.reply(shell("touch reporter-side-effect"));
     let task = lab.wait(root, "failed");
-    assert_eq!(task["turns_used"], 2);
+    assert_eq!(task["turns_used"], 4);
     assert_eq!(task["subtree_receipts"], json!([]));
     assert!(!lab.ws.join("reporter-side-effect").exists());
 }
@@ -680,12 +659,30 @@ fn reporter_cannot_run_a_workspace_tool() {
 #[test]
 fn worker_recovers_from_malformed_action_json_within_budget() {
     let lab = Lab::new();
+    // Clean single markdown JSON fence unwraps leniently in 1 turn.
+    let fenced = lab.client(&["exec", "Return fenced JSON report"]);
+    let fenced_turn = lab.call();
+    let fenced_body = json!({
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "```json\n{\"op\":\"finish\",\"text\":\"fenced ok\"}\n```"}}]
+    })
+    .to_string();
+    write!(
+        { fenced_turn }.socket,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{fenced_body}",
+        fenced_body.len()
+    )
+    .unwrap();
+    let fenced_out = fenced.json();
+    assert_eq!(fenced_out["status"], "done");
+    assert_eq!(fenced_out["result"], "fenced ok");
+    assert_eq!(fenced_out["turns_used"], 1);
+
+    // Prose-wrapped JSON still rejects with protocol_error and recovers on retry.
     let attached = lab.client(&["exec", "Return recovered report"]);
     let first = lab.call();
     let root = first.id.clone();
-    // 1st worker turn returns a markdown-fenced JSON block instead of raw JSON.
     let body = json!({
-        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "```json\n{\"op\":\"finish\",\"text\":\"oops\"}\n```"}}]
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "Here is the JSON: {\"op\":\"finish\",\"text\":\"oops\"}"}}]
     })
     .to_string();
     write!(
@@ -695,21 +692,18 @@ fn worker_recovers_from_malformed_action_json_within_budget() {
     )
     .unwrap();
 
-    // Runtime feeds the protocol error back cleanly on a budget-charged correction turn.
     let retry = lab.next(&root);
-    assert!(retry.records().any(|v| v["protocol_error"].as_str().is_some_and(|s| s.contains("code fence"))));
+    assert!(retry.records().any(|v| v["protocol_error"].as_str().is_some_and(|s| s.contains("non-JSON text"))));
     retry.reply(finish("recovered work"));
-    let reporter = lab.call();
-    assert_eq!(reporter.report_input()["leaf_results"][0]["result"], "recovered work");
-    reporter.reply(finish("Recovered cleanly after format slip"));
     let out = attached.json();
     assert_eq!(out["status"], "done");
-    assert_eq!(out["turns_used"], 3);
+    assert_eq!(out["result"], "recovered work");
+    assert_eq!(out["turns_used"], 2);
 
-    // Three consecutive malformed worker turns exhaust MAX_ACTION_REJECTIONS (2 retries -> 3rd fails).
+    // Six consecutive malformed worker turns exhaust MAX_ACTION_REJECTIONS (5 retries -> 6th fails).
     let fail_receipt = lab.json(&["exec", "--detach", "Exhaust format retries"]);
     let fail_root = field(&fail_receipt, "id");
-    for _ in 0..3 {
+    for _ in 0..6 {
         let mut turn = lab.next(fail_root);
         let bad = json!({
             "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "not json"}}]
@@ -722,9 +716,194 @@ fn worker_recovers_from_malformed_action_json_within_budget() {
         )
         .unwrap();
     }
-    let reporter = lab.call();
-    reporter.reply(finish("Reported failure after 3 malformed turns"));
     let settled = lab.wait(fail_root, "failed");
     assert!(settled["stage_error"].as_str().is_some_and(|e| e.contains("non-JSON text")));
-    assert_eq!(settled["turns_used"], 4);
+    assert_eq!(settled["turns_used"], 6);
+}
+
+#[test]
+fn single_leaf_and_summarizer_continuation_end_to_end() {
+    let lab = Lab::new();
+
+    // Two concurrent exec runs on @default arrive concurrently (no same-agent serialization) and stay isolated.
+    let first = lab.client(&["exec", "SECRET-SESSION-ONE"]);
+    let second_par = lab.client(&["exec", "CONCURRENT-DEFAULT-TWO"]);
+    let c1 = lab.call();
+    let c2 = lab.call();
+    let (f_turn, p_turn) = if c1.contains("SECRET-SESSION-ONE") { (c1, c2) } else { (c2, c1) };
+    assert!(f_turn.contains("SECRET-SESSION-ONE") && p_turn.contains("CONCURRENT-DEFAULT-TWO"));
+    assert!(!p_turn.contains("SECRET-SESSION-ONE"));
+    f_turn.reply(finish("done first"));
+    p_turn.reply(finish("done parallel"));
+    assert_eq!(first.json()["result"], "done first");
+    assert_eq!(second_par.json()["result"], "done parallel");
+
+    let second = lab.client(&["exec", "Fresh unrelated session"]);
+    let s_turn = lab.call();
+    assert!(!s_turn.contains("SECRET-SESSION-ONE") && !s_turn.contains("done first"));
+    let s_root = s_turn.id.clone();
+    s_turn.reply(handoff("assign worker", &[("worker", "Step 1")]));
+    let w_leaf = lab.call();
+    let leaf_id = w_leaf.id.clone();
+    w_leaf.reply(finish("Leaf 1 done"));
+    let s2 = second.json();
+    assert_eq!(s2["status"], "done");
+    assert_eq!(s2["continuation_node"], leaf_id);
+    assert_eq!(s2["continuation_kind"], "leaf");
+
+    // Continue from the sole leaf node: promotes `leaf_id` to subtree root with 2-leaf summarizer!
+    let cont1 = lab.client(&["continue", &leaf_id, "Expand via 2 workers"]);
+    let leaf_r2 = lab.next(&leaf_id);
+    assert!(leaf_r2.any_message("Leaf 1 done") && leaf_r2.contains("Expand via 2 workers"));
+    leaf_r2.reply(handoff("fan out", &[("default", "Reuse default"), ("helper", "Second child")]));
+    let a = lab.call();
+    let b = lab.call();
+    a.reply(finish("Default R2"));
+    b.reply(finish("Helper R2"));
+    let sum = lab.call();
+    let sum_id = sum.id.clone();
+    assert_eq!(sum.report_input()["leaf_results"].as_array().unwrap().len(), 2);
+    sum.reply(finish("Summarized R2"));
+    let done_r2 = cont1.json();
+    assert_eq!(done_r2["id"], s_root);
+    assert_eq!(done_r2["status"], "done");
+    assert_eq!(done_r2["round"], 2);
+    assert_eq!(done_r2["continuation_node"], sum_id);
+    assert_eq!(done_r2["continuation_kind"], "summarizer");
+    assert_eq!(done_r2["rounds"].as_array().unwrap().len(), 2);
+    assert!(done_r2["tree_nodes"].as_array().unwrap().iter().any(|n| n["task"] == sum_id && n["kind"] == "summarizer"));
+
+    // Continue directly from the in-tree summarizer node for Round 3!
+    let cont2 = lab.client(&["continue", &s_root, "Follow up from summarizer"]);
+    let sum_r3 = lab.next(&sum_id);
+    assert!(sum_r3.any_message("Summarized R2") && sum_r3.contains("Follow up from summarizer"));
+    sum_r3.reply(finish("Summarizer direct R3"));
+    let done_r3 = cont2.json();
+    assert_eq!(done_r3["round"], 3);
+    assert_eq!(done_r3["result"], "Summarizer direct R3");
+    assert_eq!(done_r3["continuation_node"], sum_id);
+    assert_eq!(done_r3["rounds"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn collaborative_whiteboard_coordinates_sibling_leaves_summarizer_and_cli() {
+    let lab = Lab::new();
+    let attached = lab.client(&["exec", "Coordinate reader and writer via whiteboard"]);
+    let root = lab.call();
+    let root_id = root.id.clone();
+    root.reply(handoff("split work", &[("writer", "publish api contract"), ("reader", "wait for api contract")]));
+
+    let c1 = lab.call();
+    let c2 = lab.call();
+    let (writer, reader) = if c1.agent == "writer" { (c1, c2) } else { (c2, c1) };
+    let writer_id = writer.id.clone();
+    let reader_id = reader.id.clone();
+
+    // Ensure reader commits `wb_wait` before writer writes `contract:api` so wake is deterministically "updated".
+    reader.reply(json!({"op":"wb_wait","key":"contract:"}));
+    let until = Instant::now() + LIMIT;
+    while lab.status(&reader_id)["status"] != "waiting" {
+        assert!(Instant::now() < until, "reader did not enter waiting state");
+        thread::sleep(POLL);
+    }
+
+    writer.reply(json!({
+        "op":"wb_write",
+        "key":"contract:api",
+        "mode":"set",
+        "kind":"contract",
+        "content":"endpoint=/v2/items"
+    }));
+
+    let n1 = lab.call();
+    let n2 = lab.call();
+    let (writer2, reader2) = if n1.id == writer_id { (n1, n2) } else { (n2, n1) };
+    assert!(writer2.contains("contract:api"));
+    assert!(reader2.contains("updated") && reader2.contains("endpoint=/v2/items"));
+    writer2.reply(finish("published contract:api"));
+    reader2.reply(json!({"op":"wb_read","prefix":"contract:"}));
+
+    let reader3 = lab.next(&reader_id);
+    assert!(reader3.contains("endpoint=/v2/items"));
+    reader3.reply(finish("read endpoint=/v2/items"));
+
+    let sum = lab.call();
+    let pkt = sum.report_input();
+    let wb = pkt["whiteboard"].as_array().unwrap();
+    assert_eq!(wb.len(), 1);
+    assert_eq!(wb[0]["key"], "contract:api");
+    sum.reply(finish("coordinated summary"));
+
+    let done = attached.json();
+    assert_eq!(done["status"], "done");
+    assert_eq!(done["result"], "coordinated summary");
+    assert_eq!(done["whiteboard"].as_array().unwrap().len(), 1);
+
+    let cli_read = lab.json(&["whiteboard", &root_id]);
+    assert_eq!(cli_read["entries"][0]["key"], "contract:api");
+    let cli_write = lab.json(&["whiteboard", &root_id, "set", "user:signoff", "ok"]);
+    assert_eq!(cli_write["ok"], true);
+    let cli_alias = lab.json(&["wb", &root_id]);
+    assert_eq!(cli_alias["entries"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn staged_flag_and_auto_compaction_recover_from_overflow() {
+    let lab = Lab::new();
+
+    // Default mode is direct workspace-write.
+    let direct = lab.client(&["exec", "direct write check"]);
+    let dt1 = lab.call();
+    let dt_id = dt1.id.clone();
+    dt1.reply(shell("echo DIRECT > direct.txt"));
+    let dt2 = lab.next(&dt_id);
+    dt2.observed("shell", "");
+    dt2.reply(finish("direct ok"));
+    let dj = direct.json();
+    assert_eq!(dj["sandbox"], "direct");
+    assert_eq!(fs::read_to_string(lab.ws.join("direct.txt")).unwrap().trim(), "DIRECT");
+
+    // `--staged` opts into staged copy-on-exit publication.
+    let staged = lab.client(&["exec", "--staged", "staged write check"]);
+    let st1 = lab.call();
+    let st_id = st1.id.clone();
+    st1.reply(shell("echo STAGED > staged.txt"));
+    let st2 = lab.next(&st_id);
+    st2.observed("shell", "");
+    st2.reply(finish("staged ok"));
+    let sj = staged.json();
+    assert_eq!(sj["sandbox"], "staged");
+    assert_eq!(fs::read_to_string(lab.ws.join("staged.txt")).unwrap().trim(), "STAGED");
+
+    // Build >= 6 history messages, trigger HTTP 413 overflow -> automatic compaction -> recovery.
+    let comp = lab.client(&["exec", "Run steps then recover from overflow"]);
+    let mut turn = lab.call();
+    let tid = turn.id.clone();
+    for step in 1..=3 {
+        turn.reply(shell(&format!("echo step-{step}")));
+        turn = lab.next(&tid);
+        turn.observed("shell", &format!("step-{step}"));
+    }
+    let overflow = json!({
+        "error": {"code": "context_length_exceeded", "message": "maximum context length exceeded"}
+    })
+    .to_string();
+    write!(
+        turn.socket,
+        "HTTP/1.1 413 Payload Too Large\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{overflow}",
+        overflow.len()
+    )
+    .unwrap();
+
+    let compact_turn = lab.call();
+    assert!(compact_turn.contains("Summarize these"));
+    compact_turn.reply(finish("Compacted summary of steps 1..3"));
+
+    let resumed = lab.next(&tid);
+    assert!(resumed.contains("compacted_history") && resumed.contains("Compacted summary of steps 1..3"));
+    resumed.reply(finish("recovered after compaction"));
+
+    let out = comp.json();
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["result"], "recovered after compaction");
 }

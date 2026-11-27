@@ -6,8 +6,9 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
+    collections::VecDeque,
     fs::{self, File, Metadata, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     os::{
         fd::{AsRawFd, OwnedFd, RawFd},
         unix::{
@@ -21,9 +22,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-const FILE_LIMIT: usize = 256 * 1024;
-const OUTPUT_LIMIT: usize = 64 * 1024; // per stream
-const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
+const FILE_LIMIT: usize = 8 * 1024 * 1024;
+pub(crate) const OUTPUT_LIMIT: usize = 128 * 1024; // per stream (half head + half tail on middle truncation)
+pub(crate) const HALF_OUTPUT: usize = OUTPUT_LIMIT / 2;
+const DEFAULT_SHELL_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_SHELL_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn field<'a>(action: &'a Value, key: &str) -> Result<&'a str> {
     action[key].as_str().ok_or_else(|| format!("expected string field {key}"))
@@ -36,14 +39,80 @@ fn load(dir: &File, path: &Path) -> Result<(String, Metadata)> {
         return Err("expected a regular file".into());
     }
     if meta.len() > FILE_LIMIT as u64 {
-        return Err("file exceeds 256 KiB".into());
+        return Err("file exceeds 8 MiB; pass offset and limit to read a line range".into());
     }
     let mut bytes = Vec::new();
     f.take(FILE_LIMIT as u64 + 1).read_to_end(&mut bytes).map_err(|e| format!("read file: {e}"))?;
     if bytes.len() > FILE_LIMIT {
-        return Err("file exceeds 256 KiB".into());
+        return Err("file exceeds 8 MiB; pass offset and limit to read a line range".into());
     }
     Ok((String::from_utf8(bytes).map_err(|_| "file is not UTF-8 text")?, meta))
+}
+
+fn load_slice(dir: &File, path: &Path, offset: Option<usize>, limit: Option<usize>) -> Result<String> {
+    if offset.is_none() && limit.is_none() {
+        return load(dir, path).map(|(text, _)| text);
+    }
+    let start_line = match offset {
+        Some(0) => return Err("read_file offset must be >= 1".into()),
+        Some(n) => n,
+        None => 1,
+    };
+    let max_lines = match limit {
+        Some(0) => return Err("read_file limit must be >= 1".into()),
+        Some(n) => n,
+        None => usize::MAX,
+    };
+    let f = sandbox::open_regular(dir, path)?;
+    let meta = f.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("expected a regular file".into());
+    }
+    let mut reader = BufReader::new(f);
+    let mut line_buf = Vec::new();
+    let mut out = String::new();
+    let mut line_no = 0usize;
+    let mut end_line = 0usize;
+    let mut more = false;
+    loop {
+        line_buf.clear();
+        // Bound each individual line read to avoid unbounded allocation on minified files.
+        let read = (&mut reader)
+            .take(FILE_LIMIT as u64 + 1)
+            .read_until(b'\n', &mut line_buf)
+            .map_err(|e| format!("read file: {e}"))?;
+        if read == 0 {
+            break;
+        }
+        if line_buf.len() > FILE_LIMIT {
+            return Err("file line exceeds 8 MiB".into());
+        }
+        let line_str = std::str::from_utf8(&line_buf).map_err(|_| "file is not UTF-8 text")?;
+        line_no += 1;
+        if line_no < start_line {
+            continue;
+        }
+        if end_line.saturating_sub(start_line.saturating_sub(1)) >= max_lines {
+            more = true;
+            break;
+        }
+        if out.len().saturating_add(line_str.len()) > FILE_LIMIT {
+            if out.is_empty() {
+                return Err("selected line exceeds 8 MiB".into());
+            }
+            more = true;
+            break;
+        }
+        out.push_str(line_str);
+        end_line = line_no;
+    }
+    if more && end_line >= start_line {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&format!("[showing lines {start_line}-{end_line}; more lines available]"));
+    }
+    Ok(out)
 }
 
 struct Staged(PathBuf);
@@ -59,7 +128,7 @@ fn version(m: &Metadata) -> (u64, u64, u64, i64, i64) {
 
 fn edit(dir: &File, target: &Path, old: &str, new: &str) -> Result<String> {
     if old.len() > FILE_LIMIT || new.len() > FILE_LIMIT {
-        return Err("edit exceeds 256 KiB".into());
+        return Err("edit exceeds 8 MiB".into());
     }
     let (updated, original) = if old.is_empty() {
         (new.to_owned(), None)
@@ -71,7 +140,7 @@ fn edit(dir: &File, target: &Path, old: &str, new: &str) -> Result<String> {
             return Err("old text is not unique".into());
         }
         if text.len() - old.len() + new.len() > FILE_LIMIT {
-            return Err("edited file exceeds 256 KiB".into());
+            return Err("edited file exceeds 8 MiB".into());
         }
         text.replace_range(start..start + old.len(), new);
         (text, Some(meta))
@@ -108,19 +177,108 @@ fn pipe() -> io::Result<(UnixStream, Stdio)> {
     Ok((r, Stdio::from(OwnedFd::from(w))))
 }
 
+#[derive(Default)]
+pub(crate) struct StreamBuffer {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    omitted_bytes: usize,
+    omitted_lines: usize,
+}
+
+impl StreamBuffer {
+    #[cfg(test)]
+    pub(crate) fn stats(&self) -> (usize, usize, usize, usize) {
+        (self.head.len(), self.tail.len(), self.omitted_bytes, self.omitted_lines)
+    }
+
+    pub(crate) fn push(&mut self, mut chunk: &[u8]) {
+        if self.head.len() < HALF_OUTPUT {
+            let take = chunk.len().min(HALF_OUTPUT - self.head.len());
+            self.head.extend_from_slice(&chunk[..take]);
+            chunk = &chunk[take..];
+        }
+        if chunk.is_empty() {
+            return;
+        }
+        if chunk.len() >= HALF_OUTPUT {
+            let skip = chunk.len() - HALF_OUTPUT;
+            self.omitted_bytes = self.omitted_bytes.saturating_add(self.tail.len()).saturating_add(skip);
+            self.omitted_lines = self
+                .omitted_lines
+                .saturating_add(self.tail.iter().filter(|&&b| b == b'\n').count())
+                .saturating_add(chunk[..skip].iter().filter(|&&b| b == b'\n').count());
+            self.tail.clear();
+            self.tail.extend(&chunk[skip..]);
+        } else {
+            let overflow = self.tail.len().saturating_add(chunk.len()).saturating_sub(HALF_OUTPUT);
+            for _ in 0..overflow {
+                if let Some(b) = self.tail.pop_front() {
+                    self.omitted_bytes = self.omitted_bytes.saturating_add(1);
+                    if b == b'\n' {
+                        self.omitted_lines = self.omitted_lines.saturating_add(1);
+                    }
+                }
+            }
+            self.tail.extend(chunk);
+        }
+    }
+
+    pub(crate) fn finish(self, label: &str) -> String {
+        self.finish_with_stats(label).0
+    }
+
+    pub(crate) fn finish_with_stats(mut self, label: &str) -> (String, usize, usize, usize, usize) {
+        if self.omitted_bytes == 0 {
+            self.head.extend(self.tail);
+            let len = self.head.len();
+            return (String::from_utf8_lossy(&self.head).into_owned(), len, 0, 0, 0);
+        }
+        // Avoid splitting multi-byte UTF-8 sequences at the middle splice point.
+        let mut head_end = self.head.len();
+        if head_end > 0 {
+            let mut back = 0;
+            while back < 4 && head_end - back > 0 && (self.head[head_end - back - 1] & 0xC0) == 0x80 {
+                back += 1;
+            }
+            if back > 0 && head_end > back {
+                let lead = self.head[head_end - back - 1];
+                let expected = lead.leading_ones() as usize;
+                if back + 1 < expected {
+                    head_end = head_end - back - 1;
+                    self.omitted_bytes += back + 1;
+                }
+            } else if head_end > 0 && self.head[head_end - 1].leading_ones() >= 2 {
+                head_end -= 1;
+                self.omitted_bytes += 1;
+            }
+        }
+        while self.tail.front().is_some_and(|&b| (b & 0xC0) == 0x80) {
+            self.tail.pop_front();
+            self.omitted_bytes += 1;
+        }
+        let tail_len = self.tail.len();
+        let head = String::from_utf8_lossy(&self.head[..head_end]);
+        let (tail_a, tail_b) = self.tail.as_slices();
+        let mut tail_vec = Vec::with_capacity(tail_a.len() + tail_b.len());
+        tail_vec.extend_from_slice(tail_a);
+        tail_vec.extend_from_slice(tail_b);
+        let tail = String::from_utf8_lossy(&tail_vec);
+        let rendered = format!(
+            "{head}\n[... {} bytes ({} lines) omitted from {label} ...]\n{tail}",
+            self.omitted_bytes, self.omitted_lines
+        );
+        (rendered, head_end, tail_len, self.omitted_bytes, self.omitted_lines)
+    }
+}
+
 // No blocking reader threads: even a descendant that escapes the group and inherits a writer cannot hold us open.
-fn drain(stream: &mut UnixStream, bytes: &mut Vec<u8>, label: &str) -> Result<bool> {
+// Oversize output uses middle-truncation (head + tail preserved) so commands always finish with real exit codes.
+fn drain(stream: &mut UnixStream, buffer: &mut StreamBuffer, label: &str) -> Result<bool> {
     let mut buf = [0; 8192];
     loop {
         match stream.read(&mut buf) {
             Ok(0) => return Ok(true),
-            Ok(n) => {
-                let keep = n.min(OUTPUT_LIMIT - bytes.len());
-                bytes.extend_from_slice(&buf[..keep]);
-                if keep != n {
-                    return Err(format!("{label} exceeds 64 KiB; output truncated"));
-                }
-            }
+            Ok(n) => buffer.push(&buf[..n]),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(format!("read shell {label}: {e}")),
@@ -164,10 +322,10 @@ fn poll_streams(out: Option<RawFd>, err: Option<RawFd>, wait: Duration) -> Resul
     Ok(())
 }
 
-fn shell(workspace: &Path, command: &str, timeout: Duration) -> Result<String> {
+fn shell(workspace: &Path, command: &str, timeout: Duration, staged: bool) -> Result<String> {
     let (mut stdout, out_fd) = pipe().map_err(|e| format!("shell stdout: {e}"))?;
     let (mut stderr, err_fd) = pipe().map_err(|e| format!("shell stderr: {e}"))?;
-    let stage = sandbox::Stage::new(workspace)?;
+    let stage = sandbox::Workspace::new(workspace, staged)?;
     let (mut cmd, filter) = stage.command()?;
     let mut network = Network::prepare(&mut cmd)?;
     let mut child = cmd
@@ -180,7 +338,7 @@ fn shell(workspace: &Path, command: &str, timeout: Duration) -> Result<String> {
     drop(cmd);
     drop(filter);
     let start = Instant::now();
-    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let (mut out, mut err) = (StreamBuffer::default(), StreamBuffer::default());
     let mut connected = false;
     let mut failure = (|| -> Result<()> {
         network.connect(&child)?;
@@ -197,10 +355,10 @@ fn shell(workspace: &Path, command: &str, timeout: Duration) -> Result<String> {
                 return Ok(());
             }
             let Some(remaining) = timeout.checked_sub(start.elapsed()) else {
-                return Err(format!("shell timed out after {}ms", timeout.as_millis()));
+                return Err(format!("shell timed out after {}ms (exit 124)", timeout.as_millis()));
             };
             if remaining.is_zero() {
-                return Err(format!("shell timed out after {}ms", timeout.as_millis()));
+                return Err(format!("shell timed out after {}ms (exit 124)", timeout.as_millis()));
             }
             poll_streams(
                 (!out_eof).then_some(stdout.as_raw_fd()),
@@ -240,7 +398,7 @@ fn shell(workspace: &Path, command: &str, timeout: Duration) -> Result<String> {
         })()
         .err();
     }
-    let text = format!("stdout:\n{}\nstderr:\n{}", String::from_utf8_lossy(&out), String::from_utf8_lossy(&err));
+    let text = format!("stdout:\n{}\nstderr:\n{}", out.finish("stdout"), err.finish("stderr"));
     // A completed command can make useful edits even on nonzero exit. Do not publish interrupted output.
     if connected && failure.is_none() {
         if let Err(e) = stage.publish() {
@@ -256,21 +414,47 @@ fn shell(workspace: &Path, command: &str, timeout: Duration) -> Result<String> {
     }
 }
 
-pub fn execute(workspace: &Path, action: &Value) -> Result<String> {
+fn opt_usize(action: &Value, key: &str) -> Result<Option<usize>> {
+    let Some(v) = action.get(key).filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let n = v.as_u64().ok_or_else(|| format!("expected positive integer for {key}"))?;
+    usize::try_from(n).map(Some).map_err(|_| format!("{key} out of range"))
+}
+
+fn shell_timeout(action: &Value) -> Result<Duration> {
+    let Some(v) = action.get("timeout_ms").filter(|v| !v.is_null()) else {
+        return Ok(DEFAULT_SHELL_TIMEOUT);
+    };
+    let ms = v.as_u64().ok_or("expected integer timeout_ms")?;
+    if ms == 0 {
+        return Err("timeout_ms must be positive".into());
+    }
+    Ok(Duration::from_millis(ms.clamp(100, MAX_SHELL_TIMEOUT.as_millis() as u64)))
+}
+
+pub fn execute_with_mode(workspace: &Path, action: &Value, staged: bool) -> Result<String> {
     match field(action, "op")? {
         "read_file" => {
+            let offset = opt_usize(action, "offset")?;
+            let limit = opt_usize(action, "limit")?;
             let lock = sandbox::Lock::workspace(workspace)?;
             let (dir, target) = lock.parent(Path::new(field(action, "path")?))?;
-            load(&dir, &target).map(|(text, _)| text)
+            load_slice(&dir, &target, offset, limit)
         }
         "edit_file" => {
             let lock = sandbox::Lock::workspace(workspace)?;
             let (dir, target) = lock.parent(Path::new(field(action, "path")?))?;
             edit(&dir, &target, field(action, "old")?, field(action, "new")?)
         }
-        "shell" => shell(workspace, field(action, "command")?, SHELL_TIMEOUT),
+        "shell" => shell(workspace, field(action, "command")?, shell_timeout(action)?, staged),
         _ => Err("unknown workspace tool".into()),
     }
+}
+
+#[allow(dead_code)]
+pub fn execute(workspace: &Path, action: &Value) -> Result<String> {
+    execute_with_mode(workspace, action, false)
 }
 
 #[cfg(test)]
@@ -332,7 +516,21 @@ mod tests {
         assert!(Command::new("mkfifo").arg(t.0.join("fifo")).status().unwrap().success());
         assert!(t.read("fifo").is_err());
         fs::write(t.0.join("big"), vec![b'x'; FILE_LIMIT + 1]).unwrap();
-        assert!(t.read("big").unwrap_err().contains("256 KiB"));
+        assert!(t.read("big").unwrap_err().contains("8 MiB"));
+        let mut sliced = String::new();
+        for idx in 1..=130_000 {
+            sliced.push_str(&format!("line-{idx:06}-payload-0123456789abcdef0123456789abcdef0123456789abcdef\n"));
+        }
+        assert!(sliced.len() > FILE_LIMIT);
+        fs::write(t.0.join("sliced"), &sliced).unwrap();
+        let page = execute(&t.0, &json!({"op":"read_file","path":"sliced","offset":129_990,"limit":5})).unwrap();
+        assert!(
+            page.contains("line-129990")
+                && page.contains("line-129994")
+                && !page.contains("line-129995")
+                && page.contains("[showing lines 129990-129994; more lines available]")
+        );
+        assert!(execute(&t.0, &json!({"op":"read_file","path":"sliced","offset":0,"limit":5})).is_err());
         fs::write(t.0.join("binary"), [0xff]).unwrap();
         assert!(t.read("binary").is_err());
     }
@@ -357,7 +555,7 @@ mod tests {
             value.contains("status: 7") && value.contains("/workspace") && value.contains("stderr:\nproblem"),
             "{value}"
         );
-        let value = shell(&t.0, "env", Duration::from_secs(2)).unwrap();
+        let value = shell(&t.0, "env", Duration::from_secs(2), false).unwrap();
         for line in value.lines().filter(|s| s.contains('=')) {
             let name = line.split_once('=').unwrap().0;
             assert!(matches!(
@@ -380,19 +578,36 @@ mod tests {
     fn output_and_hanging_process_trees_are_bounded() {
         let t = Temp::new();
         let start = Instant::now();
-        for (command, stream) in [("yes x", "stdout"), ("yes x >&2", "stderr")] {
-            let err = shell(&t.0, command, Duration::from_secs(3)).unwrap_err();
+        // Large finite stdout/stderr succeeds via middle truncation, preserving head, tail, and real exit status.
+        let flood = "printf 'HEAD-OUT\\n'; awk 'BEGIN{for(i=0;i<3000;i++) printf \"%064d\\n\",i}'; printf 'TAIL-OUT\\n'; \
+             printf 'HEAD-ERR\\n' >&2; awk 'BEGIN{for(i=0;i<3000;i++) printf \"%064d\\n\",i}' >&2; printf 'TAIL-ERR\\n' >&2"
+            .to_string();
+        let ok = shell(&t.0, &flood, Duration::from_secs(5), false).unwrap();
+        assert!(
+            ok.contains("HEAD-OUT")
+                && ok.contains("TAIL-OUT")
+                && ok.contains("omitted from stdout")
+                && ok.contains("HEAD-ERR")
+                && ok.contains("TAIL-ERR")
+                && ok.contains("omitted from stderr")
+                && ok.len() < OUTPUT_LIMIT * 2 + 512,
+            "{}",
+            ok.chars().take(1000).collect::<String>()
+        );
+        for command in ["yes x", "yes x >&2"] {
+            let err = shell(&t.0, command, Duration::from_millis(150), false).unwrap_err();
             assert!(
-                err.contains(&format!("{stream} exceeds")) && err.len() < OUTPUT_LIMIT + 200,
+                err.contains("timed out") && err.contains("exit 124") && err.len() < OUTPUT_LIMIT * 2 + 512,
                 "{}",
                 err.chars().take(1000).collect::<String>()
             );
         }
-        let err = shell(&t.0, "(sleep 0.5; touch leaked) & wait", Duration::from_millis(100)).unwrap_err();
+        let err = execute(&t.0, &json!({"op":"shell","command":"(sleep 0.5; touch leaked) & wait","timeout_ms":100}))
+            .unwrap_err();
         assert!(err.contains("timed out"));
-        shell(&t.0, "(sleep 0.5; touch orphan) &", Duration::from_secs(2)).unwrap();
+        shell(&t.0, "(sleep 0.5; touch orphan) &", Duration::from_secs(2), false).unwrap();
         thread::sleep(Duration::from_millis(600));
         assert!(!t.0.join("leaked").exists() && !t.0.join("orphan").exists());
-        assert!(start.elapsed() < Duration::from_secs(4));
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }

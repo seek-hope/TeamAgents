@@ -216,6 +216,11 @@ fn render_sidebar(frame: &mut Frame, area: Rect, state: &mut AppState, pal: &Pal
     writer.push(sess_lbl, sess_style, Some(HitTarget::SidebarTab(SidebarTab::Trees)));
     writer.push(" ", pal.sidebar(), None);
     writer.push(mem_lbl, mem_style, Some(HitTarget::SidebarTab(SidebarTab::Members)));
+    if hdr.x + hdr.width >= writer.x + 8 {
+        writer.push(" ", pal.sidebar(), None);
+        let new_style = if state.selected_task_id.is_none() { pal.pill(pal.rainbow[2]) } else { pal.pill_inactive() };
+        writer.push(" +New ", new_style, Some(HitTarget::NewSession));
+    }
     if hdr.x + hdr.width > writer.x + 8 {
         let right = truncate_display(&state.workspace_name, (hdr.x + hdr.width - writer.x - 2) as usize);
         let pad = (hdr.x + hdr.width - writer.x - 1).saturating_sub(right.width() as u16);
@@ -278,8 +283,11 @@ fn render_sidebar(frame: &mut Frame, area: Rect, state: &mut AppState, pal: &Pal
                 let suffix = if row.is_root {
                     match (task.turns_used, task.turn_budget) {
                         (Some(u), Some(b)) => format!(" {u}/{b}"),
+                        (Some(u), None) => format!(" {u}t"),
                         _ => String::new(),
                     }
+                } else if task.kind == StageKind::Summarizer {
+                    " summary".into()
                 } else if task.kind == StageKind::Repair {
                     " repair".into()
                 } else {
@@ -314,7 +322,13 @@ fn render_sidebar(frame: &mut Frame, area: Rect, state: &mut AppState, pal: &Pal
                 let head_w =
                     bar.width() + fold_str.width() + row.prefix.width() + glyph.width() + 1 + suffix.width() + 1;
                 let title_budget = inner_w.saturating_sub(head_w);
-                let raw_label = if row.is_root { task.prompt.as_deref().unwrap_or(&task.agent) } else { &task.agent };
+                let raw_label = if row.is_root {
+                    task.prompt.as_deref().unwrap_or(&task.agent)
+                } else if task.kind == StageKind::Summarizer {
+                    "◆ summarizer"
+                } else {
+                    &task.agent
+                };
                 let label = truncate_display(raw_label, title_budget);
                 let title_style = if is_armed_delete && selected {
                     pal.danger_row()
@@ -349,9 +363,10 @@ fn render_sidebar(frame: &mut Frame, area: Rect, state: &mut AppState, pal: &Pal
                         "Press Del again to delete".to_owned()
                     } else {
                         let short_id: String = row.root_id.chars().take(6).collect();
+                        let rnd = task.round.filter(|&r| r > 1).map(|r| format!(" · R{r}")).unwrap_or_default();
                         let pol = task.policy.map_or("", |p| if p == Policy::Review { " · review" } else { "" });
                         let v = task.check.as_deref().map_or("", |_| " · check");
-                        format!("#{short_id} · @{}{pol}{v}", sanitize_inline(&task.agent))
+                        format!("#{short_id}{rnd} · @{}{pol}{v}", sanitize_inline(&task.agent))
                     };
                     let m_budget = inner_w.saturating_sub(5);
                     let m_fit = truncate_display(&meta_str, m_budget);
@@ -544,12 +559,13 @@ fn render_workspace_header(
     hits: &mut HitMap,
     wide: bool,
 ) {
-    let tabs: &[(InspectorTab, &str)] = if area.width < 66 {
+    let tabs: &[(InspectorTab, &str)] = if area.width < 78 {
         &[
             (InspectorTab::Summary, " 1·Sum "),
             (InspectorTab::Evidence, " 2·Evd "),
             (InspectorTab::Tree, " 3·Tre "),
             (InspectorTab::Events, " 4·Log "),
+            (InspectorTab::Board, " 5·Brd "),
         ]
     } else {
         &[
@@ -557,6 +573,7 @@ fn render_workspace_header(
             (InspectorTab::Evidence, " 2 Evidence "),
             (InspectorTab::Tree, " 3 Tree "),
             (InspectorTab::Events, " 4 Log "),
+            (InspectorTab::Board, " 5 Board "),
         ]
     };
     let tabs_w: usize = tabs.iter().map(|(_, l)| l.width()).sum::<usize>() + (tabs.len() - 1);
@@ -613,6 +630,7 @@ fn render_workspace_header(
             InspectorTab::Evidence => pal.rainbow[3],
             InspectorTab::Tree => pal.rainbow[2],
             InspectorTab::Events => pal.rainbow[6],
+            InspectorTab::Board => pal.rainbow[5],
         };
         let style = if state.inspector_tab == *tab { pal.pill(tab_color) } else { pal.pill_inactive() };
         writer.push(*lbl, style, Some(HitTarget::InspectorTab(*tab)));
@@ -725,6 +743,7 @@ fn render_inspector_body(frame: &mut Frame, area: Rect, state: &mut AppState, pa
         InspectorTab::Evidence => build_evidence_docs(state, pal),
         InspectorTab::Tree => build_tree_docs(state, pal),
         InspectorTab::Events => build_events_docs(state, pal),
+        InspectorTab::Board => build_board_docs(state, pal),
     };
 
     let content_x = area.x + 2;
@@ -798,10 +817,18 @@ fn render_welcome(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette
         Line::from(vec![
             Span::styled("  • Prompt below and press ", pal.secondary()),
             Span::styled(" Enter ", pal.keycap()),
-            Span::styled(" to launch an execution tree", pal.secondary()),
+            Span::styled(" to launch a fresh execution tree", pal.secondary()),
         ]),
+        Line::from(vec![Span::styled(
+            "  • 1-leaf rounds settle directly; ≥2 leaves converge at ◆ summarizer; follow-ups extend that node",
+            pal.secondary(),
+        )]),
         Line::from(vec![
-            Span::styled("  • Configure via ", pal.secondary()),
+            Span::styled("  • Press ", pal.secondary()),
+            Span::styled(" Ctrl+N ", pal.keycap()),
+            Span::styled(" or ", pal.muted()),
+            Span::styled("/new", Style::default().fg(pal.rainbow[4])),
+            Span::styled(" for a blank session; configure ", pal.secondary()),
             Span::styled("/model", Style::default().fg(pal.rainbow[4])),
             Span::styled(", ", pal.muted()),
             Span::styled("/to", Style::default().fg(pal.rainbow[3])),
@@ -809,6 +836,10 @@ fn render_welcome(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette
             Span::styled("/check", Style::default().fg(pal.rainbow[2])),
             Span::styled(", ", pal.muted()),
             Span::styled("/review", Style::default().fg(pal.rainbow[1])),
+            Span::styled(", ", pal.muted()),
+            Span::styled("/staged", Style::default().fg(pal.rainbow[5])),
+            Span::styled(", ", pal.muted()),
+            Span::styled("/wb", Style::default().fg(pal.rainbow[6])),
         ]),
         Line::from(vec![
             Span::styled("  • Navigate with ", pal.secondary()),
@@ -853,9 +884,17 @@ fn build_summary_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
             meta.push(ds(stage.as_str().to_owned(), pal.secondary()));
         }
     }
-    if let (Some(u), Some(b)) = (task.turns_used, task.turn_budget) {
+    if let Some(u) = task.turns_used {
+        if let Some(r) = task.round.filter(|&r| r > 1) {
+            meta.push(ds("  ·  round: ", pal.muted()));
+            meta.push(ds(r.to_string(), pal.secondary()));
+        }
         meta.push(ds("  ·  turns: ", pal.muted()));
-        meta.push(ds(format!("{u}/{b}"), pal.secondary()));
+        let turns_lbl = match task.turn_budget {
+            Some(b) => format!("{u}/{b}"),
+            None => u.to_string(),
+        };
+        meta.push(ds(turns_lbl, pal.secondary()));
     }
     if let Some(pol) = task.policy {
         meta.push(ds("  ·  policy: ", pal.muted()));
@@ -863,6 +902,19 @@ fn build_summary_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
     }
     docs.push(DocLine::blank());
     docs.push(DocLine::from_spans(meta));
+    if let Some(target) = state.continuation_target() {
+        docs.push(DocLine::from_spans(vec![
+            ds("continuation  ", pal.muted()),
+            ds(
+                format!(
+                    "↳ @{} ({}) — type below to extend subtree, or Ctrl+N for new session",
+                    sanitize_inline(&target.label),
+                    target.kind
+                ),
+                pal.accent(),
+            ),
+        ]));
+    }
 
     if let Some(v) = &task.verification {
         let (v_lbl, v_style) = pal.verification_badge(v);
@@ -877,7 +929,21 @@ fn build_summary_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
         docs.push(DocLine::text(format!("  {}", sanitize_inline(note)), pal.dim()));
     }
 
-    if let Some(prompt) = &task.prompt {
+    if task.rounds.len() > 1 {
+        docs.push(DocLine::blank());
+        docs.push(DocLine::text(format!("Conversation Rounds ({})", task.rounds.len()), pal.section_title()));
+        for rnd in &task.rounds {
+            let status_txt = rnd.outcome.as_ref().map_or("active", |s| s.as_str());
+            docs.push(DocLine::from_spans(vec![
+                ds(format!("  Round {} ", rnd.round), pal.accent().add_modifier(Modifier::BOLD)),
+                ds(format!("[{status_txt}]  "), pal.muted()),
+                ds(sanitize_inline(&preview(&rnd.prompt, 120)), pal.primary()),
+            ]));
+            if let Some(res) = &rnd.result {
+                docs.push(DocLine::text(format!("    ↳ {}", sanitize_inline(&preview(res, 160))), pal.secondary()));
+            }
+        }
+    } else if let Some(prompt) = &task.prompt {
         docs.push(DocLine::blank());
         docs.push(DocLine::text("Prompt", pal.section_title()));
         for line in sanitize_multiline(prompt).lines() {
@@ -1104,10 +1170,15 @@ fn build_tree_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
         for row in rows {
             if let Some(t) = state.tasks.iter().find(|t| t.id == row.task_id) {
                 let (g, gs) = pal.status_badge(&t.status, state.tick);
+                let kind_tag = match t.kind {
+                    StageKind::Repair => " (repair)",
+                    StageKind::Summarizer => " (summarizer)",
+                    _ => "",
+                };
                 docs.push(DocLine::from_spans(vec![
                     ds(format!("  {}", row.prefix), pal.dim()),
                     ds(format!("{g} "), gs),
-                    ds(format!("@{}", sanitize_inline(&t.agent)), pal.primary().add_modifier(Modifier::BOLD)),
+                    ds(format!("@{}{kind_tag}", sanitize_inline(&t.agent)), pal.primary().add_modifier(Modifier::BOLD)),
                     ds(format!("  [{}]  {}", t.status.as_str(), sanitize_inline(&t.id)), pal.muted()),
                 ]));
             }
@@ -1139,7 +1210,11 @@ fn build_tree_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
                 "├─ "
             };
             let (g, gs) = pal.status_badge(&node.status, state.tick);
-            let kind_tag = if node.kind == StageKind::Repair { " (repair)" } else { "" };
+            let kind_tag = match node.kind {
+                StageKind::Repair => " (repair)",
+                StageKind::Summarizer => " (summarizer)",
+                _ => "",
+            };
             docs.push(DocLine::from_spans(vec![
                 ds(format!("  {prefix}{branch}"), pal.dim()),
                 ds(format!("{g} "), gs),
@@ -1184,9 +1259,71 @@ fn build_events_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
     docs
 }
 
+fn build_board_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
+    let Some(task) = state.selected_task() else {
+        return vec![
+            DocLine::from_spans(vec![ds("No active task selected.", pal.muted())]),
+            DocLine::from_spans(vec![ds(
+                "Start a task or select one from the sidebar to inspect its collaborative whiteboard.",
+                pal.muted(),
+            )]),
+        ];
+    };
+    let mut docs = vec![
+        DocLine::from_spans(vec![
+            ds("Collaborative Whiteboard ", pal.accent_bold()),
+            ds(format!("(seq {}, {} entries)", task.whiteboard_seq, task.whiteboard.len()), pal.secondary()),
+        ]),
+        DocLine::from_spans(vec![ds(
+            "Actions: wb_read, wb_write (set/append/resolve/delete), wb_wait · User: /wb ...",
+            pal.muted(),
+        )]),
+        DocLine::from_spans(Vec::new()),
+    ];
+    if task.whiteboard.is_empty() {
+        docs.push(DocLine::from_spans(vec![ds("Whiteboard is empty.", pal.muted())]));
+        docs.push(DocLine::from_spans(vec![ds(
+            "Use `/wb set KEY VALUE` or let sibling leaves coordinate with `wb_write`.",
+            pal.muted(),
+        )]));
+        return docs;
+    }
+    for entry in &task.whiteboard {
+        let status_style = if entry.status == "resolved" {
+            Style::default().fg(pal.rainbow[3])
+        } else {
+            Style::default().fg(pal.rainbow[5])
+        };
+        docs.push(DocLine::from_spans(vec![
+            ds("■ ", status_style),
+            ds(sanitize_inline(&entry.key), pal.primary()),
+            ds(
+                format!(
+                    " [{} · {} · v{} · #{} · r{} · {}]",
+                    sanitize_inline(&entry.kind),
+                    sanitize_inline(&entry.status),
+                    entry.version,
+                    entry.seq,
+                    entry.round,
+                    sanitize_inline(&entry.author_agent),
+                ),
+                pal.muted(),
+            ),
+        ]));
+        for line in entry.content.lines() {
+            docs.push(DocLine::from_spans(vec![ds(format!("    {}", sanitize_inline(line)), pal.secondary())]));
+        }
+        if entry.content.is_empty() {
+            docs.push(DocLine::from_spans(vec![ds("    <empty>", pal.muted())]));
+        }
+        docs.push(DocLine::from_spans(Vec::new()));
+    }
+    docs
+}
+
 fn push_action_preview_docs(docs: &mut Vec<DocLine>, action: &ActionPreview, pal: &Palette) {
     match action {
-        ActionPreview::Shell { command } | ActionPreview::Verify { command } => {
+        ActionPreview::Shell { command, .. } | ActionPreview::Verify { command } => {
             docs.push(DocLine::from_spans(vec![
                 ds("  op: ", pal.muted()),
                 ds(action.op().to_owned(), pal.accent_bold()),
@@ -1198,11 +1335,19 @@ fn push_action_preview_docs(docs: &mut Vec<DocLine>, action: &ActionPreview, pal
                 );
             }
         }
-        ActionPreview::ReadFile { path } => {
-            docs.push(DocLine::from_spans(vec![
-                ds("  read_file: ", pal.accent_bold()),
-                ds(sanitize_inline(path), pal.primary()),
-            ]));
+        ActionPreview::ReadFile { path, offset, limit } => {
+            let mut spans = vec![ds("  read_file: ", pal.accent_bold()), ds(sanitize_inline(path), pal.primary())];
+            if offset.is_some() || limit.is_some() {
+                spans.push(ds(
+                    format!(
+                        " [offset={}, limit={}]",
+                        offset.map_or_else(|| "0".into(), |v| v.to_string()),
+                        limit.map_or_else(|| "default".into(), |v| v.to_string()),
+                    ),
+                    pal.muted(),
+                ));
+            }
+            docs.push(DocLine::from_spans(spans));
         }
         ActionPreview::EditFile { path, old, new } => {
             docs.push(DocLine::from_spans(vec![
@@ -1343,6 +1488,7 @@ fn render_composer_dock(frame: &mut Frame, area: Rect, state: &AppState, pal: &P
 
     // Top hairline cleanly separates workspace from the surface-tinted composer dock.
     let line_style = pal.border(focused).bg(pal.canvas_bg);
+    let cont_target = state.continuation_target();
     if let Some(root_id) = &state.answering_root {
         let mut w = HitSpanWriter::new(rows[0], hits);
         let lbl = format!("─── Answering root {} (Esc cancel) ", preview(root_id, 12));
@@ -1350,6 +1496,32 @@ fn render_composer_dock(frame: &mut Frame, area: Rect, state: &AppState, pal: &P
         let rem = (rows[0].x + rows[0].width).saturating_sub(w.x) as usize;
         if rem > 0 {
             w.push("─".repeat(rem), line_style, None);
+        }
+        frame.render_widget(Paragraph::new(w.finish()), rows[0]);
+    } else if state.selected_task().is_some() {
+        let mut w = HitSpanWriter::new(rows[0], hits);
+        let new_lbl = " + New (Ctrl+N) ";
+        let left_lbl = if let Some(target) = &cont_target {
+            format!("─── ↳ Continue @{} ({}) ", sanitize_inline(&target.label), target.kind)
+        } else if state.selected_root_task().is_some_and(|r| !r.status.is_terminal()) {
+            "─── Session active ".to_owned()
+        } else {
+            "─── Session settled ".to_owned()
+        };
+        let avail_left = (rows[0].width as usize).saturating_sub(new_lbl.width() + 2);
+        let left_fit = truncate_display(&left_lbl, avail_left);
+        let left_style = if cont_target.is_some() { pal.accent().bg(pal.canvas_bg) } else { line_style };
+        w.push(left_fit, left_style, None);
+        let end_x = rows[0].x + rows[0].width;
+        let pill_x = end_x.saturating_sub(new_lbl.width() as u16 + 1);
+        if pill_x > w.x {
+            w.push("─".repeat((pill_x - w.x) as usize), line_style, None);
+        }
+        if end_x >= w.x + new_lbl.width() as u16 {
+            w.push(new_lbl, pal.pill_inactive(), Some(HitTarget::NewSession));
+            if end_x > w.x {
+                w.push("─".repeat((end_x - w.x) as usize), line_style, None);
+            }
         }
         frame.render_widget(Paragraph::new(w.finish()), rows[0]);
     } else {
@@ -1368,6 +1540,8 @@ fn render_composer_dock(frame: &mut Frame, area: Rect, state: &AppState, pal: &P
 
     let gutter_glyph = if state.answering_root.is_some() {
         (" ? ", pal.accent_soft().bg(pal.surface_bg))
+    } else if cont_target.is_some() {
+        (" ↳ ", if focused { pal.accent().bg(pal.surface_bg) } else { pal.muted().bg(pal.surface_bg) })
     } else if focused {
         (" › ", pal.accent_bold().bg(pal.surface_bg))
     } else {
@@ -1379,10 +1553,19 @@ fn render_composer_dock(frame: &mut Frame, area: Rect, state: &AppState, pal: &P
     );
 
     if state.input.is_empty() {
+        let placeholder_buf;
         let placeholder = if state.answering_root.is_some() {
             "Type clarification reply and press Enter…"
+        } else if let Some(target) = &cont_target {
+            placeholder_buf = format!(
+                "Follow up with @{} (extends subtree), or Ctrl+N for new session…",
+                sanitize_inline(&target.label)
+            );
+            placeholder_buf.as_str()
+        } else if state.selected_task().is_some() {
+            "This session view cannot continue directly — press Ctrl+N or click + New for a fresh session…"
         } else {
-            "Describe a coding or research task, or type / for commands (Shift+Enter newline)…"
+            "New session — describe a coding or research task, or type / for commands (Shift+Enter newline)…"
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -1421,9 +1604,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState, pal: &Pale
 
     let help_lbl = " F1 Help ";
     let hint_right = if area.width >= 110 {
-        " Tab focus  Ctrl+B rail  Ctrl+P approvals  Del×2 delete "
+        " Ctrl+N new  Ctrl+B rail  Ctrl+P appr  Del×2 del "
     } else if area.width >= 76 {
-        " Tab focus  Ctrl+P appr  Del×2 del "
+        " Ctrl+N new  Ctrl+P appr  Del×2 del "
     } else {
         ""
     };
@@ -1450,6 +1633,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState, pal: &Pale
         pal.muted().bg(pal.sidebar_bg)
     };
     writer.push(pol_lbl, pol_style, None);
+    if state.staged_mode {
+        writer.push(" · staged", Style::default().fg(pal.rainbow[2]).bg(pal.sidebar_bg), None);
+    }
     if let Some(chk) = &state.armed_check {
         writer.push(format!(" · check: {}", truncate_display(chk, 18)), pal.accent_soft().bg(pal.sidebar_bg), None);
     }
@@ -1730,10 +1916,7 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
             }
             frame.render_widget(
                 Paragraph::new(vec![
-                    Line::from(Span::styled(
-                        " Runs on completion (up to 3 attempts within root turn budget):",
-                        pal.muted(),
-                    )),
+                    Line::from(Span::styled(" Runs on completion (up to 10 attempts):", pal.muted())),
                     Line::from(""),
                     Line::from(vec![
                         Span::styled(" $ ", pal.accent_bold()),
@@ -1800,9 +1983,10 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
             frame.render_widget(block, rect);
             let help_lines = vec![
                 Line::from(Span::styled(" Keyboard Shortcuts (Navigation, Layout & Actions)", pal.section_title())),
-                Line::from("  Tab/BackTab  Cycle panes / complete /cmd   Ctrl+B   Toggle sidebar"),
-                Line::from("  Ctrl+P       Pending approvals queue       Alt+1..4 Inspector tabs"),
-                Line::from("  F1 / ?       Toggle this help sheet        Ctrl+Q   Leave TUI"),
+                Line::from("  Tab/BackTab  Cycle panes / complete /cmd   Ctrl+N   New blank session"),
+                Line::from("  Ctrl+B       Toggle sidebar                Ctrl+P   Pending approvals queue"),
+                Line::from("  Alt+1..5     Inspector tabs                F1 / ?   Toggle help sheet"),
+                Line::from("  Ctrl+Q       Leave TUI (daemon keeps running)"),
                 Line::from("  ↑↓ / j k     Move selection / scroll       PgUp/Dn  Scroll fast"),
                 Line::from("  [ / ]        Sessions / Agents sidebar     Space    Fold or pick"),
                 Line::from("  a / d / r    Approve / deny / reply        x        Cancel active"),
@@ -1813,8 +1997,9 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
                 Line::from("  /model [MODEL [EFFORT]|effort E|default]   Model & reasoning effort"),
                 Line::from("  /to [NAME]                                 Pick or set target agent"),
                 Line::from("  /check [COMMAND|off]                       Arm/edit/clear --check"),
-                Line::from("  /review [on|off]                           Toggle --review policy"),
-                Line::from("  /answer ROOT_ID TEXT   /new TEXT           Reply or start new root"),
+                Line::from("  /review [on|off]       /staged [on|off]    Toggle review or staged sandbox"),
+                Line::from("  /wb [get|set|append|resolve|del] ...       Inspect or edit whiteboard"),
+                Line::from("  /new [TEXT]            /answer ROOT_ID TEXT  New session or reply"),
                 Line::from("  /clear                 /stop               Clear feed / stop daemon"),
             ];
             frame.render_widget(Paragraph::new(help_lines).wrap(Wrap { trim: false }), inner);
@@ -1881,7 +2066,7 @@ mod tests {
     }
 
     fn sample_state() -> AppState {
-        let mut state = AppState::new("team-agents".into(), "default".into(), true);
+        let mut state = AppState::new("team-agents".into(), "default".into(), true, false);
         state.palette = RAINBOW_PALETTE;
         let root = TaskRecord::from_value(&json!({
             "id": "r1", "root": "r1", "agent": "default", "status": "done",
@@ -1908,8 +2093,13 @@ mod tests {
     #[test]
     fn renders_responsive_layouts_markdown_and_sanitizes_control_sequences() {
         let mut state = sample_state();
+        assert_eq!(state.selected_task_id, None);
+        let (welcome, _, _) = render_and_hits(&mut state, 128, 36);
+        assert!(welcome.contains("TeamAgents") && welcome.contains("New session"));
+
+        state.selected_task_id = Some("r1".into());
         let (wide, _, _) = render_and_hits(&mut state, 128, 36);
-        assert!(wide.contains("TeamAgents") || wide.contains("修复解析器\\u001b[2J"));
+        assert!(wide.contains("修复解析器\\u001b[2J"));
         assert!(wide.contains("Summary") && wide.contains("• Fixed"));
         assert!(wide.contains("approval(s) waiting"));
         assert!(!wide.contains('\x1b'));
@@ -1927,6 +2117,7 @@ mod tests {
     #[test]
     fn hitmap_rects_match_actual_rendered_button_cells_across_resizes() {
         let mut state = sample_state();
+        state.selected_task_id = Some("r1".into());
         for (w, h) in [(76, 22), (100, 30), (140, 40), (180, 48)] {
             state.focus = Focus::Inspector;
             state.inspector_tab = InspectorTab::Summary;
@@ -1949,6 +2140,9 @@ mod tests {
                         assert!(text.contains("Tre") || text.contains("Tree"), "{w}x{h}: {text:?}");
                     }
                     HitTarget::InspectorTab(InspectorTab::Events) => assert!(text.contains("Log"), "{w}x{h}: {text:?}"),
+                    HitTarget::InspectorTab(InspectorTab::Board) => {
+                        assert!(text.contains("Board") || text.contains("Brd"), "{w}x{h}: {text:?}")
+                    }
                     HitTarget::InlineApprove(_) => assert!(text.contains("Approve"), "{w}x{h}: {text:?}"),
                     HitTarget::InlineDeny(_) => assert!(text.contains("Deny"), "{w}x{h}: {text:?}"),
                     HitTarget::SidebarTab(SidebarTab::Trees) if w >= WIDE_THRESHOLD => {
@@ -1958,6 +2152,7 @@ mod tests {
                         assert!(text.contains("Agents"), "{w}x{h}: {text:?}");
                     }
                     HitTarget::OpenHelp => assert!(text.contains("Help"), "{w}x{h}: {text:?}"),
+                    HitTarget::NewSession => assert!(text.contains("New"), "{w}x{h}: {text:?}"),
                     _ => {}
                 }
             }

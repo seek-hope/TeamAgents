@@ -310,6 +310,177 @@ fn restore_dirs(top: &File) {
     }
 }
 
+enum OverlayMount {
+    ReadOnlyBind(PathBuf, PathBuf),
+    Tmpfs(PathBuf),
+}
+
+fn build_bwrap(workspace_src: &Path, overlays: &[OverlayMount]) -> Result<(Command, File)> {
+    let mut cmd = Command::new("/usr/bin/bwrap");
+    cmd.current_dir("/").env_clear().process_group(0).args([
+        "--unshare-user",
+        "--disable-userns",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+        "--new-session",
+        "--die-with-parent",
+        "--cap-drop",
+        "ALL",
+        "--clearenv",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--dir",
+        "/home/agent",
+        "--dir",
+        "/etc/ssl/certs",
+    ]);
+    // Only system runtime trees, with the distribution's /bin and loader paths mirrored.
+    for path in [
+        "/usr/bin",
+        "/usr/sbin",
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/libexec",
+        "/usr/include",
+        "/usr/share",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+    ] {
+        if Path::new(path).is_dir() {
+            cmd.arg("--ro-bind").arg(fs::canonicalize(path).map_err(err)?).arg(path);
+        }
+    }
+    // Debian-family compiler drivers go through /etc/alternatives. Recreate only
+    // the selected links whose binaries are already visible in the sandbox.
+    for link in ["/etc/alternatives/cc", "/etc/alternatives/c++"] {
+        if let Ok(target) = fs::canonicalize(link) {
+            if target.starts_with("/usr/bin") && target.is_file() {
+                cmd.arg("--symlink").arg(target).arg(link);
+            }
+        }
+    }
+    let cert = Path::new("/etc/ssl/certs/ca-certificates.crt");
+    if cert.is_file() {
+        cmd.arg("--ro-bind").arg(cert.canonicalize().map_err(err)?).arg(cert);
+    }
+    cmd.arg("--bind").arg(workspace_src).arg("/workspace");
+    for overlay in overlays {
+        match overlay {
+            OverlayMount::ReadOnlyBind(src, dst) => {
+                cmd.arg("--ro-bind").arg(src).arg(dst);
+            }
+            OverlayMount::Tmpfs(dst) => {
+                cmd.arg("--tmpfs").arg(dst);
+            }
+        }
+    }
+    cmd.args(["--chdir", "/workspace"]);
+    let path = rust_tools(&mut cmd, workspace_src)?;
+    for (name, value) in [
+        ("PATH", path.as_str()),
+        ("HOME", "/home/agent"),
+        ("LANG", "C"),
+        ("CARGO_HOME", "/home/agent/.cargo"),
+        ("CARGO_TARGET_DIR", "/tmp/target"),
+        ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt"),
+        ("GIT_SSL_CAINFO", "/etc/ssl/certs/ca-certificates.crt"),
+    ] {
+        cmd.args(["--setenv", name, value]);
+    }
+    // SAFETY: the hook only issues the async-signal-safe close_range syscall. Network::prepare
+    // registers its own hook afterwards and selectively inherits the handshake descriptors.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let filter = payload_filter(&mut cmd)?;
+    Ok((cmd, filter))
+}
+
+pub(crate) struct Direct {
+    workspace: PathBuf,
+    dir: File,
+}
+
+impl Direct {
+    pub(crate) fn new(root: &Path) -> Result<Self> {
+        let dir = root_dir(root)?;
+        Ok(Self { workspace: root.to_owned(), dir })
+    }
+
+    pub(crate) fn command(&self) -> Result<(Command, File)> {
+        let mut overlays = Vec::new();
+        for entry in fs::read_dir(fd_path(&self.dir)).map_err(err)? {
+            let name = entry.map_err(err)?.file_name();
+            let entry_path = self.workspace.join(&name);
+            let meta = match fs::symlink_metadata(&entry_path) {
+                Ok(m) => m,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(err(e)),
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            let mount_dst = Path::new("/workspace").join(&name);
+            if name.eq_ignore_ascii_case(".teamagents-auth") {
+                if meta.is_dir() {
+                    overlays.push(OverlayMount::Tmpfs(mount_dst));
+                } else {
+                    overlays.push(OverlayMount::ReadOnlyBind(PathBuf::from("/dev/null"), mount_dst));
+                }
+                continue;
+            }
+            let is_git_or_admin = name.eq_ignore_ascii_case(".git")
+                || (meta.is_dir() && pin(&entry_path).ok().is_some_and(|d| admin_dir(&fd_path(&d)).unwrap_or(false)));
+            if is_git_or_admin {
+                overlays.push(OverlayMount::ReadOnlyBind(entry_path, mount_dst));
+            }
+        }
+        build_bwrap(&self.workspace, &overlays)
+    }
+}
+
+pub(crate) enum Workspace {
+    Direct(Direct),
+    Staged(Stage),
+}
+
+impl Workspace {
+    pub(crate) fn new(root: &Path, staged: bool) -> Result<Self> {
+        if staged {
+            Ok(Self::Staged(Stage::new(root)?))
+        } else {
+            Ok(Self::Direct(Direct::new(root)?))
+        }
+    }
+
+    pub(crate) fn command(&self) -> Result<(Command, File)> {
+        match self {
+            Self::Direct(d) => d.command(),
+            Self::Staged(s) => s.command(),
+        }
+    }
+
+    pub(crate) fn publish(self) -> Result<()> {
+        match self {
+            Self::Direct(_) => Ok(()),
+            Self::Staged(s) => s.publish(),
+        }
+    }
+}
+
 pub(crate) struct Stage {
     workspace: PathBuf,
     identity: File,
@@ -330,86 +501,7 @@ impl Stage {
     }
 
     pub(crate) fn command(&self) -> Result<(Command, File)> {
-        let mut cmd = Command::new("/usr/bin/bwrap");
-        cmd.current_dir("/").env_clear().process_group(0).args([
-            "--unshare-user",
-            "--disable-userns",
-            "--unshare-pid",
-            "--unshare-ipc",
-            "--unshare-uts",
-            "--unshare-cgroup-try",
-            "--new-session",
-            "--die-with-parent",
-            "--cap-drop",
-            "ALL",
-            "--clearenv",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-            "--dir",
-            "/home/agent",
-            "--dir",
-            "/etc/ssl/certs",
-        ]);
-        // Only system runtime trees, with the distribution's /bin and loader paths mirrored.
-        for path in [
-            "/usr/bin",
-            "/usr/sbin",
-            "/usr/lib",
-            "/usr/lib64",
-            "/usr/libexec",
-            "/usr/include",
-            "/usr/share",
-            "/bin",
-            "/sbin",
-            "/lib",
-            "/lib64",
-        ] {
-            if Path::new(path).is_dir() {
-                cmd.arg("--ro-bind").arg(fs::canonicalize(path).map_err(err)?).arg(path);
-            }
-        }
-        // Debian-family compiler drivers go through /etc/alternatives. Recreate only
-        // the selected links whose binaries are already visible in the sandbox.
-        for link in ["/etc/alternatives/cc", "/etc/alternatives/c++"] {
-            if let Ok(target) = fs::canonicalize(link) {
-                if target.starts_with("/usr/bin") && target.is_file() {
-                    cmd.arg("--symlink").arg(target).arg(link);
-                }
-            }
-        }
-        let cert = Path::new("/etc/ssl/certs/ca-certificates.crt");
-        if cert.is_file() {
-            cmd.arg("--ro-bind").arg(cert.canonicalize().map_err(err)?).arg(cert);
-        }
-        cmd.arg("--bind").arg(&self.scratch.0).arg("/workspace").args(["--chdir", "/workspace"]);
-        let path = rust_tools(&mut cmd, &self.scratch.0)?;
-        for (name, value) in [
-            ("PATH", path.as_str()),
-            ("HOME", "/home/agent"),
-            ("LANG", "C"),
-            ("CARGO_HOME", "/home/agent/.cargo"),
-            ("CARGO_TARGET_DIR", "/tmp/target"),
-            ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt"),
-            ("GIT_SSL_CAINFO", "/etc/ssl/certs/ca-certificates.crt"),
-        ] {
-            cmd.args(["--setenv", name, value]);
-        }
-        // SAFETY: the hook only issues the async-signal-safe close_range syscall. Network::prepare
-        // registers its own hook afterwards and selectively inherits the handshake descriptors.
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let filter = payload_filter(&mut cmd)?;
-        Ok((cmd, filter))
+        build_bwrap(&self.scratch.0, &[])
     }
 
     pub(crate) fn publish(self) -> Result<()> {
