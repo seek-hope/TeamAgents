@@ -579,8 +579,8 @@ mod tests {
         let t = Temp::new();
         let start = Instant::now();
         // Large finite stdout/stderr succeeds via middle truncation, preserving head, tail, and real exit status.
-        let flood = "printf 'HEAD-OUT\\n'; awk 'BEGIN{for(i=0;i<3000;i++) printf \"%064d\\n\",i}'; printf 'TAIL-OUT\\n'; \
-             printf 'HEAD-ERR\\n' >&2; awk 'BEGIN{for(i=0;i<3000;i++) printf \"%064d\\n\",i}' >&2; printf 'TAIL-ERR\\n' >&2"
+        let flood = "printf 'HEAD-OUT\\n'; seq 1 30000; printf 'TAIL-OUT\\n'; \
+             printf 'HEAD-ERR\\n' >&2; seq 1 30000 >&2; printf 'TAIL-ERR\\n' >&2"
             .to_string();
         let ok = shell(&t.0, &flood, Duration::from_secs(5), false).unwrap();
         assert!(

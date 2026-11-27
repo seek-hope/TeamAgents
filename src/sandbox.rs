@@ -358,9 +358,9 @@ fn build_bwrap(workspace_src: &Path, overlays: &[OverlayMount]) -> Result<(Comma
             cmd.arg("--ro-bind").arg(fs::canonicalize(path).map_err(err)?).arg(path);
         }
     }
-    // Debian-family compiler drivers go through /etc/alternatives. Recreate only
+    // Debian-family compiler drivers and awk variants go through /etc/alternatives. Recreate only
     // the selected links whose binaries are already visible in the sandbox.
-    for link in ["/etc/alternatives/cc", "/etc/alternatives/c++"] {
+    for link in ["/etc/alternatives/cc", "/etc/alternatives/c++", "/etc/alternatives/awk", "/etc/alternatives/nawk"] {
         if let Ok(target) = fs::canonicalize(link) {
             if target.starts_with("/usr/bin") && target.is_file() {
                 cmd.arg("--symlink").arg(target).arg(link);
