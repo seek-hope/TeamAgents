@@ -40,7 +40,7 @@ struct Call {
     messages: Vec<Value>,
 }
 impl Call {
-    fn read(socket: TcpStream, model: &str, effort: Option<&str>) -> Self {
+    fn read_http(socket: TcpStream, expected_path: &str) -> (String, Value, TcpStream) {
         socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         socket.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut reader = BufReader::new(&socket);
@@ -48,8 +48,7 @@ impl Call {
         while !headers.ends_with("\r\n\r\n") {
             assert!(reader.read_line(&mut headers).unwrap() > 0 && headers.len() < 8192);
         }
-        assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
-        assert!(!headers.to_ascii_lowercase().contains("\r\nauthorization:"));
+        assert!(headers.starts_with(&format!("POST {expected_path} HTTP/1.1\r\n")), "unexpected request: {headers}");
         let len: usize = headers
             .lines()
             .filter_map(|h| h.split_once(':'))
@@ -63,6 +62,13 @@ impl Call {
         let mut buf = vec![0; len];
         reader.read_exact(&mut buf).unwrap();
         let body: Value = serde_json::from_slice(&buf).unwrap();
+        drop(reader);
+        (headers, body, socket)
+    }
+
+    fn read(socket: TcpStream, model: &str, effort: Option<&str>) -> Self {
+        let (headers, body, socket) = Self::read_http(socket, "/v1/chat/completions");
+        assert!(!headers.to_ascii_lowercase().contains("\r\nauthorization:"));
         assert_eq!(body["model"], model);
         assert_eq!(body.get("reasoning_effort"), effort.map(Value::from).as_ref(), "model {model}");
         let messages = body["messages"].as_array().unwrap().clone();
@@ -71,7 +77,10 @@ impl Call {
         Self { socket, agent: agent.into(), id: task.into(), messages }
     }
     fn users(&self) -> impl Iterator<Item = &str> {
-        self.messages.iter().filter(|m| m["role"] == "user").map(|m| field(m, "content"))
+        self.messages
+            .iter()
+            .filter(|m| matches!(m["role"].as_str(), Some("user" | "tool")))
+            .map(|m| field(m, "content"))
     }
     fn contains(&self, text: &str) -> bool {
         self.users().any(|s| s.contains(text))
@@ -153,9 +162,14 @@ struct Lab {
     tmp: Temp,
     ws: PathBuf,
     session: PathBuf,
+    extra_env: Vec<(String, String)>,
+    set_openai_base: bool,
 }
 impl Lab {
     fn new() -> Self {
+        Self::new_with(&[], true)
+    }
+    fn new_with(extra_env: &[(&str, &str)], set_openai_base: bool) -> Self {
         let tmp = Temp(std::env::temp_dir().join(format!("tree-{}", Uuid::new_v4())));
         fs::create_dir(&tmp.0).unwrap();
         let ws = tmp.0.join("repo");
@@ -163,7 +177,8 @@ impl Lab {
         fs::create_dir(&ws).unwrap();
         let socket = TcpListener::bind("127.0.0.1:0").unwrap();
         socket.set_nonblocking(true).unwrap();
-        let mut lab = Self { daemon: None, socket, tmp, ws, session };
+        let extra_env = extra_env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+        let mut lab = Self { daemon: None, socket, tmp, ws, session, extra_env, set_openai_base };
         lab.start();
         lab
     }
@@ -173,13 +188,15 @@ impl Lab {
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.tmp.0)
-            .env("OPENAI_BASE_URL", format!("http://{}/v1", self.socket.local_addr().unwrap()))
-            .env("TEAMAGENTS_MODEL", MODEL)
-            .arg("--session")
-            .arg(&self.session)
-            .arg("--workspace")
-            .arg(&self.ws)
-            .stdin(Stdio::null());
+            .env("TEAMAGENTS_MODEL", MODEL);
+        if self.set_openai_base {
+            c.env("OPENAI_BASE_URL", format!("http://{}/v1", self.socket.local_addr().unwrap()));
+        }
+        for (k, v) in &self.extra_env {
+            let val = v.replace("{URL}", &format!("http://{}", self.socket.local_addr().unwrap()));
+            c.env(k, val);
+        }
+        c.arg("--session").arg(&self.session).arg("--workspace").arg(&self.ws).stdin(Stdio::null());
         if let Some(helper) = std::env::var_os("TEAMAGENTS_SLIRP4NETNS") {
             c.env("TEAMAGENTS_SLIRP4NETNS", helper);
         }
@@ -311,9 +328,10 @@ fn siblings_overlap_grow_a_lower_branch_and_report_partial_failure_once() {
     let assets_id = assets.id.clone();
     assert!(assets.contains("Inspect assets"));
     assert_eq!(lab.status(&assets_id)["parent"], layout_id);
-    drop(api); // Exhaust all 3 transient HTTP retry attempts while the other leaf stays in flight.
-    drop(lab.next(&api_id));
-    drop(lab.next(&api_id));
+    drop(api); // Exhaust all 5 transient HTTP retry attempts while the other leaf stays in flight.
+    for _ in 0..4 {
+        drop(lab.next(&api_id));
+    }
     lab.wait(&api_id, "failed");
     assert_eq!(lab.status(root)["status"], "waiting");
     assert_eq!(lab.status(&assets_id)["status"], "running");
@@ -906,4 +924,289 @@ fn staged_flag_and_auto_compaction_recover_from_overflow() {
     let out = comp.json();
     assert_eq!(out["status"], "done");
     assert_eq!(out["result"], "recovered after compaction");
+}
+
+fn accept_raw(socket: &TcpListener) -> TcpStream {
+    let until = Instant::now() + LIMIT;
+    loop {
+        match socket.accept() {
+            Ok((s, _)) => return s,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until => thread::sleep(POLL),
+            Err(e) => panic!("expected provider socket accept ({e})"),
+        }
+    }
+}
+
+fn sse_frames(events: &[Value]) -> String {
+    events.iter().map(|e| format!("event: {}\r\ndata: {e}\r\n\r\n", e["type"].as_str().unwrap())).collect()
+}
+
+#[test]
+fn responses_provider_handles_commentary_and_tools_end_to_end() {
+    let lab = Lab::new_with(&[("TEAMAGENTS_PROVIDER", "responses")], true);
+    let exec = lab.client(&["exec", "Create hello.txt via Responses API"]);
+
+    // Turn 1: SSE with commentary + native function_call(shell).
+    let s1 = accept_raw(&lab.socket);
+    let (_, req1, mut s1) = Call::read_http(s1, "/v1/responses");
+    assert_eq!(req1["stream"], true);
+    assert_eq!(req1["tool_choice"], "required");
+    assert_eq!(req1["parallel_tool_calls"], false);
+    assert!(req1["tools"].as_array().unwrap().iter().any(|t| t["name"] == "edit_file"));
+    let fc_args = json!({"command":"echo RESPONSES_OK > hello.txt"}).to_string();
+    let sse1 = sse_frames(&[
+        json!({"type":"response.created","response":{"id":"resp1","status":"in_progress","output":[]}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"c1","role":"assistant","phase":"commentary","status":"in_progress","content":[]}}),
+        json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"c1","delta":"Planning command"}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"c1","role":"assistant","phase":"commentary","status":"completed","content":[{"type":"output_text","text":"Planning command"}]}}),
+        json!({"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc1","call_id":"call_1","name":"shell","arguments":"","status":"in_progress"}}),
+        json!({"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc1","delta":&fc_args[..12]}),
+        json!({"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc1","delta":&fc_args[12..]}),
+        json!({"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc1","arguments":fc_args}),
+        json!({"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc1","call_id":"call_1","name":"shell","arguments":fc_args,"status":"completed"}}),
+        json!({"type":"response.completed","response":{"id":"resp1","status":"completed","output":[
+            {"type":"message","id":"c1","role":"assistant","phase":"commentary","status":"completed","content":[{"type":"output_text","text":"Planning command"}]},
+            {"type":"function_call","id":"fc1","call_id":"call_1","name":"shell","arguments":fc_args,"status":"completed"}
+        ]}}),
+    ]);
+    write!(
+        s1,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse1}",
+        sse1.len()
+    )
+    .unwrap();
+
+    // Turn 2: commentary-only triggers InvalidAction protocol retry without crashing, and history replays natively.
+    let s2 = accept_raw(&lab.socket);
+    let (_, req2, mut s2) = Call::read_http(s2, "/v1/responses");
+    let input2 = req2["input"].as_array().unwrap();
+    assert!(
+        input2.iter().any(|m| m["type"] == "function_call" && m["name"] == "shell" && m["call_id"] == "call_1")
+            && input2.iter().any(|m| {
+                m["type"] == "function_call_output"
+                    && m["call_id"] == "call_1"
+                    && m["output"].as_str().is_some_and(|c| c.contains("\"tool\":\"shell\""))
+            })
+            && !input2.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("Original request:")))
+    );
+    let sse2 = sse_frames(&[
+        json!({"type":"response.completed","response":{"id":"resp2","status":"completed","output":[
+            {"type":"message","id":"c2","role":"assistant","phase":"commentary","status":"completed","content":[{"type":"output_text","text":"Oops forgot tool call"}]}
+        ]}}),
+    ]);
+    write!(
+        s2,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse2}",
+        sse2.len()
+    )
+    .unwrap();
+
+    let s3 = accept_raw(&lab.socket);
+    let (_, req3, mut s3) = Call::read_http(s3, "/v1/responses");
+    assert!(req3["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["content"].as_str().is_some_and(|c| c.contains("protocol_error"))));
+    let finish_json = json!({
+        "id": "resp3",
+        "status": "completed",
+        "output": [{"type":"function_call","id":"fc3","call_id":"call_3","name":"finish","arguments":r#"{"text":"responses done"}"#,"status":"completed"}]
+    })
+    .to_string();
+    write!(s3, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{finish_json}", finish_json.len()).unwrap();
+
+    let out = exec.json();
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["result"], "responses done");
+    assert_eq!(fs::read_to_string(lab.ws.join("hello.txt")).unwrap().trim(), "RESPONSES_OK");
+}
+
+#[test]
+fn anthropic_provider_handles_thinking_stream_and_tools_end_to_end() {
+    let lab = Lab::new_with(&[("ANTHROPIC_BASE_URL", "{URL}"), ("ANTHROPIC_API_KEY", "ant-secret")], false);
+    assert!(lab.json(&["exec", "--detach", "Check provider"])["id"].as_str().is_some());
+    let s0 = accept_raw(&lab.socket);
+    let (h0, body0, mut s0) = Call::read_http(s0, "/v1/messages");
+    assert!(h0.to_ascii_lowercase().contains("x-api-key: ant-secret"));
+    assert!(h0.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
+    assert!(body0["system"].as_str().unwrap().contains("root worker"));
+    assert_eq!(body0["tool_choice"], json!({"type":"any","disable_parallel_tool_use":true}));
+    assert!(body0["tools"].as_array().unwrap().iter().any(|t| t["name"] == "edit_file"));
+    let sse0 = sse_frames(&[
+        json!({"type":"message_start","message":{"id":"a1","type":"message","role":"assistant","stop_reason":null}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"pondering"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"shell","input":{}}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":r#"{"command":"echo ANT_OK > ant.txt"}"#}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}),
+        json!({"type":"message_stop"}),
+    ]);
+    write!(
+        s0,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse0}",
+        sse0.len()
+    )
+    .unwrap();
+
+    let s1 = accept_raw(&lab.socket);
+    let (_, body1, mut s1) = Call::read_http(s1, "/v1/messages");
+    // Coalesced messages keep strict alternating roles and replay native tool_use + tool_result pairs!
+    let msgs1 = body1["messages"].as_array().unwrap();
+    for pair in msgs1.windows(2) {
+        assert_ne!(pair[0]["role"], pair[1]["role"]);
+    }
+    assert!(
+        msgs1.iter().any(|m| {
+            m["role"] == "assistant"
+                && m["content"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|b| b["type"] == "tool_use" && b["name"] == "shell" && b["id"] == "call_1")
+        }) && msgs1.iter().any(|m| {
+            m["role"] == "user"
+                && m["content"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|b| b["type"] == "tool_result" && b["tool_use_id"] == "call_1")
+        })
+    );
+    let json1 = json!({
+        "type": "message",
+        "role": "assistant",
+        "stop_reason": "tool_use",
+        "content": [{"type":"tool_use","id":"tu2","name":"finish","input":{"text":"anthropic done"}}]
+    })
+    .to_string();
+    write!(
+        s1,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json1}",
+        json1.len()
+    )
+    .unwrap();
+
+    // Verify workspace file written and session completed cleanly.
+    let until = Instant::now() + LIMIT;
+    while lab.json(&["tasks"])[0]["status"] != "done" {
+        assert!(Instant::now() < until);
+        thread::sleep(POLL);
+    }
+    assert_eq!(lab.json(&["tasks"])[0]["result"], "anthropic done");
+    assert_eq!(fs::read_to_string(lab.ws.join("ant.txt")).unwrap().trim(), "ANT_OK");
+}
+
+#[test]
+fn api_provider_handles_native_tool_calls_end_to_end() {
+    let lab = Lab::new();
+    let exec = lab.client(&["exec", "Create via native tool_calls"]);
+
+    let s1 = accept_raw(&lab.socket);
+    let (_, body1, mut s1) = Call::read_http(s1, "/v1/chat/completions");
+    assert_eq!(body1["tool_choice"], "required");
+    assert_eq!(body1["parallel_tool_calls"], false);
+    assert!(body1["tools"].as_array().unwrap().iter().any(|t| t["function"]["name"] == "edit_file"));
+    let r1 = json!({
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "tc1",
+                    "type": "function",
+                    "function": {"name": "edit_file", "arguments": r#"{"path":"note.txt","old":"","new":"CHAT_TOOL_OK"}"#}
+                }]
+            }
+        }]
+    })
+    .to_string();
+    write!(
+        s1,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{r1}",
+        r1.len()
+    )
+    .unwrap();
+
+    let s2 = accept_raw(&lab.socket);
+    let (_, body2, mut s2) = Call::read_http(s2, "/v1/chat/completions");
+    let msgs2 = body2["messages"].as_array().unwrap();
+    assert!(
+        msgs2.windows(2).any(|w| {
+            w[0]["role"] == "assistant"
+                && w[0]["tool_calls"][0]["id"] == "call_1"
+                && w[0]["tool_calls"][0]["function"]["name"] == "edit_file"
+                && w[1]["role"] == "tool"
+                && w[1]["tool_call_id"] == "call_1"
+        }),
+        "expected native assistant tool_calls + tool pair, got: {msgs2:?}"
+    );
+    let r2 = json!({
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "tc2",
+                    "type": "function",
+                    "function": {"name": "finish", "arguments": r#"{"text":"chat tool ok"}"#}
+                }]
+            }
+        }]
+    })
+    .to_string();
+    write!(
+        s2,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{r2}",
+        r2.len()
+    )
+    .unwrap();
+
+    let out = exec.json();
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["result"], "chat tool ok");
+    assert_eq!(fs::read_to_string(lab.ws.join("note.txt")).unwrap(), "CHAT_TOOL_OK");
+}
+
+#[test]
+fn quota_exceeded_pauses_remaining_turns_and_allows_continue() {
+    let lab = Lab::new();
+    let exec = lab.client(&["exec", "Split into two branches"]);
+    let root = lab.call();
+    let root_id = root.id.clone();
+    root.reply(handoff("split", &[("a", "Branch A"), ("b", "Branch B")]));
+
+    let c1 = lab.call();
+    let c2 = lab.call();
+    let (a, b) = if c1.agent == "a" { (c1, c2) } else { (c2, c1) };
+    // Branch A fails with 429 insufficient_quota (activating 30s daemon quota pause); Branch B finishes normally.
+    let quota_body = json!({"error":{"code":"insufficient_quota","message":"billing exhausted"}}).to_string();
+    write!(
+        { a }.socket,
+        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{quota_body}",
+        quota_body.len()
+    )
+    .unwrap();
+    b.reply(finish("Branch B succeeded"));
+
+    // Reporter turn MUST be short-circuited by daemon quota_pause without hitting lab.socket!
+    let settled = exec.output();
+    assert!(!settled.status.success());
+    let status = lab.status(&root_id);
+    assert_eq!(status["status"], "failed");
+    assert!(
+        status["result"].as_str().unwrap().contains("quota limit reached"),
+        "expected quota pause fallback, got: {status}"
+    );
+    assert!(matches!(lab.socket.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+
+    // Continuing after top-up clears quota_pause and completes cleanly.
+    let cont = lab.client(&["continue", &root_id, "Resume after top-up"]);
+    let sum_resume = lab.call();
+    sum_resume.reply(finish("Resumed after top-up"));
+    let resumed = cont.json();
+    assert_eq!(resumed["status"], "done");
+    assert_eq!(resumed["result"], "Resumed after top-up");
 }

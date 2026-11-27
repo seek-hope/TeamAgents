@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 const FRAME: usize = 8 * 1024 * 1024;
 const SOCKET: &str = "swarm.sock";
 const PROTOCOL: u32 = 3;
+const QUOTA_PAUSE: Duration = Duration::from_secs(30);
 const INCOMPATIBLE: &str = "incompatible session protocol; stop the old daemon with its matching client, then restart";
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -244,7 +245,13 @@ fn wait_for_activity(listener: &UnixListener, wake_rx: &UnixStream, timeout_ms: 
     }
 }
 
-fn launch(store: &mut Store, workspace: &Path, notifier: &Notifier, tool_first: bool) -> Result<bool> {
+fn launch(
+    store: &mut Store,
+    workspace: &Path,
+    notifier: &Notifier,
+    tool_first: bool,
+    quota_pause: &mut Option<(Instant, String)>,
+) -> Result<bool> {
     for tool in [tool_first, !tool_first] {
         if tool {
             if let Some(mut job) = store.claim_tool_job()? {
@@ -265,6 +272,13 @@ fn launch(store: &mut Store, workspace: &Path, notifier: &Notifier, tool_first: 
                 return Ok(true);
             }
         } else if let Some(turn) = store.claim()? {
+            if let Some((until, reason)) = quota_pause.as_ref() {
+                if Instant::now() < *until {
+                    notifier.send(Completion::Model(turn.task, Err(model::ModelError::QuotaExceeded(reason.clone()))));
+                    return Ok(true);
+                }
+                *quota_pause = None;
+            }
             let notifier = notifier.clone();
             thread::spawn(move || {
                 let result = std::panic::catch_unwind(|| {
@@ -279,7 +293,13 @@ fn launch(store: &mut Store, workspace: &Path, notifier: &Notifier, tool_first: 
     Ok(false)
 }
 
-fn settle(store: &mut Store, done: Completion, notifier: &Notifier, active: &mut usize) -> Result<()> {
+fn settle(
+    store: &mut Store,
+    done: Completion,
+    notifier: &Notifier,
+    active: &mut usize,
+    quota_pause: &mut Option<(Instant, String)>,
+) -> Result<()> {
     let id = match &done {
         Completion::Model(id, _) | Completion::Tool(id, _) => id.as_str(),
         Completion::Compacted { task, .. } => task.as_str(),
@@ -291,6 +311,10 @@ fn settle(store: &mut Store, done: Completion, notifier: &Notifier, active: &mut
     match done {
         Completion::Tool(id, result) => store.tool_result(&id, result.as_deref().map_err(String::as_str)),
         Completion::Model(id, Err(model::ModelError::Fatal(e))) => store.fail(&id, &e),
+        Completion::Model(id, Err(model::ModelError::QuotaExceeded(e))) => {
+            *quota_pause = Some((Instant::now() + QUOTA_PAUSE, e.clone()));
+            store.fail_quota(&id, &e)
+        }
         Completion::Model(id, Err(model::ModelError::InvalidAction(e))) => store.reject_action(&id, &e),
         Completion::Model(id, Err(model::ModelError::NeedsCompaction(reason))) => {
             if let Some(job) = store.prepare_compaction(&id)? {
@@ -487,11 +511,12 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
     let mut active = 0;
     let mut tool_first = true;
     let mut wake = true; // Also check persisted queues immediately after recovery.
+    let mut quota_pause: Option<(Instant, String)> = None;
     loop {
         drain_wake(&mut wake_rx);
         for done in rx.try_iter() {
             active -= 1;
-            settle(&mut store, done, &notifier, &mut active)?;
+            settle(&mut store, done, &notifier, &mut active, &mut quota_pause)?;
             wake = true;
         }
         // Bound each batch so a busy client cannot starve the agents.
@@ -520,6 +545,9 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
                 write_frame(&stream, &json!({"value":welcome}))?;
                 let frame = read_frame(&stream)?;
                 let result = dispatch(&mut store, &workspace_identity, &frame, active)?;
+                if matches!(frame["body"]["op"].as_str(), Some("submit" | "continue")) {
+                    quota_pause = None;
+                }
                 wake |= matches!(
                     frame["body"]["op"].as_str(),
                     Some("submit" | "continue" | "answer" | "approve" | "deny" | "cancel" | "wb_write")
@@ -545,7 +573,7 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
             }
         }
         while wake {
-            if !launch(&mut store, &loc.workspace, &notifier, tool_first)? {
+            if !launch(&mut store, &loc.workspace, &notifier, tool_first, &mut quota_pause)? {
                 wake = false;
                 break;
             }

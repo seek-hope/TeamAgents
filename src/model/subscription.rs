@@ -1,12 +1,12 @@
 //! Sign in with ChatGPT token sharing. This transport has no configurable origin or billing fallback.
 use super::{
-    body, decode_action, http_agent, is_context_overflow_payload, is_retryable_status, retry_delay,
-    send_with_redirects, valid_model_id, ModelError, ModelSettings, Provider, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE,
-    LIMIT, TIMEOUT,
+    body, http_agent, is_context_overflow_payload, is_retryable_status, note_rate_limit,
+    responses::{decode_sse, StreamDecodeErr},
+    retry_delay, send_with_redirects, valid_model_id, wait_rate_limit, ModelError, ModelSettings, Provider,
+    HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT, STREAM_LIMIT, TIMEOUT,
 };
 use crate::{protocol::TurnKind, Result};
 use ring::digest::{digest, Digest, SHA256};
-use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashSet, io::Read, sync::Mutex, thread, time::Duration};
 
@@ -14,7 +14,6 @@ const MODELS: &str = "https://api.openai.com/v1/models";
 const RESPONSES: &str = "https://api.openai.com/v1/responses";
 const INVALID: &str = "invalid or ambiguous ChatGPT event stream; no action accepted";
 const TEXT_ONLY: &str = "ChatGPT must return a single final assistant text action without tools or refusals";
-const STREAM_LIMIT: usize = 32 * 1024 * 1024;
 
 fn authorize(req: ureq::Request, token: &str) -> Result<ureq::Request> {
     if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
@@ -90,9 +89,27 @@ fn is_non_retryable_plan_code(code: Option<&str>) -> bool {
     )
 }
 
+fn is_quota_plan_code(code: Option<&str>) -> bool {
+    code == Some("subscription_sharing_usage_limit_exceeded")
+}
+
+fn is_retryable_plan_sse_code(code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some(
+            "rate_limit_exceeded"
+                | "server_error"
+                | "timeout"
+                | "subscription_sharing_usage_unavailable"
+                | "subscription_sharing_user_unavailable"
+        )
+    )
+}
+
 enum RetryErr {
     Http { retryable: bool, retry_after: Option<String>, message: String },
     Compaction(String),
+    Quota(String),
 }
 
 fn check_or_retry(
@@ -112,6 +129,9 @@ fn check_or_retry(
                         || raw.as_deref().is_some_and(is_context_overflow_payload)))
             {
                 return Err(RetryErr::Compaction(format!("ChatGPT HTTP {status}: context overflow")));
+            }
+            if is_quota_plan_code(code) || status == 402 {
+                return Err(RetryErr::Quota(recovery(Some(status), code)));
             }
             let retryable = is_retryable_status(status) && !is_non_retryable_plan_code(code);
             Err(RetryErr::Http { retryable, retry_after, message: recovery(Some(status), code) })
@@ -152,16 +172,21 @@ fn discover_with_retry(
     retry_base: Duration,
 ) -> Result<Vec<String>> {
     for attempt in 1..=HTTP_MAX_ATTEMPTS {
+        wait_rate_limit(retry_base);
         let outcome = send_with_redirects(initial_url, None, |url, send_auth| {
             Ok(build(url, send_auth)?.set("Accept", "application/json"))
         })?;
         let resp = match check_or_retry(outcome) {
             Ok(r) => r,
             Err(RetryErr::Http { retryable: true, retry_after, .. }) if attempt < HTTP_MAX_ATTEMPTS => {
-                thread::sleep(retry_delay(attempt, retry_after.as_deref(), retry_base));
+                let delay = retry_delay(attempt, retry_after.as_deref(), retry_base);
+                note_rate_limit(delay, retry_base);
+                thread::sleep(delay);
                 continue;
             }
-            Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message)) => return Err(message),
+            Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message) | RetryErr::Quota(message)) => {
+                return Err(message)
+            }
         };
         let bytes = match read_bounded(resp, LIMIT) {
             Ok(b) => b,
@@ -192,7 +217,9 @@ fn discover_with_retry(
 fn discover(req: ureq::Request) -> Result<Vec<String>> {
     let ok = match check_or_retry(req.set("Accept", "application/json").call()) {
         Ok(r) => r,
-        Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message)) => return Err(message),
+        Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message) | RetryErr::Quota(message)) => {
+            return Err(message)
+        }
     };
     let bytes = bounded(ok, LIMIT)?;
     let catalog: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid ChatGPT model catalog")?;
@@ -258,6 +285,28 @@ pub(super) fn complete(
     )
 }
 
+fn map_stream_err(err: StreamDecodeErr, kind: TurnKind) -> std::result::Result<ModelError, RetryErr> {
+    match err {
+        StreamDecodeErr::Model(m) => Ok(m),
+        StreamDecodeErr::ProviderEvent { code, .. } => {
+            if kind != TurnKind::Reporter && code.as_deref() == Some("context_length_exceeded") {
+                return Err(RetryErr::Compaction("ChatGPT HTTP 200: context overflow".into()));
+            }
+            if is_quota_plan_code(code.as_deref()) {
+                return Err(RetryErr::Quota(recovery(None, code.as_deref())));
+            }
+            if is_retryable_plan_sse_code(code.as_deref()) {
+                return Err(RetryErr::Http {
+                    retryable: true,
+                    retry_after: None,
+                    message: recovery(None, code.as_deref()),
+                });
+            }
+            Ok(ModelError::Fatal(recovery(None, code.as_deref())))
+        }
+    }
+}
+
 fn infer_response(
     outcome: std::result::Result<ureq::Response, ureq::Error>,
     kind: TurnKind,
@@ -291,13 +340,19 @@ fn infer_response(
         let first = text.lines().find(|line| !line.is_empty()).unwrap_or("");
         let framed = ["event:", "data:", ":"].iter().any(|prefix| first.starts_with(prefix));
         if media == "text/event-stream" || (media != "text/html" && framed) {
-            return Ok(decode(text, kind));
+            return match decode_sse(text, kind, TEXT_ONLY, INVALID) {
+                Ok(v) => Ok(Ok(v)),
+                Err(e) => map_stream_err(e, kind).map(Err),
+            };
         }
         if let Ok(json) = serde_json::from_str::<Value>(text) {
             if let Some(error) = json.get("error").filter(|e| !e.is_null()) {
                 let code = error.get("code").and_then(Value::as_str);
                 if kind != TurnKind::Reporter && code == Some("context_length_exceeded") {
                     return Err(RetryErr::Compaction("ChatGPT HTTP 200: context overflow".into()));
+                }
+                if is_quota_plan_code(code) {
+                    return Err(RetryErr::Quota(recovery(Some(200), code)));
                 }
                 return Ok(Err(ModelError::Fatal(recovery(Some(200), code))));
             }
@@ -319,6 +374,7 @@ fn infer_with_retry(
     retry_base: Duration,
 ) -> std::result::Result<Value, ModelError> {
     for attempt in 1..=HTTP_MAX_ATTEMPTS {
+        wait_rate_limit(retry_base);
         let outcome = send_with_redirects(initial_url, Some(bytes), |url, send_auth| {
             Ok(build(url, send_auth)?.set("Content-Type", "application/json").set("Accept", "text/event-stream"))
         })
@@ -331,8 +387,11 @@ fn infer_with_retry(
                 }
                 return Err(ModelError::NeedsCompaction(msg));
             }
+            Err(RetryErr::Quota(msg)) => return Err(ModelError::QuotaExceeded(msg)),
             Err(RetryErr::Http { retryable: true, retry_after, .. }) if attempt < HTTP_MAX_ATTEMPTS => {
-                thread::sleep(retry_delay(attempt, retry_after.as_deref(), retry_base));
+                let delay = retry_delay(attempt, retry_after.as_deref(), retry_base);
+                note_rate_limit(delay, retry_base);
+                thread::sleep(delay);
             }
             Err(RetryErr::Http { message, .. }) => return Err(ModelError::Fatal(message)),
         }
@@ -346,291 +405,22 @@ fn infer(req: ureq::Request, bytes: &[u8], kind: TurnKind) -> std::result::Resul
     match infer_response(outcome, kind) {
         Ok(res) => res,
         Err(RetryErr::Compaction(msg)) if kind != TurnKind::Reporter => Err(ModelError::NeedsCompaction(msg)),
+        Err(RetryErr::Quota(msg)) => Err(ModelError::QuotaExceeded(msg)),
         Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message)) => Err(ModelError::Fatal(message)),
     }
 }
 
-// Typed wire fields reject duplicates. Unknown metadata is never interpreted as an action.
-#[derive(Deserialize)]
-struct Part {
-    #[serde(rename = "type")]
-    kind: String,
-    text: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Item {
-    id: String,
-    #[serde(rename = "type")]
-    kind: String,
-    status: Option<String>,
-    role: Option<String>,
-    phase: Option<String>,
-    #[serde(default)]
-    content: Vec<Part>,
-}
-
-impl Item {
-    fn message(&self) -> bool {
-        self.kind == "message"
-            && self.role.as_deref() == Some("assistant")
-            && matches!(self.phase.as_deref(), None | Some("final_answer"))
-    }
-
-    fn text(&self) -> Result<&str> {
-        if let [part] = self.content.as_slice() {
-            if self.message() && self.status.as_deref() == Some("completed") && part.kind == "output_text" {
-                return part.text.as_deref().ok_or_else(|| TEXT_ONLY.into());
-            }
-        }
-        Err(TEXT_ONLY.into())
-    }
-}
-
-#[derive(Deserialize)]
-struct Failure {
-    code: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Response {
-    id: Option<String>,
-    status: Option<String>,
-    #[serde(default)]
-    output: Vec<Item>,
-    error: Option<Failure>,
-    incomplete_details: Option<serde::de::IgnoredAny>,
-}
-
-#[derive(Deserialize)]
-struct Event {
-    #[serde(rename = "type")]
-    kind: String,
-    sequence_number: Option<u64>,
-    response: Option<Response>,
-    response_id: Option<String>,
-    output_index: Option<usize>,
-    content_index: Option<usize>,
-    item_id: Option<String>,
-    item: Option<Item>,
-    part: Option<Part>,
-    delta: Option<String>,
-    text: Option<String>,
-    code: Option<String>,
-    error: Option<Failure>,
-}
-
-fn events(stream: &str) -> Result<Vec<Event>> {
-    let mut events = Vec::new();
-    let mut data = String::new();
-    let mut name = None;
-    let mut done = false;
-    let mut sequence = None;
-    for line in stream.lines() {
-        if line.is_empty() {
-            if data.is_empty() && name.is_some() {
-                return Err(INVALID.into());
-            }
-            if !data.is_empty() {
-                if done {
-                    return Err(INVALID.into());
-                }
-                if data == "[DONE]\n" && name.is_none() {
-                    done = true;
-                } else {
-                    let event: Event = serde_json::from_str(&data).map_err(|_| INVALID)?;
-                    if name.is_some_and(|s| s != event.kind) {
-                        return Err(INVALID.into());
-                    }
-                    if let Some(n) = event.sequence_number {
-                        if sequence.is_some_and(|prev| n <= prev) {
-                            return Err(INVALID.into());
-                        }
-                        sequence = Some(n);
-                    }
-                    match event.kind.as_str() {
-                        "error" | "response.failed" => {
-                            let failure =
-                                event.response.as_ref().and_then(|r| r.error.as_ref()).or(event.error.as_ref());
-                            return Err(recovery(
-                                None,
-                                event.code.as_deref().or_else(|| failure.and_then(|e| e.code.as_deref())),
-                            ));
-                        }
-                        "response.incomplete" => return Err("ChatGPT response incomplete; no action accepted".into()),
-                        _ => events.push(event),
-                    }
-                }
-            }
-            data.clear();
-            name = None;
-        } else {
-            let (field, value) = line.split_once(':').unwrap_or((line, ""));
-            let value = value.strip_prefix(' ').unwrap_or(value);
-            match field {
-                "data" => {
-                    data.push_str(value);
-                    data.push('\n');
-                }
-                "event" if name.replace(value).is_none() => (),
-                "" | "id" | "retry" => (),
-                _ => return Err(INVALID.into()),
-            }
-        }
-    }
-    if !data.is_empty() || name.is_some() {
-        return Err(INVALID.into());
-    }
-    Ok(events)
-}
-
-fn final_text(response: &Response) -> Result<&str> {
-    if response.status.as_deref() != Some("completed")
-        || response.id.as_deref().is_none_or(str::is_empty)
-        || response.error.is_some()
-        || response.incomplete_details.is_some()
-    {
-        return Err(INVALID.into());
-    }
-    let mut ids = HashSet::new();
-    let mut text = None;
-    for item in &response.output {
-        if item.id.is_empty() || !ids.insert(&item.id) {
-            return Err(INVALID.into());
-        }
-        if item.kind == "reasoning" && matches!(item.status.as_deref(), None | Some("completed")) {
-            continue;
-        }
-        if text.replace(item.text()?).is_some() {
-            return Err(TEXT_ONLY.into());
-        }
-    }
-    text.ok_or_else(|| TEXT_ONLY.into())
-}
-
-// The terminal response contains the authoritative output. Reconcile all observed deltas and
-// snapshots with it. A missing redundant snapshot is fine; contradictory evidence is not.
+#[cfg(test)]
 fn decode(stream: &str, kind: TurnKind) -> std::result::Result<Value, ModelError> {
-    let mut events = events(stream).map_err(ModelError::Fatal)?;
-    let terminal = events.pop().filter(|e| e.kind == "response.completed").ok_or_else(|| {
-        ModelError::Fatal("ChatGPT stream ended without response.completed; no action accepted".into())
-    })?;
-    let completed = terminal.response.ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
-    if terminal.response_id.is_some() && terminal.response_id != completed.id {
-        return Err(ModelError::Fatal(INVALID.into()));
+    match decode_sse(stream, kind, TEXT_ONLY, INVALID) {
+        Ok(v) => Ok(v),
+        Err(e) => match map_stream_err(e, kind) {
+            Ok(m) => Err(m),
+            Err(RetryErr::Quota(m)) => Err(ModelError::QuotaExceeded(m)),
+            Err(RetryErr::Compaction(m)) if kind != TurnKind::Reporter => Err(ModelError::NeedsCompaction(m)),
+            Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message)) => Err(ModelError::Fatal(message)),
+        },
     }
-    let text = final_text(&completed).map_err(ModelError::Fatal)?;
-    if text.len() > LIMIT {
-        return Err(ModelError::Fatal("ChatGPT response exceeds the size limit; no action accepted".into()));
-    }
-    let mut remaining = text;
-    let mut saw_delta = false;
-    let mut position = None;
-    for event in events {
-        if event.response_id.is_some() && event.response_id != completed.id {
-            return Err(ModelError::Fatal("ChatGPT event refers to a different response ID".into()));
-        }
-        if matches!(event.kind.as_str(), "response.created" | "response.in_progress" | "response.queued") {
-            let start = event.response.as_ref().ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
-            if position.is_some()
-                || start.id != completed.id
-                || !start.output.is_empty()
-                || start.error.is_some()
-                || start.incomplete_details.is_some()
-                || !matches!(start.status.as_deref(), Some("queued" | "in_progress"))
-            {
-                return Err(ModelError::Fatal(INVALID.into()));
-            }
-            continue;
-        }
-        if event.kind == "response.metadata" {
-            // Subscription streams attach metadata to the response, not to an output item.
-            if event.response_id != completed.id
-                || event.output_index.is_some()
-                || event.item.is_some()
-                || event.error.is_some()
-            {
-                return Err(ModelError::Fatal("ChatGPT response metadata did not match the completed response".into()));
-            }
-            continue;
-        }
-        let index = event.output_index.ok_or_else(|| {
-            ModelError::Fatal(
-                "ChatGPT stream contained an unrecognized response-level event or a missing output index".into(),
-            )
-        })?;
-        let item = completed.output.get(index).ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
-        if event.item_id.as_ref().is_some_and(|id| id != &item.id) {
-            return Err(ModelError::Fatal(INVALID.into()));
-        }
-        let stage = match event.kind.as_str() {
-            "response.output_item.added" | "response.output_item.done" => {
-                let got = event.item.as_ref().ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
-                let added = event.kind.ends_with(".added");
-                if got.id != item.id || got.kind != item.kind {
-                    return Err(ModelError::Fatal(INVALID.into()));
-                }
-                if item.kind == "message" {
-                    if added {
-                        if !got.message() || got.status.as_deref() != Some("in_progress") || !got.content.is_empty() {
-                            return Err(ModelError::Fatal(INVALID.into()));
-                        }
-                    } else if got.text().map_err(ModelError::Fatal)? != text {
-                        return Err(ModelError::Fatal(INVALID.into()));
-                    }
-                } else if !matches!(got.status.as_deref(), None | Some("in_progress" | "completed")) {
-                    return Err(ModelError::Fatal(INVALID.into()));
-                }
-                if added {
-                    1
-                } else {
-                    6
-                }
-            }
-            "response.reasoning_summary_part.added"
-            | "response.reasoning_summary_part.done"
-            | "response.reasoning_summary_text.delta"
-            | "response.reasoning_summary_text.done"
-            | "response.reasoning_text.delta"
-            | "response.reasoning_text.done"
-                if item.kind == "reasoning" && event.item_id.is_some() =>
-            {
-                3
-            }
-            _ if item.kind != "message" || event.content_index != Some(0) || event.item_id.is_none() => {
-                return Err(ModelError::Fatal(TEXT_ONLY.into()))
-            }
-            "response.content_part.added" | "response.content_part.done" => {
-                let part = event.part.as_ref().ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
-                let added = event.kind.ends_with(".added");
-                if part.kind != "output_text" || part.text.as_deref() != Some(if added { "" } else { text }) {
-                    return Err(ModelError::Fatal(TEXT_ONLY.into()));
-                }
-                if added {
-                    2
-                } else {
-                    5
-                }
-            }
-            "response.output_text.delta" => {
-                let delta = event.delta.as_deref().ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
-                remaining = remaining.strip_prefix(delta).ok_or_else(|| ModelError::Fatal(INVALID.into()))?;
-                saw_delta = true;
-                3
-            }
-            "response.output_text.done" if event.text.as_deref() == Some(text) => 4,
-            _ => return Err(ModelError::Fatal(TEXT_ONLY.into())),
-        };
-        let next = (index, stage);
-        if position.is_some_and(|last| next < last || (next == last && stage != 3)) {
-            return Err(ModelError::Fatal(INVALID.into()));
-        }
-        position = Some(next);
-    }
-    if saw_delta && !remaining.is_empty() {
-        return Err(ModelError::Fatal(INVALID.into()));
-    }
-    decode_action(text, kind)
 }
 
 #[cfg(test)]
@@ -798,9 +588,13 @@ mod tests {
         assert_eq!(line.trim_end(), "POST /v1/responses HTTP/1.1");
         assert!(headers.contains("Bearer offline-fixture") && headers.contains("text/event-stream"));
         let wire: Value = serde_json::from_slice(&bytes).unwrap();
+        let expected_tools: Vec<Value> = super::super::tool_specs(TurnKind::Node)
+            .into_iter()
+            .map(|s| json!({"type":"function","name":s.name,"description":s.description,"parameters":s.parameters}))
+            .collect();
         assert_eq!(
             wire,
-            json!({"model":"z-first","input":[{"role":"user","content":"Agent: worker\nTask: task-id"},history[0],history[1],history[2]],"instructions":super::super::WORKER,"store":false,"stream":true})
+            json!({"model":"z-first","input":[{"role":"user","content":"Agent: worker\nTask: task-id"},history[0],history[1],history[2]],"instructions":super::super::WORKER,"tools":expected_tools,"tool_choice":"required","parallel_tool_calls":false,"store":false,"stream":true})
         );
     }
 
@@ -1006,7 +800,55 @@ mod tests {
         ] {
             assert!(decode(&stream, TurnKind::Root).is_err());
         }
-        let err = decode(&frames(&[delta(ACTION),json!({"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"reflected-secret"}}})]),TurnKind::Root).unwrap_err().to_string();
-        assert!(err.contains("https://chatgpt.com/settings/usage") && !err.contains("reflected-secret"));
+        let err = decode(&frames(&[delta(ACTION),json!({"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"reflected-secret"}}})]),TurnKind::Root).unwrap_err();
+        assert!(matches!(err, ModelError::QuotaExceeded(_)));
+        let err_str = err.to_string();
+        assert!(err_str.contains("https://chatgpt.com/settings/usage") && !err_str.contains("reflected-secret"));
+    }
+
+    #[test]
+    fn subscription_handles_commentary_and_retries_transient_quota_separately() {
+        let commentary = json!({"type":"message","id":"c1","role":"assistant","phase":"commentary","status":"completed","content":[{"type":"output_text","text":"Looking at files"}]});
+        let final_msg = json!({"type":"message","id":"msg","role":"assistant","phase":"final_answer","status":"completed","content":[{"type":"output_text","text":ACTION}]});
+        let stream = frames(&[
+            json!({"type":"response.created","response":{"id":"resp","status":"in_progress","output":[]}}),
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"c1","role":"assistant","phase":"commentary","status":"in_progress","content":[]}}),
+            json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"c1","delta":"Looking at files"}),
+            json!({"type":"response.output_item.done","output_index":0,"item":commentary}),
+            json!({"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg","role":"assistant","phase":"final_answer","status":"in_progress","content":[]}}),
+            json!({"type":"response.content_part.added","output_index":1,"content_index":0,"item_id":"msg","part":{"type":"output_text","text":""}}),
+            json!({"type":"response.output_text.delta","output_index":1,"content_index":0,"item_id":"msg","delta":ACTION}),
+            json!({"type":"response.output_text.done","output_index":1,"content_index":0,"item_id":"msg","text":ACTION}),
+            json!({"type":"response.content_part.done","output_index":1,"content_index":0,"item_id":"msg","part":{"type":"output_text","text":ACTION}}),
+            json!({"type":"response.output_item.done","output_index":1,"item":final_msg}),
+            json!({"type":"response.completed","response":{"id":"resp","status":"completed","output":[commentary.clone(), final_msg]}}),
+        ]);
+        assert_eq!(decode(&stream, TurnKind::Node).unwrap(), json!({"op":"finish","text":"ok"}));
+
+        let commentary_only = frames(&[
+            json!({"type":"response.completed","response":{"id":"resp","status":"completed","output":[commentary]}}),
+        ]);
+        assert!(matches!(decode(&commentary_only, TurnKind::Node), Err(ModelError::InvalidAction(_))));
+
+        let fc_stream = frames(&[
+            json!({"type":"response.created","response":{"id":"resp","status":"in_progress","output":[]}}),
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"c1","name":"shell","arguments":"","status":"in_progress"}}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc1","delta":r#"{"command":"echo ok"}"#}),
+            json!({"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc1","arguments":r#"{"command":"echo ok"}"#}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"c1","name":"shell","arguments":r#"{"command":"echo ok"}"#,"status":"completed"}}),
+            json!({"type":"response.completed","response":{"id":"resp","status":"completed","output":[{"type":"function_call","id":"fc1","call_id":"c1","name":"shell","arguments":r#"{"command":"echo ok"}"#,"status":"completed"}]}}),
+        ]);
+        assert_eq!(decode(&fc_stream, TurnKind::Node).unwrap(), json!({"op":"shell","command":"echo ok"}));
+
+        let (url, server) = serve(
+            429,
+            "Content-Type: application/json",
+            json!({"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"secret-usage"}}).to_string(),
+            Duration::ZERO,
+        );
+        let qerr = infer(authorize(http_agent(TIMEOUT).post(&url), TOKEN).unwrap(), b"{}", TurnKind::Root).unwrap_err();
+        assert!(matches!(qerr, ModelError::QuotaExceeded(_)));
+        assert!(!qerr.to_string().contains("secret-usage"));
+        server.join().unwrap();
     }
 }

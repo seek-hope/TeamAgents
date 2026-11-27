@@ -1221,6 +1221,21 @@ fn reject_action_queues_bounded_corrections_and_falls_back_for_reporter() {
     let settled = s.task(&r_multi).unwrap();
     assert_eq!(settled["status"], "failed");
     assert!(settled["result"].as_str().unwrap().contains("Partial report"));
+
+    // Interleaved valid actions reset the consecutive rejection streak so >5 total rejections across a long run succeed.
+    let r_reset = s.submit("default", "long running doc edit").unwrap();
+    claim(&mut s, &r_reset);
+    for round_err in 1..=8 {
+        s.reject_action(&r_reset, &format!("blip-{round_err}")).unwrap();
+        let retried = claim(&mut s, &r_reset);
+        let msg = retried.messages.last().unwrap()["content"].as_str().unwrap();
+        assert!(msg.contains("attempt") || msg.contains("Continue task"));
+        // Every valid non-terminal action resets the streak before the next turn.
+        s.apply(&r_reset, &json!({"op":"members"})).unwrap();
+        claim(&mut s, &r_reset);
+    }
+    finish(&mut s, &r_reset, "recovered across 8 intermittent blips");
+    assert_eq!(s.task(&r_reset).unwrap()["status"], "done");
 }
 
 #[test]
@@ -1500,4 +1515,51 @@ fn compaction_prepares_and_applies_checkpoint_and_staged_tool_job_preserves_mode
     let job_staged = s.claim_tool_job().unwrap().unwrap();
     assert!(job_staged.staged);
     s.tool_result(&r_staged, Ok("staged")).unwrap();
+}
+
+#[test]
+fn tree_continuation_skips_prompt_echo_nudges_repetition_and_keeps_compaction_pairs() {
+    let home = Session::new();
+    let mut s = home.open();
+    let r = s.submit("default", "VERY_UNIQUE_INITIAL_PROMPT_MARKER").unwrap();
+    let t0 = claim(&mut s, &r);
+    assert!(chat(&t0).contains("VERY_UNIQUE_INITIAL_PROMPT_MARKER"));
+
+    // Paginated read_file with distinct offsets must NOT re-echo the original prompt or fire repetition nudges.
+    for offset in [1, 101, 201, 301] {
+        s.request_tool(&r, &json!({"op":"read_file","path":"doc.md","offset":offset,"limit":100})).unwrap();
+        let _ = s.claim_tool().unwrap().unwrap();
+        s.tool_result(&r, Ok("page")).unwrap();
+        let next = claim(&mut s, &r);
+        let tail = next.messages.last().unwrap()["content"].as_str().unwrap();
+        assert!(!tail.contains("Original request:"), "unexpected prompt echo: {tail}");
+        assert!(!tail.contains("repeated similar"), "unexpected nudge during pagination: {tail}");
+    }
+
+    // Protocol error retries still focus cleanly without repeating the full prompt.
+    s.reject_action(&r, "bad format").unwrap();
+    let retry = claim(&mut s, &r);
+    let retry_tail = retry.messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(retry_tail.contains("Continue task") && !retry_tail.contains("VERY_UNIQUE_INITIAL_PROMPT_MARKER"));
+
+    // 4 consecutive read-only shell probes trigger a transient repetition nudge.
+    let mut nudged = retry;
+    for cmd in ["ls -la", "wc -l doc.md", "grep -n '#' doc.md", "cat doc.md | head -5"] {
+        s.request_tool(&r, &json!({"op":"shell","command":cmd})).unwrap();
+        let _ = s.claim_tool().unwrap().unwrap();
+        s.tool_result(&r, Ok("out")).unwrap();
+        nudged = claim(&mut s, &r);
+    }
+    assert!(nudged.messages.last().unwrap()["content"].as_str().unwrap().contains("repeated similar"));
+
+    // An intervening edit_file resets the repetition detector cleanly.
+    s.request_tool(&r, &json!({"op":"edit_file","path":"doc.md","old":"a","new":"b"})).unwrap();
+    let _ = s.claim_tool().unwrap().unwrap();
+    s.tool_result(&r, Ok("edited")).unwrap();
+    let clean_after_edit = claim(&mut s, &r);
+    assert!(!clean_after_edit.messages.last().unwrap()["content"].as_str().unwrap().contains("repeated similar"));
+
+    // Compaction keeps head_keep == 1 on a root task so assistant/user tool pairs are never split.
+    let cjob = s.prepare_compaction(&r).unwrap().unwrap();
+    assert_eq!(cjob.head_keep, 1);
 }

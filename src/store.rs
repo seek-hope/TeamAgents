@@ -6,6 +6,97 @@ use uuid::Uuid;
 
 mod tree;
 
+fn collapse_ascii_ws(s: &str) -> String {
+    s.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalized_action_key(action: &Value) -> Option<(String, Value)> {
+    let op = action.get("op")?.as_str()?.to_owned();
+    let key = match op.as_str() {
+        "shell" => {
+            let cmd = action.get("command").and_then(Value::as_str).unwrap_or("");
+            json!({"op": "shell", "command": collapse_ascii_ws(cmd)})
+        }
+        "read_file" => json!({
+            "op": "read_file",
+            "path": &action["path"],
+            "offset": &action["offset"],
+            "limit": &action["limit"],
+        }),
+        _ => action.clone(),
+    };
+    Some((op, key))
+}
+
+fn is_readonly_shell_probe(cmd: &str) -> bool {
+    let first = cmd.trim_start().split(|c: char| c.is_ascii_whitespace() || c == ';').next().unwrap_or("");
+    matches!(
+        first,
+        "pwd"
+            | "ls"
+            | "sha256sum"
+            | "md5sum"
+            | "grep"
+            | "rg"
+            | "cat"
+            | "wc"
+            | "head"
+            | "tail"
+            | "sed"
+            | "stat"
+            | "find"
+            | "file"
+            | "which"
+            | "command"
+    )
+}
+
+fn repetition_nudge(messages: &[Value]) -> Option<&'static str> {
+    let mut actions: Vec<(String, Value, Option<String>)> = Vec::new();
+    for msg in messages.iter().rev() {
+        let Some(role) = msg["role"].as_str() else { continue };
+        let Some(content) = msg["content"].as_str() else { continue };
+        if role == "user" {
+            if let Ok(v) = serde_json::from_str::<Value>(content) {
+                if v.get("compacted_history").and_then(Value::as_bool) == Some(true) {
+                    break;
+                }
+            }
+            continue;
+        }
+        if role != "assistant" {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(content) else { continue };
+        let Some((op, key)) = normalized_action_key(&v) else { continue };
+        if matches!(op.as_str(), "edit_file" | "wb_write" | "handoff" | "finish") {
+            break;
+        }
+        let cmd = (op == "shell").then(|| v["command"].as_str().unwrap_or("").to_owned());
+        actions.push((op, key, cmd));
+        if actions.len() >= 10 {
+            break;
+        }
+    }
+    if actions.is_empty() {
+        return None;
+    }
+    let window = &actions[..actions.len().min(6)];
+    let duplicate = window[1..].iter().any(|(_, key, _)| *key == window[0].1);
+    let shell_count = window.iter().filter(|(op, _, _)| op == "shell").count();
+    let probe_count = window
+        .iter()
+        .filter(|(op, _, cmd)| op == "shell" && cmd.as_deref().is_some_and(is_readonly_shell_probe))
+        .count();
+    if duplicate || (shell_count >= 4 && probe_count >= 3) {
+        Some(
+            "You have repeated similar read-only inspection commands across several turns. Do not re-verify unchanged workspace state; proceed directly to making the next edit (prefer edit_file), handing off subtasks, or calling finish with your verified results.",
+        )
+    } else {
+        None
+    }
+}
+
 pub struct Store {
     db: Connection,
 }
@@ -781,14 +872,22 @@ impl Store {
                             v["task"].as_str() == Some(task.as_str()) && v["protocol_error"].is_string()
                         })
                     });
-                    let focus = if is_protocol_retry {
-                        format!(
-                            "Continue task {task}. Original request: {prompt}\nYour previous turn was rejected (see protocol_error above). Respond with exactly one valid raw JSON action object and stop immediately at its closing '}}'."
-                        )
-                    } else {
-                        format!("Continue task {task}. Original request: {prompt}")
-                    };
-                    parts.push(focus);
+                    if !is_tree {
+                        let focus = if is_protocol_retry {
+                            format!(
+                                "Continue task {task}. Original request: {prompt}\nYour previous turn was rejected (see protocol_error above). Invoke one allowed tool with valid arguments (or, if tool calling is unavailable, respond with exactly one valid raw JSON action object and stop at '}}')."
+                            )
+                        } else {
+                            format!("Continue task {task}. Original request: {prompt}")
+                        };
+                        parts.push(focus);
+                    } else if is_protocol_retry {
+                        parts.push(format!(
+                            "Continue task {task}. Your previous turn was rejected (see protocol_error above). Invoke one allowed tool with valid arguments (or, if tool calling is unavailable, respond with exactly one valid raw JSON action object and stop at '}}')."
+                        ));
+                    } else if let Some(nudge) = repetition_nudge(&messages) {
+                        parts.push(nudge.to_owned());
+                    }
                 }
                 if is_tree {
                     let seen_seq: i64 = db
@@ -799,7 +898,7 @@ impl Store {
                     }
                 }
                 if !parts.is_empty() {
-                    // Inject transient task focus and whiteboard digest without mutating persisted history.
+                    // Inject transient task focus, repetition nudge, or whiteboard digest without mutating persisted history.
                     messages.push(json!({"role":"user","content":parts.join("\n\n")}));
                 }
             }
@@ -880,6 +979,20 @@ impl Store {
         })
     }
 
+    pub fn fail_quota(&mut self, task: &str, error: &str) -> Result<()> {
+        self.transaction(|db| {
+            if let Some(root) = tree::report_root(db, task)? {
+                return tree::fallback(
+                    db,
+                    &root,
+                    "provider quota limit reached; pause requests and resume with continue",
+                );
+            }
+            take_model(db, task)?;
+            stop_work(db, task, "failed", error)
+        })
+    }
+
     pub fn reject_action(&mut self, task: &str, reason: &str) -> Result<()> {
         const MAX_ACTION_REJECTIONS: u32 = 5;
         self.transaction(|db| {
@@ -888,34 +1001,42 @@ impl Store {
             }
             let agent = take_model(db, task)?;
             let is_tree = tree::work_root(db, task)?.is_some();
-            let (cur_round, prior): (i64, u32) = if is_tree {
-                let cur_round: i64 = db
-                    .query_row(
+            let (cur_round, prior): (i64, u32) = {
+                let cur_round = if is_tree {
+                    db.query_row(
                         "SELECT g.round FROM tasks t JOIN tree_runs g ON g.root=t.root WHERE t.id=?1",
                         [task],
                         |r| r.get(0),
                     )
-                    .db()?;
-                let prior = db
-                    .query_row(
-                        "SELECT count(*) FROM node_messages WHERE task=?1 AND role='user'
-                         AND CASE WHEN json_valid(content) THEN json_extract(content,'$.task')=?1
-                             AND json_extract(content,'$.protocol_error') IS NOT NULL
-                             AND COALESCE(json_extract(content,'$.round'),1)=?2 ELSE 0 END",
-                        params![task, cur_round],
-                        |r| r.get(0),
-                    )
-                    .db()?;
-                (cur_round, prior)
-            } else {
-                let prior = db
-                    .query_row(
-                        "SELECT count(*) FROM messages WHERE agent=?1 AND role='user' AND CASE WHEN json_valid(content) THEN json_extract(content,'$.task')=?2 AND json_extract(content,'$.protocol_error') IS NOT NULL ELSE 0 END",
-                        params![agent, task],
-                        |r| r.get(0),
-                    )
-                    .db()?;
-                (1, prior)
+                    .db()?
+                } else {
+                    1
+                };
+                let (sql, param1): (&str, &str) = if is_tree {
+                    ("SELECT role,content FROM node_messages WHERE task=?1 ORDER BY rowid DESC", task)
+                } else {
+                    ("SELECT role,content FROM messages WHERE agent=?1 ORDER BY rowid DESC", &agent)
+                };
+                let mut q = db.prepare(sql).db()?;
+                let mut rows = q.query([param1]).db()?;
+                let mut streak = 0u32;
+                while let Some(row) = rows.next().db()? {
+                    let role: String = row.get(0).db()?;
+                    let content: String = row.get(1).db()?;
+                    if role != "user" {
+                        break;
+                    }
+                    let Ok(v) = serde_json::from_str::<Value>(&content) else {
+                        break;
+                    };
+                    let round_ok = !is_tree || v["round"].as_i64().unwrap_or(1) == cur_round;
+                    if v["task"].as_str() == Some(task) && v["protocol_error"].is_string() && round_ok {
+                        streak += 1;
+                    } else {
+                        break;
+                    }
+                }
+                (cur_round, streak)
             };
             if prior < MAX_ACTION_REJECTIONS {
                 return queue(
@@ -927,7 +1048,7 @@ impl Store {
                         "protocol_error": reason,
                         "attempt": prior + 1,
                         "max_corrections": MAX_ACTION_REJECTIONS,
-                        "next": "Return exactly one raw JSON object with an allowed op and exact required fields, without markdown fences, prose, or extra keys."
+                        "next": "Invoke exactly one allowed tool with valid arguments (or return one raw JSON object with an allowed op and required fields without extra text)."
                     }),
                 );
             }
@@ -1193,9 +1314,20 @@ impl Store {
             if len < 4 {
                 return Ok(None);
             }
-            let head_keep = 2usize.min(len.saturating_sub(2));
-            let tail_keep = if len >= 10 { 6 } else { 2.min(len.saturating_sub(head_keep + 2)) };
-            let mid_end = len.saturating_sub(tail_keep);
+            let mut head_keep = 2usize.min(len.saturating_sub(2));
+            if head_keep > 1 && history[head_keep - 1]["role"] == "assistant" {
+                head_keep -= 1;
+            }
+            let mut tail_keep = if len >= 10 { 6 } else { 2.min(len.saturating_sub(head_keep + 2)) };
+            let mut mid_end = len.saturating_sub(tail_keep);
+            if tail_keep > 1
+                && mid_end > 0
+                && history[mid_end - 1]["role"] == "assistant"
+                && history[mid_end]["role"] == "user"
+            {
+                tail_keep -= 1;
+                mid_end = len.saturating_sub(tail_keep);
+            }
             if mid_end <= head_keep + 1 {
                 return Ok(None);
             }
