@@ -72,6 +72,8 @@ const PUBLIC_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const INTENT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AGENT_BYTES: usize = 128;
 const DIGEST_MAX_BYTES: usize = 4096;
+const WB_ENTRY_BYTES: usize = 64 * 1024;
+const WB_BOARD_BYTES: usize = 1024 * 1024;
 
 pub(super) const MIGRATE_V7: &str = "
 ALTER TABLE root_policies ADD COLUMN sandbox TEXT NOT NULL DEFAULT 'direct' CHECK(sandbox IN ('direct','staged'));
@@ -106,9 +108,26 @@ fn valid_wb_key(key: &str) -> Result<&str> {
         || trimmed.len() > MAX_AGENT_BYTES
         || trimmed.bytes().any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
     {
-        return Err("whiteboard key must be 1..=128 non-whitespace characters".into());
+        return Err("whiteboard key must be 1..=128 bytes with no whitespace or control characters".into());
     }
     Ok(trimmed)
+}
+
+fn check_wb_content(db: &Connection, root: &str, key: &str, content: &str) -> Result<()> {
+    if content.len() > WB_ENTRY_BYTES {
+        return Err(format!("whiteboard content exceeds {WB_ENTRY_BYTES} bytes"));
+    }
+    let others: i64 = db
+        .query_row(
+            "SELECT coalesce(sum(length(CAST(content AS BLOB))),0) FROM whiteboard_entries WHERE root=?1 AND key<>?2",
+            params![root, key],
+            |r| r.get(0),
+        )
+        .db()?;
+    if others.saturating_add(content.len() as i64) > WB_BOARD_BYTES as i64 {
+        return Err(format!("whiteboard exceeds {WB_BOARD_BYTES} bytes; resolve or delete entries first"));
+    }
+    Ok(())
 }
 
 fn wb_row_json(r: &Row<'_>) -> rusqlite::Result<Value> {
@@ -162,19 +181,20 @@ pub(super) fn whiteboard_entries(
 }
 
 pub(super) fn whiteboard_digest(db: &Connection, root: &str, seen_seq: i64) -> Result<Option<(i64, String)>> {
-    let (wb_seq, entries) = whiteboard_entries(db, root, None, None, None)?;
-    if wb_seq <= seen_seq || (wb_seq == 0 && entries.is_empty()) {
+    let (wb_seq, entries) = whiteboard_entries(db, root, None, None, Some(seen_seq))?;
+    if wb_seq <= seen_seq {
         return Ok(None);
     }
-    let unread = entries.iter().filter(|e| e["seq"].as_i64().unwrap_or(0) > seen_seq).count();
+    let unread = entries.len();
     let mut out = format!(
         "Collaborative Whiteboard Digest (seq: {wb_seq}, {unread} update(s) since your last read at seq {seen_seq}):\n"
     );
     if entries.is_empty() {
-        out.push_str("(All previous entries were deleted.)\n");
+        out.push_str("(The whiteboard changed, but no updated entry remains; an entry was deleted.)\n");
         return Ok(Some((wb_seq, out)));
     }
-    for (idx, e) in entries.iter().enumerate() {
+    // Newest first: a bounded digest must never crowd out the most recent unread update.
+    for (idx, e) in entries.iter().rev().enumerate() {
         let key = e["key"].as_str().unwrap_or("?");
         let kind = e["kind"].as_str().unwrap_or("note");
         let agent = e["author_agent"].as_str().unwrap_or("?");
@@ -191,7 +211,10 @@ pub(super) fn whiteboard_digest(db: &Connection, root: &str, seen_seq: i64) -> R
         let marker = if seq > seen_seq { "*" } else { " " };
         let line = format!("{marker} [{kind}] {key} (v{ver}, seq {seq}, @{agent}, {status}): {truncated_preview}\n");
         if out.len() + line.len() + 80 > DIGEST_MAX_BYTES {
-            out.push_str(&format!("... ({} more entries; call wb_read for full details)\n", entries.len() - idx));
+            out.push_str(&format!(
+                "... ({} older unread entries; call wb_read for full details)\n",
+                entries.len() - idx
+            ));
             break;
         }
         out.push_str(&line);
@@ -273,6 +296,39 @@ pub(super) fn wake_wb_waiters(db: &Connection, root: &str) -> Result<()> {
     Ok(())
 }
 
+/// A delete advances `wb_seq` but removes the row, so the normal wake scan cannot see it.
+/// Wake matching waiters while the key still exists, before the row is removed.
+fn wake_deleted_waiters(db: &Connection, root: &str, key: &str, seq: i64) -> Result<()> {
+    let waiters: Vec<(String, Option<String>)> = {
+        let mut q = db
+            .prepare(
+                "SELECT id,wb_wait_key FROM tasks
+                 WHERE root=?1 AND status='waiting' AND wb_wait_seq IS NOT NULL AND wb_wait_seq < ?2
+                 ORDER BY rowid",
+            )
+            .db()?;
+        let rows = q.query_map(params![root, seq], |r| Ok((r.get(0)?, r.get(1)?))).db()?;
+        rows.collect::<rusqlite::Result<_>>().db()?
+    };
+    for (task_id, wait_key) in waiters {
+        if wait_key.as_deref().is_none_or(|k| key == k || key.starts_with(k)) {
+            db.execute("UPDATE tasks SET wb_wait_key=NULL,wb_wait_seq=NULL WHERE id=?1", [&task_id]).db()?;
+            queue(
+                db,
+                &task_id,
+                json!({
+                    "whiteboard": true,
+                    "woke": "updated",
+                    "seq": seq,
+                    "entries": [],
+                    "deleted": key
+                }),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn wb_write_entry(
     db: &Connection,
@@ -336,6 +392,7 @@ pub(super) fn wb_write_entry(
     match mode {
         "set" => {
             let text = nonempty(content.ok_or("wb_write set requires content")?, "whiteboard content")?;
+            check_wb_content(db, root, key, text)?;
             let eff_kind = kind.unwrap_or_else(|| existing.as_ref().map_or("note", |e| e.0.as_str()));
             db.execute(
                 "INSERT INTO whiteboard_entries(root,key,kind,content,author_task,author_agent,round,version,seq,status,updated_at)
@@ -355,6 +412,7 @@ pub(super) fn wb_write_entry(
                 Some((_, prev, _)) if !prev.is_empty() => format!("{prev}\n\n{addition}"),
                 _ => addition,
             };
+            check_wb_content(db, root, key, &merged)?;
             let eff_kind = kind.unwrap_or_else(|| existing.as_ref().map_or("note", |e| e.0.as_str()));
             db.execute(
                 "INSERT INTO whiteboard_entries(root,key,kind,content,author_task,author_agent,round,version,seq,status,updated_at)
@@ -375,6 +433,7 @@ pub(super) fn wb_write_entry(
                 Some(note) => format!("{prev}\n\n[resolved by @{author_agent} · r{round}]\n{note}"),
                 None => prev,
             };
+            check_wb_content(db, root, key, &updated)?;
             db.execute(
                 "UPDATE whiteboard_entries SET status='resolved',content=?3,version=version+1,seq=?4,updated_at=?5 WHERE root=?1 AND key=?2",
                 params![root, key, updated, seq, now],
@@ -385,12 +444,18 @@ pub(super) fn wb_write_entry(
             if existing.is_none() {
                 return Err(format!("unknown whiteboard key: {key}"));
             }
+            wake_deleted_waiters(db, root, key, seq)?;
             db.execute("DELETE FROM whiteboard_entries WHERE root=?1 AND key=?2", params![root, key]).db()?;
         }
         _ => unreachable!(),
     }
     if let Some(task) = author_task {
-        db.execute("UPDATE tasks SET wb_seen_seq=?2 WHERE id=?1", params![task, seq]).db()?;
+        // Do not mark unrelated earlier entries as read just because this worker wrote.
+        // Only consume the author's own new sequence when it had already seen the board.
+        let seen: i64 = db.query_row("SELECT wb_seen_seq FROM tasks WHERE id=?1", [task], |r| r.get(0)).db()?;
+        if seen >= seq.saturating_sub(1) {
+            db.execute("UPDATE tasks SET wb_seen_seq=?2 WHERE id=?1", params![task, seq]).db()?;
+        }
     }
     let saved = db
         .query_row(
@@ -457,6 +522,9 @@ fn handoff(
         let prompt = nonempty(field(child, "text")?, "child assignment")?;
         if target.len() > MAX_AGENT_BYTES {
             return Err("child agent name exceeds 128 bytes".into());
+        }
+        if target.bytes().any(|b| b.is_ascii_whitespace() || b.is_ascii_control()) {
+            return Err("child agent name must not contain whitespace or control characters".into());
         }
         if !batch_agents.insert(target) {
             return Err(format!("member {target} already has a stage in this round"));
@@ -527,7 +595,15 @@ pub(super) fn apply(db: &Connection, root: &str, task: &str, action: &Value, met
             let since_seq = action.get("since_seq").and_then(Value::as_i64);
             let (seq, entries) = whiteboard_entries(db, root, key, prefix, since_seq)?;
             node_message_with_meta(db, task, "assistant", &action.to_string(), meta)?;
-            db.execute("UPDATE tasks SET wb_seen_seq=?2 WHERE id=?1", params![task, seq]).db()?;
+            // Only an unfiltered read covering up through `wb_seen_seq` is a complete watermark;
+            // incremental `since_seq <= wb_seen_seq` also guarantees no skipped intermediate entries.
+            if key.is_none() && prefix.is_none() {
+                let current_seen: i64 =
+                    db.query_row("SELECT wb_seen_seq FROM tasks WHERE id=?1", [task], |r| r.get(0)).db()?;
+                if since_seq.is_none_or(|s| s <= current_seen) {
+                    db.execute("UPDATE tasks SET wb_seen_seq=?2 WHERE id=?1", params![task, seq]).db()?;
+                }
+            }
             return queue(db, task, json!({"whiteboard":true,"op":"wb_read","seq":seq,"entries":entries}));
         }
         "wb_write" => {
@@ -620,10 +696,8 @@ impl Store {
         self.transaction(|db| {
             let stale = db
                 .query_row(
-                    "SELECT CASE WHEN EXISTS(SELECT 1 FROM tree_runs WHERE reporter=?1) THEN
-                NOT EXISTS(SELECT 1 FROM tree_runs WHERE reporter=?1 AND phase='reporting') ELSE
-                EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND status IN ('cancelled','failed','unknown')) OR
-                EXISTS(SELECT 1 FROM operations WHERE task=?1 AND reserved=1 AND state='unknown') END",
+                    "SELECT NOT EXISTS(SELECT 1 FROM tree_runs WHERE reporter=?1 AND phase='reporting')
+                        AND NOT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND status='running' AND model_reserved=1)",
                     [task],
                     |r| r.get::<_, bool>(0),
                 )
@@ -902,11 +976,16 @@ fn bounded_whiteboard_snapshot(db: &Connection, root: &str) -> Result<Vec<Value>
     if entries.is_empty() {
         return Ok(Vec::new());
     }
+    let count = entries.len();
     let mut kept = Vec::new();
     let mut total = 0usize;
-    for entry in entries {
+    for (idx, entry) in entries.into_iter().enumerate() {
         let len = entry.to_string().len();
         if total + len > PUBLIC_OUTPUT_BYTES {
+            kept.push(json!({
+                "truncated": true,
+                "omitted_entries": count - idx
+            }));
             break;
         }
         total += len;
@@ -989,6 +1068,7 @@ pub(super) fn claim_report(db: &Connection) -> Result<Option<Turn>> {
             task,
             agent: "reporter".into(),
             messages,
+            can_compact: false,
             settings,
             last_input_tokens: 0,
             last_history_bytes: 0,

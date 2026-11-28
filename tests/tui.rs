@@ -611,6 +611,72 @@ fn tui_submits_cjk_approves_resizes_clicks_deletes_and_exits_cleanly() {
 }
 
 #[test]
+fn bare_resume_honors_explicit_wait_options_on_a_tty() {
+    for flags in [&["--jsonl"][..], &["--timeout", "0"], &["--detach"]] {
+        let (lab, socket) = Lab::new();
+        socket.set_nonblocking(true).unwrap();
+        let (mut master, slave) = open_pty();
+        let mut child = lab
+            .cmd(&["resume"])
+            .args(flags)
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave)
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let root = json!({"id":"r1", "root":"r1", "agent":"default", "status":"done", "result":"finished"});
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut requests = ["tasks", "status"].into_iter().take(if flags == ["--jsonl"] { 2 } else { 1 });
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("resume {flags:?} did not exit on a TTY");
+            }
+            if requests.len() == 0 {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            match socket.accept() {
+                Ok((mut conn, _)) => {
+                    let body = read_daemon_request(&mut conn);
+                    assert_eq!(body["op"], requests.next().unwrap());
+                    let value = if body["op"] == "tasks" {
+                        json!([root])
+                    } else {
+                        assert_eq!(body["id"], "r1");
+                        root.clone()
+                    };
+                    writeln!(conn, "{}", json!({"value":value})).unwrap();
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(10)),
+                Err(e) => panic!("accept failed: {e}"),
+            }
+        }
+        let out = child.wait_with_output().unwrap();
+        let mut bytes = Vec::new();
+        // Linux PTY masters return EIO when the last slave descriptor closes.
+        if let Err(e) = master.read_to_end(&mut bytes) {
+            assert_eq!(e.raw_os_error(), Some(libc::EIO));
+        }
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(!text.contains('\x1b'), "unexpected terminal control sequence: {text:?}");
+        if flags == ["--timeout", "0"] {
+            assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("timed out waiting for r1"));
+        } else {
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            let rows: Vec<Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+            if flags == ["--jsonl"] {
+                assert_eq!(rows.first().unwrap()["type"], "submitted");
+                assert_eq!(rows.last().unwrap()["type"], "completed");
+            } else {
+                assert_eq!(rows, [json!({"id":"r1"})]);
+            }
+        }
+    }
+}
+
+#[test]
 fn tui_requires_tty_and_chat_plain_works_without_tty() {
     let (lab, socket) = Lab::new();
     let no_tty = lab.cmd(&["tui"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).output().unwrap();

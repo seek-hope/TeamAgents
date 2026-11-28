@@ -25,7 +25,8 @@ const HELP: &str = "TeamAgents — persistent agent sessions
   teamagents exec [OPTIONS] TEXT         Submit a task (use - or pipe stdin for text)
   teamagents review [--uncommitted|--base REF|--commit SHA] [TEXT]  Run a read-only code review
   teamagents continue TASK_ID [OPTIONS] TEXT  Continue a settled leaf or summarizer as the next subtree
-  teamagents resume [TASK_ID [TEXT]]     Resume the latest or named settled session
+  teamagents resume [TASK_ID [TEXT]]     Reconnect to the latest or named root, or continue a settled session with TEXT
+                                         Without TEXT, a TTY opens the TUI unless --json, --jsonl, --timeout, or --detach is set.
   teamagents steer TASK_ID TEXT          Send mid-turn guidance to an active session tree
   teamagents compact TASK_ID             Compact conversation history for a settled or idle node
   teamagents diff [--base REF|--commit SHA]  Show workspace git status and unified diff
@@ -48,15 +49,16 @@ Options may appear before or after the command. Use -- before literal arguments.
   --workspace PATH     Workspace (default: current directory)
   --agent NAME         Recipient for a new task or chat (default: default)
   --json               Print machine-readable JSON
-  --jsonl              Stream newline-delimited live events during exec, continue, and review
+  --jsonl              Stream newline-delimited live events during exec, continue, review, and resume
   --plain              Use the line-oriented chat REPL even on a terminal (chat)
-  --detach             Return the submission receipt without waiting (exec, continue, and review)
-  --timeout SECONDS    Limit the wait after submission (exec, continue, and review wait indefinitely)
+  --detach             Return the submission receipt without waiting (exec, continue, review, resume)
+  --timeout SECONDS    Limit the wait after submission (exec, continue, review, and resume wait indefinitely)
   --review             Require approval for each shell command and edit requested by
-                       the model on this round or its children (exec, continue, review, chat, and tui)
+                       the model on this round or its children (exec, continue, review, chat, tui, resume)
   --sandbox MODE       Sandbox mode: direct (default), staged, or read-only
+                       (`review` defaults to read-only unless overridden)
   --staged             Shorthand for --sandbox staged (copy-on-exit workspace staging)
-  --check COMMAND      Run this exact trusted command at proposed completion (exec and continue).
+  --check COMMAND      Run this exact trusted command at proposed completion (exec, continue, resume TEXT).
                        A failure returns diagnostics for repair, up to 10 check attempts.
 
 Review / diff / MCP options:
@@ -353,8 +355,8 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
     if cmd_name == "continue" && agent != "default" {
         return Err("--agent applies only when starting a new session".into());
     }
-    if plain && !matches!(cmd_name.as_str(), "chat" | "resume") {
-        return Err("--plain applies only to chat and resume".into());
+    if plain && cmd_name != "chat" {
+        return Err("--plain applies only to chat".into());
     }
     if json && cmd_name == "tui" {
         return Err("--json does not apply to tui".into());
@@ -374,6 +376,9 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
             SandboxMode::Direct
         }
     });
+    if cmd_name == "review" && check.is_some() && sandbox.is_read_only() {
+        return Err("--check cannot run in read-only review mode; pass --sandbox direct/staged or use exec".into());
+    }
 
     let command = match cmd_name.as_str() {
         "help" => Command::Help,
@@ -487,7 +492,10 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
         }
         "resume" => {
             let mut iter = pos_args.into_iter();
-            let id = iter.next().filter(|s| !s.trim().is_empty());
+            let id = iter.next();
+            if id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+                return Err("resume requires a nonempty TASK_ID when supplied".into());
+            }
             let args: Vec<String> = iter.collect();
             Command::Resume { id, opt: ExecOptions { agent, review, sandbox, check, detach, timeout, jsonl, args } }
         }
@@ -932,6 +940,35 @@ fn continue_cmd(client: Client, id: &str, opt: ExecOptions, machine: bool) -> Re
     wait_for_root(client, receipt, "continue", &opt, machine)
 }
 
+fn resume_cmd(
+    client: Client,
+    id: Option<String>,
+    opt: ExecOptions,
+    machine: bool,
+    interactive_tty: bool,
+) -> Result<()> {
+    let root = match id {
+        Some(id) if !opt.args.is_empty() => return continue_cmd(client, &id, opt, machine),
+        Some(id) => {
+            let task = client.status(&id)?;
+            if !task.is_root() {
+                return Err(format!("task {id} belongs to root {}; resume that root", task.root));
+            }
+            task
+        }
+        None => client
+            .tasks()?
+            .into_iter()
+            .rfind(|t| t.is_root())
+            .ok_or("no existing sessions in this workspace to resume")?,
+    };
+    if interactive_tty && !machine && !opt.jsonl && opt.timeout.is_none() && !opt.detach {
+        crate::tui::run(client, opt.agent, opt.review, opt.sandbox, Some(root.id))
+    } else {
+        wait_for_root(client, json!({"id":root.id}), "resume", &opt, machine || opt.jsonl)
+    }
+}
+
 pub(crate) fn build_review_prompt(target_desc: &str, custom: Option<&str>, diff: &str) -> String {
     let mut prompt = format!(
         "Perform a thorough, read-only code review of {target_desc}.\nFocus on correctness bugs, security/safety risks, missing edge cases, concurrency/durability issues, and regressions. Cite exact file paths, line numbers, severity (P0-P3), and concrete fixes."
@@ -982,6 +1019,8 @@ fn wait_for_root(client: Client, receipt: Value, op: &str, opt: &ExecOptions, ma
         let banner = if op == "continue" {
             let node = receipt["node"].as_str().unwrap_or(id.as_str());
             format!("Continued {id} via node {node}. Reconnect with status {id}.")
+        } else if op == "resume" {
+            format!("Following {id}. Reconnect with status {id}.")
         } else {
             format!("Submitted {id}. Reconnect with status {id}.")
         };
@@ -1062,7 +1101,7 @@ fn wait_for_root(client: Client, receipt: Value, op: &str, opt: &ExecOptions, ma
         }
         last = task;
     }
-    output(&render(if last.get("status").is_some() { "status" } else { "submit" }, &last, machine))?;
+    output(&render(if last.get("status").is_some() { "status" } else { op }, &last, machine))?;
     Err(format!("timed out waiting for {id}; reconnect with status {id}"))
 }
 
@@ -1887,27 +1926,7 @@ fn run_cli() -> Result<()> {
         Command::Exec(opt) => exec(client, opt, global.json),
         Command::Continue { id, opt } => continue_cmd(client, &id, opt, global.json),
         Command::Review { target, opt } => review_cmd(client, target, opt, global.json),
-        Command::Resume { id, opt } => {
-            let target_id = if let Some(explicit) = id {
-                explicit
-            } else {
-                let tasks = client.tasks()?;
-                tasks
-                    .iter()
-                    .rev()
-                    .find(|t| t.is_root() && t.continuation_node.is_some())
-                    .or_else(|| tasks.iter().rev().find(|t| t.is_root()))
-                    .map(|t| t.id.clone())
-                    .ok_or("no existing sessions in this workspace to resume")?
-            };
-            if !opt.args.is_empty() {
-                continue_cmd(client, &target_id, opt, global.json)
-            } else if !global.json && interactive_tty {
-                crate::tui::run(client, opt.agent, opt.review, opt.sandbox, Some(target_id))
-            } else {
-                command(&client, "status", Some(&target_id), global.json)
-            }
-        }
+        Command::Resume { id, opt } => resume_cmd(client, id, opt, global.json, interactive_tty),
         Command::Steer { id, text } => {
             let value = client.steer(&id, &text)?;
             output(&render("steer", &value, global.json))

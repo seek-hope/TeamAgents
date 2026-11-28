@@ -276,9 +276,8 @@ fn stdio_rpc(command: &str, args: &[String], env_vars: &[String], method: &str, 
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    if let Some(home) = env::var_os("HOME") {
-        cmd.env("HOME", home);
-    }
+    // MCP servers are outside bwrap. Do not hand them the daemon's home directory
+    // (which contains provider credentials); callers may opt in explicitly via env_vars.
     for var in env_vars {
         if let Some(val) = env::var_os(var) {
             cmd.env(var, val);

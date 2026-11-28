@@ -1,4 +1,5 @@
-//! Shells see an independent copy. Only validated regular files and directories can be published.
+//! Staged shells see an independent copy; direct shells bind the workspace. Only validated
+//! regular files and directories can be published from a staged copy.
 use crate::Result;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -219,6 +220,36 @@ impl Lock {
     pub(crate) fn ensure_parent(&self, path: &Path) -> Result<(File, PathBuf)> {
         ensure_parent_at(&self.0, path)
     }
+    /// Side-effect-free preflight for `apply_patch`: validates all parent components without
+    /// creating directories and reports whether the target path already exists (`Ok(true)`).
+    pub(crate) fn check_new_parent(&self, path: &Path) -> Result<bool> {
+        let components = path.components();
+        if reserved(path) || !components.clone().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+            return Err("reserved or non-relative workspace path".into());
+        }
+        let mut parts = components.filter_map(|c| if let Component::Normal(p) = c { Some(p) } else { None });
+        let name = parts.next_back().ok_or("path must name a file")?;
+        let mut dir = self.0.try_clone().map_err(err)?;
+        for part in parts {
+            dir = match checked_dir(&self.0, &dir, part) {
+                Ok(d) => d,
+                Err(_) => {
+                    let candidate = fd_path(&dir).join(part);
+                    return match fs::symlink_metadata(&candidate) {
+                        Ok(_) => Err("reserved or non-directory workspace parent".into()),
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+                        Err(e) => Err(err(e)),
+                    };
+                }
+            };
+        }
+        let target = fd_path(&dir).join(name);
+        match fs::symlink_metadata(&target) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(err(e)),
+        }
+    }
     pub(crate) fn dir(&self, path: Option<&Path>) -> Result<File> {
         let Some(rel) = path.filter(|p| !p.as_os_str().is_empty() && *p != Path::new(".")) else {
             return self.0.try_clone().map_err(err);
@@ -236,9 +267,18 @@ impl Lock {
         Ok(dir)
     }
     pub(crate) fn workspace(root: &Path) -> Result<Self> {
+        Self::with_flock(root, libc::LOCK_EX)
+    }
+
+    /// Read-only tools may run concurrently with each other. Writers still take LOCK_EX.
+    pub(crate) fn shared_workspace(root: &Path) -> Result<Self> {
+        Self::with_flock(root, libc::LOCK_SH)
+    }
+
+    fn with_flock(root: &Path, operation: libc::c_int) -> Result<Self> {
         let f = root_dir(root)?;
         // SAFETY: f owns a valid directory fd; dropping f releases the advisory lock.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == -1 {
+        if unsafe { libc::flock(f.as_raw_fd(), operation) } == -1 {
             return Err(err(io::Error::last_os_error()));
         }
         Ok(Self(f))
@@ -267,15 +307,23 @@ impl Node {
             dev: m.dev(),
             ino: m.ino(),
             size: m.len(),
-            mode: m.mode() & 0o777,
+            mode: m.mode(),
             ctime: (m.ctime(), m.ctime_nsec()),
         }
     }
     fn changed(&self, other: &Self) -> bool {
         if self.dir && other.dir {
-            self.mode != other.mode
+            self.mode & 0o777 != other.mode & 0o777
         } else {
             self != other
+        }
+    }
+    fn matches_host(&self, actual: &Self) -> bool {
+        if self.dir && actual.dir {
+            // Publishing children can change directory size and ctime.
+            (self.dev, self.ino, self.mode) == (actual.dev, actual.ino, actual.mode)
+        } else {
+            self == actual
         }
     }
 }
@@ -287,20 +335,35 @@ struct Tree {
     bytes: u64,
 }
 impl Tree {
-    fn read(root: &File, copy: Option<&Path>, host: bool) -> Result<Self> {
+    fn check_host_entry(&self, path: &Path, actual: Option<Node>) -> Result<()> {
+        match (self.entries.get(path), actual) {
+            (None, None) => Ok(()),
+            (Some(expected), Some(actual)) if expected.matches_host(&actual) => Ok(()),
+            _ => Err(format!("workspace changed concurrently: {}", path.display())),
+        }
+    }
+
+    // Keep the checked parent pinned through the caller's remove, mkdir or rename.
+    fn checked_destination(&self, root: &File, path: &Path) -> Result<(File, PathBuf)> {
+        let (dir, dst) = parent_at(root, path)?;
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            self.check_host_entry(parent, Some(Node::of(&dir.metadata().map_err(err)?)))?;
+        }
+        let actual = match fs::symlink_metadata(&dst) {
+            Ok(meta) => Some(Node::of(&meta)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(err(e)),
+        };
+        self.check_host_entry(path, actual)?;
+        Ok((dir, dst))
+    }
+
+    fn read(root: &File, copy: Option<&Path>) -> Result<Self> {
         let mut tree = Self::default();
-        tree.walk(root, root, Path::new(""), copy, host, 0)?;
+        tree.walk(root, root, Path::new(""), copy, 0)?;
         Ok(tree)
     }
-    fn walk(
-        &mut self,
-        root: &File,
-        dir: &File,
-        rel: &Path,
-        copy: Option<&Path>,
-        host: bool,
-        depth: usize,
-    ) -> Result<()> {
+    fn walk(&mut self, root: &File, dir: &File, rel: &Path, copy: Option<&Path>, depth: usize) -> Result<()> {
         if depth > MAX_DEPTH {
             return Err("sandbox tree exceeds depth limit (64)".into());
         }
@@ -315,9 +378,6 @@ impl Tree {
             same_mount(&f, root)?;
             let m = f.metadata().map_err(err)?;
             if reserved(&path) || (m.is_dir() && (admin_dir(&fd_path(&f))? || cached_target(&path, &f)?)) {
-                if !host {
-                    return Err(format!("sandbox refused publication of reserved path {}", path.display()));
-                }
                 self.hidden.insert(path);
                 continue;
             }
@@ -333,7 +393,7 @@ impl Tree {
                 if let Some(dst) = copy {
                     fs::create_dir(dst.join(&path)).map_err(err)?;
                 }
-                self.walk(root, &f, &path, copy, host, depth + 1)?;
+                self.walk(root, &f, &path, copy, depth + 1)?;
                 if let Some(dst) = copy {
                     fs::set_permissions(dst.join(&path), fs::Permissions::from_mode(m.mode() & 0o777)).map_err(err)?;
                 }
@@ -516,6 +576,9 @@ impl Direct {
                 Err(e) => return Err(err(e)),
             };
             if meta.file_type().is_symlink() {
+                if reserved(Path::new(&name)) {
+                    return Err(format!("refusing reserved symlink in workspace: {}", Path::new(&name).display()));
+                }
                 continue;
             }
             let mount_dst = Path::new("/workspace").join(&name);
@@ -582,8 +645,8 @@ impl Stage {
         if scratch.0.starts_with(root) {
             return Err("sandbox staging and workspace overlap".into());
         }
-        let original = Tree::read(&lock.0, Some(&scratch.0), true)?;
-        let baseline = Tree::read(&File::open(&scratch.0).map_err(err)?, None, false)?;
+        let original = Tree::read(&lock.0, Some(&scratch.0))?;
+        let baseline = Tree::read(&File::open(&scratch.0).map_err(err)?, None)?;
         Ok(Self { workspace: root.to_owned(), identity: lock.0.try_clone().map_err(err)?, scratch, original, baseline })
     }
 
@@ -596,11 +659,12 @@ impl Stage {
         if admin_dir(&self.scratch.0)? {
             return Err("Git administrative workspace cannot be published".into());
         }
-        let after = Tree::read(&stage, None, false)?;
+        let after = Tree::read(&stage, None)?;
         let changed: BTreeSet<_> = after
             .entries
             .keys()
-            .chain(self.baseline.entries.keys())
+            // Previously visible entries under a newly hidden subtree are omitted, not deleted.
+            .chain(self.baseline.entries.keys().filter(|path| !path.ancestors().any(|p| after.hidden.contains(p))))
             .filter(|key| match (self.baseline.entries.get(*key), after.entries.get(*key)) {
                 (Some(a), Some(b)) => a.changed(b),
                 _ => true,
@@ -614,7 +678,7 @@ impl Stage {
         if lock.0.metadata().map_err(err)?.ino() != self.identity.metadata().map_err(err)?.ino() {
             return Err("workspace root changed during command".into());
         }
-        let current = Tree::read(&lock.0, None, true)?;
+        let mut current = Tree::read(&lock.0, None)?;
         for &path in &changed {
             if self.original.hidden.iter().chain(&current.hidden).any(|h| path.starts_with(h) || h.starts_with(path)) {
                 return Err("sandbox change overlaps protected workspace contents".into());
@@ -634,23 +698,31 @@ impl Stage {
         for &path in changed.iter().rev() {
             if let Some(old) = self.original.entries.get(path) {
                 if after.entries.get(path).is_none_or(|new| new.dir != old.dir) {
-                    let (_dir, dst) = parent_at(&lock.0, path)?;
+                    let (_dir, dst) = current.checked_destination(&lock.0, path)?;
                     if old.dir { fs::remove_dir(dst) } else { fs::remove_file(dst) }.map_err(err)?;
+                    // Replacements must recheck for absence after our own successful removal.
+                    current.entries.remove(path);
                 }
             }
         }
         for &path in &changed {
             let Some(new) = after.entries.get(path) else { continue };
-            let (dir, dst) = parent_at(&lock.0, path)?;
             if new.dir {
-                if !self.original.entries.get(path).is_some_and(|n| n.dir) {
+                if !current.entries.contains_key(path) {
+                    let (parent, dst) = current.checked_destination(&lock.0, path)?;
                     fs::create_dir(&dst).map_err(err)?;
+                    let name = path.file_name().ok_or("path must name a directory")?;
+                    let dir = checked_dir(&lock.0, &parent, name)?;
+                    current.entries.insert(path.clone(), Node::of(&dir.metadata().map_err(err)?));
                 }
             } else {
+                let (dir, _) = parent_at(&lock.0, path)?;
                 let tmp = fd_path(&dir).join(format!(".teamagents-{}", uuid::Uuid::new_v4()));
                 let src = pin(&self.scratch.0.join(path)).map_err(err)?;
-                let result =
-                    copy_file(&src, &tmp, new.size, new.mode).and_then(|()| fs::rename(&tmp, dst).map_err(err));
+                let result = copy_file(&src, &tmp, new.size, new.mode).and_then(|()| {
+                    let (_parent, dst) = current.checked_destination(&lock.0, path)?;
+                    fs::rename(&tmp, dst).map_err(err)
+                });
                 if result.is_err() {
                     let _ = fs::remove_file(tmp);
                 }
@@ -660,8 +732,9 @@ impl Stage {
         // Descending order allows a directory to become read-only after all its children are in place.
         for &path in changed.iter().rev() {
             if let Some(new) = after.entries.get(path).filter(|n| n.dir) {
-                let (_dir, dst) = parent_at(&lock.0, path)?;
-                fs::set_permissions(dst, fs::Permissions::from_mode(new.mode)).map_err(err)?;
+                let dir = lock.dir(Some(path))?;
+                current.check_host_entry(path, Some(Node::of(&dir.metadata().map_err(err)?)))?;
+                dir.set_permissions(fs::Permissions::from_mode(new.mode & 0o777)).map_err(err)?;
             }
         }
         Ok(())

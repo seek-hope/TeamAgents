@@ -268,6 +268,7 @@ impl Palette {
             Verification::Failed => ("✗ check failed", self.error()),
             Verification::Pending => ("⋯ check pending", self.active()),
             Verification::NotRequested => ("– unchecked", self.muted()),
+            Verification::NotRun => ("– check not run", self.muted()),
             Verification::Unknown => ("⚠ check unknown", self.error().add_modifier(Modifier::BOLD)),
             Verification::Other(_) => ("? check", self.muted()),
         }

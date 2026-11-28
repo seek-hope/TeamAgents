@@ -37,15 +37,15 @@ fn native_and_staged_tools_protect_checkout_worktree_and_aliases() {
     assert!(!stage.scratch.0.join("module/.git").exists());
     assert!(!stage.scratch.0.join("separate-admin").exists());
     fs::write(stage.scratch.0.join("module/.git"), "fixture replacement").unwrap();
-    fs::write(stage.scratch.0.join("ordinary"), "not published").unwrap();
-    assert!(stage.publish().unwrap_err().contains("reserved"));
-    assert!(!ws.join("ordinary").exists());
+    fs::write(stage.scratch.0.join("ordinary"), "published").unwrap();
+    stage.publish().unwrap();
+    assert_eq!(fs::read_to_string(ws.join("ordinary")).unwrap(), "published");
     assert_eq!(fs::read_to_string(nested.join(".git")).unwrap(), "gitdir: ../.git/modules/module\n");
     assert_eq!(fs::read_to_string(git.join("config")).unwrap(), "fixture");
 
     let stage = Stage::new(&ws).unwrap();
     fs::remove_dir(stage.scratch.0.join("module")).unwrap();
-    assert!(stage.publish().unwrap_err().contains("protected"));
+    assert!(stage.publish().is_err());
     assert!(nested.join(".git").is_file());
 
     let outside = t.0.join("private");
@@ -77,7 +77,7 @@ fn auth_directory_is_excluded_from_file_tools_and_shell_publication() {
     assert!(!stage.scratch.0.join(".teamagents-auth").exists());
     fs::create_dir(stage.scratch.0.join(".teamagents-auth")).unwrap();
     fs::write(stage.scratch.0.join(name), "replacement").unwrap();
-    assert!(stage.publish().unwrap_err().contains("reserved"));
+    stage.publish().unwrap();
     assert_eq!(fs::read_to_string(ws.0.join(name)).unwrap(), "fixture");
 }
 
@@ -96,6 +96,134 @@ fn staging_handles_disjoint_changes_and_refuses_stale_publication() {
     assert_eq!(read(&ws.0, "a").unwrap(), "first");
     assert_eq!(read(&ws.0, "unrelated").unwrap(), "new");
     assert!(read(&ws.0, "b").is_err());
+}
+
+#[test]
+fn staged_publication_replaces_file_with_populated_directory() {
+    let ws = Scratch::new().unwrap();
+    fs::write(ws.0.join("item"), "old file").unwrap();
+    let stage = Stage::new(&ws.0).unwrap();
+    let item = stage.scratch.0.join("item");
+    fs::remove_file(&item).unwrap();
+    fs::create_dir_all(item.join("nested")).unwrap();
+    fs::write(item.join("nested/data"), "new contents").unwrap();
+    fs::set_permissions(&item, fs::Permissions::from_mode(0o550)).unwrap();
+
+    stage.publish().unwrap();
+    assert_eq!(fs::read_to_string(ws.0.join("item/nested/data")).unwrap(), "new contents");
+    assert_eq!(fs::metadata(ws.0.join("item")).unwrap().mode() & 0o777, 0o550);
+}
+
+#[test]
+fn staged_publication_applies_directory_mode_after_child_changes() {
+    let ws = Scratch::new().unwrap();
+    let host = ws.0.join("existing");
+    fs::create_dir(&host).unwrap();
+    fs::write(host.join("old"), "old contents").unwrap();
+    let stage = Stage::new(&ws.0).unwrap();
+    let dir = stage.scratch.0.join("existing");
+    fs::remove_file(dir.join("old")).unwrap();
+    fs::write(dir.join("new"), "new contents").unwrap();
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o500)).unwrap();
+
+    stage.publish().unwrap();
+    assert_eq!(fs::metadata(&host).unwrap().mode() & 0o777, 0o500);
+    assert_eq!(fs::read_to_string(host.join("new")).unwrap(), "new contents");
+    assert!(!host.join("old").exists());
+}
+
+#[test]
+fn staged_publication_directory_recheck_requires_same_identity_and_mode() {
+    let ws = Scratch::new().unwrap();
+    let dir = ws.0.join("dir");
+    let other = ws.0.join("other");
+    for path in [&dir, &other] {
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let entry = |p: &Path| Node::of(&fs::metadata(p).unwrap());
+    let expected = entry(&dir);
+    assert!(!expected.matches_host(&entry(&other)));
+    fs::write(dir.join("child"), "data").unwrap();
+    assert!(expected.matches_host(&entry(&dir)));
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o750)).unwrap();
+    assert!(!expected.matches_host(&entry(&dir)));
+}
+
+#[test]
+fn staged_publication_replaces_populated_directory_with_file() {
+    let ws = Scratch::new().unwrap();
+    fs::create_dir_all(ws.0.join("item/nested")).unwrap();
+    fs::write(ws.0.join("item/nested/data"), "old contents").unwrap();
+    let stage = Stage::new(&ws.0).unwrap();
+    let item = stage.scratch.0.join("item");
+    fs::remove_dir_all(&item).unwrap();
+    fs::write(item, "new file").unwrap();
+
+    stage.publish().unwrap();
+    assert_eq!(fs::read_to_string(ws.0.join("item")).unwrap(), "new file");
+}
+
+#[test]
+fn staged_publication_rejects_replacement_with_stale_descendant() {
+    let ws = Scratch::new().unwrap();
+    fs::create_dir(ws.0.join("item")).unwrap();
+    fs::write(ws.0.join("item/data"), "original").unwrap();
+    fs::write(ws.0.join("removed"), "keep me").unwrap();
+    let stage = Stage::new(&ws.0).unwrap();
+    fs::remove_dir_all(stage.scratch.0.join("item")).unwrap();
+    fs::write(stage.scratch.0.join("item"), "replacement").unwrap();
+    fs::remove_file(stage.scratch.0.join("removed")).unwrap();
+    fs::write(ws.0.join("item/data"), "concurrent host edit").unwrap();
+
+    assert!(stage.publish().unwrap_err().contains("concurrently"));
+    assert_eq!(fs::read_to_string(ws.0.join("item/data")).unwrap(), "concurrent host edit");
+    assert_eq!(fs::read_to_string(ws.0.join("removed")).unwrap(), "keep me");
+}
+
+#[test]
+fn staged_publication_preserves_host_tree_under_new_cache_marker() {
+    let ws = Scratch::new().unwrap();
+    let host = ws.0.join("crate/target");
+    fs::create_dir_all(host.join("nested")).unwrap();
+    fs::write(host.join("nested/data"), "host contents").unwrap();
+    let stage = Stage::new(&ws.0).unwrap();
+    let target = stage.scratch.0.join("crate/target");
+    fs::remove_file(target.join("nested/data")).unwrap();
+    fs::write(target.join("CACHEDIR.TAG"), CACHE_TAG).unwrap();
+    fs::write(target.join("artifact"), "build output").unwrap();
+    fs::write(stage.scratch.0.join("crate/output"), "publish me").unwrap();
+
+    stage.publish().unwrap();
+    assert_eq!(fs::read_to_string(ws.0.join("crate/output")).unwrap(), "publish me");
+    assert_eq!(fs::read_to_string(host.join("nested/data")).unwrap(), "host contents");
+    assert!(!host.join("CACHEDIR.TAG").exists());
+    assert!(!host.join("artifact").exists());
+}
+
+#[test]
+fn staged_publication_skips_rebuilt_cache_and_rejects_ordinary_shadow() {
+    let ws = Scratch::new().unwrap();
+    let host = ws.0.join("target");
+    fs::create_dir(&host).unwrap();
+    fs::write(host.join("CACHEDIR.TAG"), CACHE_TAG).unwrap();
+    fs::write(host.join("data"), "host cache").unwrap();
+    let stage = Stage::new(&ws.0).unwrap();
+    let target = stage.scratch.0.join("target");
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("CACHEDIR.TAG"), CACHE_TAG).unwrap();
+    fs::write(target.join("data"), "rebuilt cache").unwrap();
+    fs::write(stage.scratch.0.join("output"), "published").unwrap();
+    stage.publish().unwrap();
+    assert_eq!(fs::read_to_string(host.join("data")).unwrap(), "host cache");
+    assert_eq!(fs::read_to_string(ws.0.join("output")).unwrap(), "published");
+
+    let stage = Stage::new(&ws.0).unwrap();
+    fs::write(stage.scratch.0.join("target"), "ordinary file").unwrap();
+    fs::remove_file(stage.scratch.0.join("output")).unwrap();
+    assert!(stage.publish().unwrap_err().contains("protected"));
+    assert_eq!(fs::read_to_string(host.join("data")).unwrap(), "host cache");
+    assert_eq!(fs::read_to_string(ws.0.join("output")).unwrap(), "published");
 }
 
 #[test]

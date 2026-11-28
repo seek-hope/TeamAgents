@@ -364,6 +364,11 @@ fn launch(
                 let action = job.action;
                 let sandbox = job.sandbox;
                 let op_name = action["op"].as_str().unwrap_or("tool").to_owned();
+                if matches!(op_name.as_str(), "wb_read" | "wb_write") {
+                    let result = store.execute_whiteboard_op(&task, &action);
+                    notifier.send(Completion::ToolOp { op_id, task, op: op_name, result });
+                    return Ok(true);
+                }
                 if let Ok(mut guard) = live.lock() {
                     let st = guard.entry(task.clone()).or_default();
                     st.phase = "tool".into();
@@ -436,17 +441,7 @@ fn launch(
                     }
                 };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    model::complete_streaming(
-                        &turn.agent,
-                        &turn.task,
-                        &turn.root,
-                        &turn.messages,
-                        turn.kind,
-                        turn.settings.as_ref(),
-                        turn.last_input_tokens,
-                        turn.last_history_bytes,
-                        Some(&stream_fn),
-                    )
+                    model::complete_streaming(&turn, Some(&stream_fn))
                 }))
                 .unwrap_or_else(|_| Err(model::ModelError::Fatal("model worker panicked".into())));
                 notifier.send(Completion::Model(turn.task, history_bytes, result));

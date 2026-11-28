@@ -1,4 +1,7 @@
-//! Codex V4A `apply_patch` parser and atomic sandbox-pinned workspace patcher.
+//! Codex V4A `apply_patch` parser and preflighted sandbox-pinned workspace patcher.
+//! Preflight prevents malformed or escaping patches from touching the workspace; it is
+//! not a filesystem transaction, so a failure during publication can leave earlier
+//! operations applied.
 use crate::{sandbox, Result};
 use std::{
     collections::HashSet,
@@ -348,8 +351,7 @@ pub(crate) fn apply_patch(workspace: &Path, patch_text: &str) -> Result<String> 
                 if !seen_paths.insert(rel.clone()) {
                     return Err(format!("duplicate path in apply_patch: {path}"));
                 }
-                let (_dir, target) = lock.ensure_parent(&rel)?;
-                if fs::symlink_metadata(&target).is_ok() {
+                if lock.check_new_parent(&rel)? {
                     return Err(format!("cannot add existing file: {path}"));
                 }
                 let adds = lines.len();
@@ -385,8 +387,7 @@ pub(crate) fn apply_patch(workspace: &Path, patch_text: &str) -> Result<String> 
                     if !seen_paths.insert(dst.clone()) {
                         return Err(format!("duplicate path in apply_patch: {dst_str}"));
                     }
-                    let (_dst_dir, dst_target) = lock.ensure_parent(&dst)?;
-                    if fs::symlink_metadata(&dst_target).is_ok() {
+                    if lock.check_new_parent(&dst)? {
                         return Err(format!("Move to destination already exists: {dst_str}"));
                     }
                     planned.push(PlannedAction::Move {
@@ -433,7 +434,11 @@ pub(crate) fn apply_patch(workspace: &Path, patch_text: &str) -> Result<String> 
                 }
                 let (dst_dir, dst_target) = lock.ensure_parent(&dst)?;
                 publish_temp(&dst_dir, &dst_target, &content, Some(meta.mode() & 0o777))?;
-                fs::remove_file(&src_target).map_err(|e| format!("remove moved source {}: {e}", src.display()))?;
+                if let Err(e) = fs::remove_file(&src_target) {
+                    // Do not leave two copies behind when the move cannot be completed.
+                    let _ = fs::remove_file(&dst_target);
+                    return Err(format!("remove moved source {}: {e}", src.display()));
+                }
                 summary.push(label);
             }
             PlannedAction::Delete { rel, meta, label } => {
@@ -534,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_patch_preflights_atomically_and_blocks_escapes() {
+    fn apply_patch_preflights_before_mutation_and_blocks_escapes() {
         let ws = Temp::new();
         let outside = Temp::new();
         fs::write(ws.0.join("a.txt"), "keep\n").unwrap();
@@ -542,10 +547,10 @@ mod tests {
         fs::write(ws.0.join(".git/config"), "orig\n").unwrap();
         symlink(&outside.0, ws.0.join("linkdir")).unwrap();
 
-        // Failing hunk in second file must leave first file untouched.
+        // Failing hunk in second file must leave first file untouched AND create no new parent dirs.
         let atomic_fail = "\
 *** Begin Patch
-*** Add File: should_not_exist.txt
+*** Add File: nested/newdir/should_not_exist.txt
 +hi
 *** Update File: a.txt
 @@
@@ -553,7 +558,7 @@ mod tests {
 +changed
 *** End Patch";
         assert!(apply_patch(&ws.0, atomic_fail).is_err());
-        assert!(!ws.0.join("should_not_exist.txt").exists());
+        assert!(!ws.0.join("nested").exists(), "preflight failure must not create directories");
         assert_eq!(fs::read_to_string(ws.0.join("a.txt")).unwrap(), "keep\n");
 
         // Rejects .git, symlink escape, and parent traversal.

@@ -1610,25 +1610,32 @@ fn readonly_sandbox_midturn_steer_and_manual_compact_work() {
     assert_eq!(steer_res["ok"], true);
     c1.reply(json!({"op": "edit_file", "path": "blocked.txt", "old": "", "new": "nope"}));
 
-    // Turn 2: sees read-only edit_file rejection AND injected steer guidance; tries mutating shell inside bwrap ro mount.
+    // Turn 2: sees read-only edit_file rejection AND injected steer guidance; positive read-only shell read succeeds.
     let c2 = lab.call();
     assert!(c2.contains("read-only"), "expected read-only rejection: {:?}", c2.messages);
     assert!(c2.contains("PRIORITIZE_SECURITY_AUDIT"), "expected steer note: {:?}", c2.messages);
-    c2.reply(shell("touch blocked_shell.txt"));
+    c2.reply(shell("cat keep.txt"));
 
-    // Turn 3: shell write inside read-only sandbox fails; read via list_dir so history has >= 6 messages before finish.
+    // Turn 3: positive read succeeded inside read-only bwrap; now verify shell write fails due to read-only mount.
     let c3 = lab.call();
+    c3.observed("shell", "immutable");
+    c3.reply(shell("touch blocked_shell.txt"));
+
+    // Turn 4: shell write inside read-only sandbox fails with denial error; finish cleanly.
+    let c4 = lab.call();
+    let shell_failure = c4
+        .records()
+        .find(|v| v["tool"] == "shell" && v["ok"] == false)
+        .unwrap_or_else(|| panic!("expected read-only shell failure: {:?}", c4.messages));
+    let failure_text = shell_failure["result"].as_str().unwrap_or("");
     assert!(
-        c3.records().any(|v| v["tool"] == "shell" && v["ok"] == false),
-        "expected read-only shell failure: {:?}",
-        c3.messages
+        failure_text.to_ascii_lowercase().contains("read-only")
+            || failure_text.to_ascii_lowercase().contains("permission denied")
+            || failure_text.to_ascii_lowercase().contains("operation not permitted"),
+        "shell failure was not a sandbox denial (possible bwrap-start failure): {failure_text}"
     );
     assert!(!lab.ws.join("blocked.txt").exists());
     assert!(!lab.ws.join("blocked_shell.txt").exists());
-    c3.reply(json!({"op": "list_dir"}));
-
-    let c4 = lab.call();
-    c4.observed("list_dir", "keep.txt");
     c4.reply(finish("ro ok"));
 
     let out = exec.json();
@@ -1706,4 +1713,155 @@ fn mcp_cli_and_stdio_tool_invocation_work() {
     let out = exec.json();
     assert_eq!(out["status"], "done");
     assert_eq!(out["result"], "mcp ok");
+}
+
+#[test]
+fn cli_jsonl_resume_review_diff_and_skills_work_end_to_end() {
+    let lab = Lab::new();
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(&lab.ws).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    fs::write(lab.ws.join("app.txt"), "v1\n").unwrap();
+    git(&["init"]);
+    git(&["config", "user.email", "ci@example.com"]);
+    git(&["config", "user.name", "CI"]);
+    git(&["add", "app.txt"]);
+    git(&["commit", "-m", "initial"]);
+    fs::write(lab.ws.join("app.txt"), "v2_uncommitted\n").unwrap();
+    fs::create_dir_all(lab.ws.join(".teamagents/skills/audit")).unwrap();
+    fs::write(
+        lab.ws.join(".teamagents/skills/audit/SKILL.md"),
+        "---\nname: audit\ndescription: Security audit checklist\n---\nCheck boundaries.\n",
+    )
+    .unwrap();
+
+    // `skills` and `diff` CLI subcommands return live repository metadata.
+    let skills = lab.json(&["skills"]);
+    assert!(skills["skills"].as_array().unwrap().iter().any(|s| s["name"] == "audit"), "{skills}");
+    let uncommitted = lab.json(&["diff"]);
+    assert!(uncommitted["diff"].as_str().unwrap().contains("v2_uncommitted"));
+    let commit_diff = lab.json(&["diff", "--commit", "HEAD"]);
+    assert!(commit_diff["diff"].as_str().unwrap().contains("+v1"));
+
+    // `review --uncommitted` and `review --commit HEAD` run in read_only sandbox with snapshot in prompt.
+    let rev1 = lab.client(&["review", "--uncommitted"]);
+    let c1 = lab.call();
+    assert!(c1.contains("v2_uncommitted"), "{:?}", c1.messages);
+    assert!(c1.contains("Sandbox: read_only"), "{:?}", c1.messages);
+    c1.reply(finish("uncommitted review ok"));
+    assert_eq!(rev1.json()["result"], "uncommitted review ok");
+
+    let rev2 = lab.client(&["review", "--commit", "HEAD"]);
+    let c2 = lab.call();
+    assert!(c2.contains("commit HEAD") && c2.contains("+v1"), "{:?}", c2.messages);
+    c2.reply(finish("commit review ok"));
+    assert_eq!(rev2.json()["result"], "commit review ok");
+
+    // `exec --jsonl` emits submitted + completed NDJSON events, and `resume` awaits or continues the latest root.
+    let mut jcmd = lab.cmd();
+    jcmd.args(["exec", "--jsonl", "Stream events"]).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let jsonl_proc = Process::spawn(jcmd);
+    let c3 = lab.call();
+    c3.reply(finish("jsonl done"));
+    let jout = jsonl_proc.output();
+    assert!(jout.status.success(), "{}", String::from_utf8_lossy(&jout.stderr));
+    let events: Vec<Value> = String::from_utf8_lossy(&jout.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert!(events.iter().any(|e| e["type"] == "submitted"));
+    let completed = events.iter().find(|e| e["type"] == "completed").expect("missing completed jsonl event");
+    let latest_id = field(completed, "id").to_owned();
+    assert_eq!(completed["result"], "jsonl done");
+
+    let resumed_bare = lab.json(&["resume"]);
+    assert_eq!(resumed_bare["id"], latest_id);
+    assert_eq!(resumed_bare["status"], "done");
+
+    let res_cont = lab.client(&["resume", &latest_id, "follow up via resume"]);
+    let c4 = lab.call();
+    assert!(c4.contains("follow up via resume"));
+    c4.reply(finish("resumed round 2 ok"));
+    assert_eq!(res_cont.json()["result"], "resumed round 2 ok");
+}
+
+#[test]
+fn bare_resume_reconnects_to_the_latest_existing_root_while_it_is_active() {
+    let lab = Lab::new();
+    let older = lab.client(&["exec", "Older settled root"]);
+    lab.call().reply(finish("older result"));
+    let older = older.json();
+    let receipt = lab.json(&["exec", "--detach", "Newer active root"]);
+    let root = field(&receipt, "id");
+    lab.next(root).reply(handoff("delegate", &[("reader", "Read the fixture")]));
+    let leaf = lab.call();
+
+    assert_eq!(lab.json(&["resume", "--detach"])["id"], root);
+    assert_eq!(lab.json(&["resume", field(&older, "id"), "--detach"])["id"], older["id"]);
+    for id in ["missing-root", leaf.id.as_str(), ""] {
+        let out = lab.client(&["resume", id, "--detach"]).output();
+        assert!(!out.status.success() && out.stdout.is_empty(), "{out:?}");
+    }
+    let timeout = lab.client(&["resume", "--timeout", "0"]).output();
+    assert!(!timeout.status.success());
+    assert!(String::from_utf8_lossy(&timeout.stderr).contains(&format!("timed out waiting for {root}")));
+
+    // Wait for the reconnect receipt before allowing the provider to settle the leaf.
+    let (reader, writer) = UnixStream::pair().unwrap();
+    reader.set_read_timeout(Some(LIMIT)).unwrap();
+    let mut cmd = lab.cmd();
+    cmd.args(["resume", "--jsonl"]).stdout(std::os::fd::OwnedFd::from(writer)).stderr(Stdio::piped());
+    let resume = Process::spawn(cmd);
+    let mut lines = BufReader::new(reader).lines();
+    let submitted: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(submitted, json!({"type":"submitted", "id":root}));
+    leaf.reply(finish("current result"));
+    let out = resume.output();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let completed: Value = serde_json::from_str(&lines.last().unwrap().unwrap()).unwrap();
+    assert_eq!(completed["type"], "completed");
+    assert_eq!(completed["id"], root);
+    assert_eq!(completed["result"], "current result");
+}
+
+#[test]
+fn daemon_sigkill_preserves_unknown_outcome_and_never_replays_side_effect() {
+    let mut lab = Lab::new();
+    let sub = lab.json(&["exec", "--detach", "Record once then crash daemon"]);
+    let root_id = field(&sub, "id").to_owned();
+
+    let c1 = lab.call();
+    c1.reply(shell("printf 'RUN\\n' >> side_effect.log && sleep 30"));
+
+    // Wait until the side-effecting command has actually executed inside bwrap while op is still `started`.
+    let log_path = lab.ws.join("side_effect.log");
+    let until = Instant::now() + LIMIT;
+    loop {
+        if fs::read_to_string(&log_path).is_ok_and(|s| s.contains("RUN")) {
+            let st = lab.status(&root_id);
+            if st["tool_state"] == "started" {
+                break;
+            }
+        }
+        assert!(Instant::now() < until, "side-effecting shell did not reach started state on time");
+        thread::sleep(POLL);
+    }
+
+    // Abruptly SIGKILL the daemon mid-operation and restart on the same SQLite store.
+    drop(lab.daemon.take());
+    thread::sleep(Duration::from_millis(100));
+    lab.restart();
+
+    let recovered = lab.status(&root_id);
+    assert_eq!(recovered["status"], "unknown");
+    assert_eq!(recovered["tool_state"], "unknown");
+    assert!(recovered["continuation_node"].is_null());
+
+    // Continuing after an unknown outcome must fail, and the side effect must never have replayed.
+    let cont_out = lab.cmd().args(["continue", &root_id, "retry?"]).output().unwrap();
+    assert!(!cont_out.status.success());
+    let log_contents = fs::read_to_string(&log_path).unwrap();
+    assert_eq!(log_contents.lines().filter(|l| *l == "RUN").count(), 1, "side effect replayed: {log_contents:?}");
 }

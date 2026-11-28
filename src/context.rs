@@ -303,7 +303,7 @@ pub(crate) fn workspace_file_index(workspace: &Path, max_files: usize) -> Vec<St
 }
 
 /// Assemble an optional Codex-style workspace context prefix injected once at root submission.
-/// Returns `None` when no repository instructions, git repo, skills, MCP servers, or read-only mode apply.
+/// Empty, unconfigured workspaces need a prefix only when a non-default sandbox mode applies.
 pub(crate) fn build_root_context_prefix(
     workspace: &Path,
     sandbox: SandboxMode,
@@ -317,20 +317,34 @@ pub(crate) fn build_root_context_prefix(
         && skills.is_empty()
         && git_info.is_none()
         && mcp_servers.is_empty()
-        && !sandbox.is_read_only()
+        && sandbox == SandboxMode::Direct
     {
         return None;
     }
 
     let mut sections = Vec::new();
-    let mut meta_lines = vec![format!("Workspace: {}", workspace.display()), format!("Sandbox: {}", sandbox.as_str())];
+    let mut meta_lines = vec![
+        format!(
+            "Workspace (host): {} (shell cwd inside sandbox is /workspace; native file tools take workspace-relative paths)",
+            workspace.display()
+        ),
+        format!("Sandbox: {}", sandbox.as_str()),
+    ];
     if sandbox.is_read_only() {
-        meta_lines.push("Read-only mode active: inspect and analyze without modifying workspace files.".into());
+        meta_lines.push(
+            "Read-only mode active: inspect and analyze without modifying workspace files; MCP tools are disabled because MCP servers run outside the sandbox."
+                .into(),
+        );
+    } else if sandbox.is_staged() {
+        meta_lines.push(
+            "Staged mode active for shell/check commands; native edit_file/apply_patch write the host workspace directly, and MCP tools are disabled."
+                .into(),
+        );
     }
     if let Some(git) = git_info {
         meta_lines.push(format!("Git: {git}"));
     }
-    if !mcp_servers.is_empty() {
+    if sandbox == SandboxMode::Direct && !mcp_servers.is_empty() {
         meta_lines.push(format!("Configured MCP servers (use mcp_list / mcp_call): {}", mcp_servers.join(", ")));
     }
     sections.push(format!("<environment_context>\n{}\n</environment_context>", meta_lines.join("\n")));
@@ -405,6 +419,17 @@ mod tests {
         let doc = read_skill_doc(&ws, "rust-review").unwrap();
         assert!(doc.contains("Check SAFETY comments."));
         assert!(read_skill_doc(&ws, "../escape").is_err());
+
+        let plain = Temp::new();
+        let servers = [String::from("example-mcp")];
+        let staged = build_root_context_prefix(&plain.0, SandboxMode::Staged, &[]).unwrap();
+        assert!(staged.contains("Staged mode active"));
+        for mode in [SandboxMode::ReadOnly, SandboxMode::Staged] {
+            let prefix = build_root_context_prefix(&plain.0, mode, &servers).unwrap();
+            assert!(prefix.contains("MCP tools are disabled"));
+            assert!(!prefix.contains("example-mcp"));
+        }
+        assert!(build_root_context_prefix(&plain.0, SandboxMode::Direct, &servers).unwrap().contains("example-mcp"));
 
         match prev_global {
             Some(v) => env::set_var("TEAMAGENTS_GLOBAL_INSTRUCTIONS_FILE", v),

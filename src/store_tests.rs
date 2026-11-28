@@ -404,7 +404,7 @@ fn lost_check_never_accepts_or_requeues_the_proposal() {
     let status = s.task(&task).unwrap();
     assert_eq!(status["status"], "unknown");
     assert_eq!(status["tool_state"], "unknown");
-    assert_eq!(status["verification"], "failed");
+    assert_eq!(status["verification"], "unknown");
     assert!(status["verification_note"].as_str().unwrap().contains("outcome is unknown"));
     assert_eq!(status["subtree_receipts"], json!([]));
     assert!(status["result"].as_str().unwrap().contains("outcome unknown"));
@@ -415,7 +415,7 @@ fn lost_check_never_accepts_or_requeues_the_proposal() {
     s.cancel(&skipped).unwrap();
     let status = s.task(&skipped).unwrap();
     assert_eq!(status["status"], "cancelled");
-    assert_eq!(status["verification"], "pending");
+    assert_eq!(status["verification"], "not_run");
     assert!(status["verification_note"].as_str().unwrap().contains("before the submitted check ran"));
     assert!(s.claim_tool().unwrap().is_none());
 }
@@ -960,6 +960,71 @@ fn failed_or_unknown_branch_allows_approved_sibling_to_settle_and_blocks_success
 }
 
 #[test]
+fn recovery_fences_lost_batch_without_revoking_sibling_work() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit_with_policy("default", "review branches", None, true).unwrap();
+    claim(&mut s, &root);
+    handoff(&mut s, &root, &[("lost", "batch"), ("review", "independent batch"), ("queued", "later")]).unwrap();
+    let lost = turn(&mut s).task;
+    let review = turn(&mut s).task;
+    let batch = ModelOutput {
+        actions: [
+            json!({"op":"read_file","path":"first"}),
+            json!({"op":"read_file","path":"next"}),
+            json!({"op":"shell","command":"pwd"}),
+        ]
+        .into_iter()
+        .map(|action| crate::model::ModelAction { action, call_id: None, fc_id: None, raw_arguments: None })
+        .collect(),
+        commentary: None,
+        reasoning_summary: None,
+        meta: None,
+        usage: None,
+    };
+    s.apply_model_output(&lost, &batch).unwrap();
+    s.apply_model_output(&review, &batch).unwrap();
+    let lost_approval = s.task(&lost).unwrap()["approval_id"].as_str().unwrap().to_owned();
+    let review_approval = s.task(&review).unwrap()["approval_id"].as_str().unwrap().to_owned();
+    let started = s.claim_tool_job().unwrap().unwrap();
+    assert_eq!(started.task, lost);
+    drop(s);
+
+    let mut s = home.open();
+    s.recover().unwrap();
+    s.recover().unwrap();
+    assert_eq!(s.task(&lost).unwrap()["status"], "unknown");
+    let states: Vec<String> =
+        s.db.prepare("SELECT state FROM operations WHERE task=?1 ORDER BY seq_idx")
+            .unwrap()
+            .query_map([&lost], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+    assert_eq!(states, ["unknown", "cancelled", "cancelled"]);
+    assert!(s.approve(&lost_approval, true).is_err());
+    assert!(s.discard_late_tool_op(&started.op_id).unwrap());
+    assert_eq!(s.task(&review).unwrap()["approval_id"], review_approval);
+    let queued = turn(&mut s);
+    assert_eq!(queued.agent, "queued");
+    finish(&mut s, &queued.task, "done");
+    s.approve(&review_approval, true).unwrap();
+    for expected in ["read_file", "read_file", "shell"] {
+        let job = s.claim_tool_job().unwrap().unwrap();
+        assert_eq!(job.task, review);
+        assert_eq!(job.action["op"], expected);
+        s.tool_result_op(&job.op_id, Ok("ok")).unwrap();
+    }
+    assert!(s.claim_tool_job().unwrap().is_none());
+    claim(&mut s, &review);
+    finish(&mut s, &review, "done");
+    let reporter = turn(&mut s);
+    assert_eq!(packet(&reporter)["outcome"], "unknown");
+    finish(&mut s, &reporter.task, "partial report");
+    assert_eq!(s.task(&root).unwrap()["status"], "unknown");
+}
+
+#[test]
 fn tree_checks_use_forward_private_repair_jobs_and_stop_after_ten_attempts() {
     for pass in [true, false] {
         let home = Session::new();
@@ -1026,7 +1091,7 @@ fn tree_unknown_check_never_replays_and_reporter_never_turns_it_into_success() {
     let status = s.task(&root).unwrap();
     assert_eq!(status["stage_status"], "done");
     assert_eq!(status["status"], "unknown");
-    assert_eq!(status["verification"], "failed");
+    assert_eq!(status["verification"], "unknown");
     assert!(status["verification_note"].as_str().unwrap().contains("outcome is unknown"));
     assert!(status["continuation_node"].is_null());
     assert!(s.claim_tool().unwrap().is_none());
@@ -1170,6 +1235,56 @@ fn tree_reports_have_one_durable_claim_no_budget_cap_and_deterministic_partial_r
 }
 
 #[test]
+fn delete_waits_for_unclaimed_check_and_report_before_removing_a_tree() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit_checked("default", "checked branches", Some("pwd")).unwrap();
+    claim(&mut s, &root);
+    handoff(&mut s, &root, &[("a", "first"), ("b", "second")]).unwrap();
+    let a = turn(&mut s).task;
+    let b = turn(&mut s).task;
+    finish(&mut s, &a, "done");
+    finish(&mut s, &b, "done");
+
+    assert!(s.delete(&a).unwrap_err().contains("in flight"));
+    let check = s.claim_tool_job().unwrap().unwrap();
+    assert_eq!(check.action, json!({"op":"verify","command":"pwd"}));
+    s.tool_result_op(&check.op_id, Ok("passed")).unwrap();
+    assert!(s.delete(&root).unwrap_err().contains("in flight"));
+    let reporter = turn(&mut s);
+    assert!(!s.discard_late_completion(&reporter.task).unwrap());
+    finish(&mut s, &reporter.task, "verified");
+    assert_eq!(s.delete(&a).unwrap(), root);
+}
+
+#[test]
+fn cancel_then_delete_discards_reporter_and_worker_callbacks() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "branches").unwrap();
+    claim(&mut s, &root);
+    handoff(&mut s, &root, &[("a", "first"), ("b", "second")]).unwrap();
+    for _ in 0..2 {
+        let child = turn(&mut s).task;
+        finish(&mut s, &child, "done");
+    }
+    let reporter = turn(&mut s);
+    assert_eq!(reporter.kind, TurnKind::Reporter);
+    s.cancel(&root).unwrap();
+    assert_eq!(s.delete(&root).unwrap(), root);
+    assert!(s.discard_late_completion(&reporter.task).unwrap());
+
+    let worker = s.submit("default", "ordinary worker").unwrap();
+    claim(&mut s, &worker);
+    assert!(!s.discard_late_completion(&worker).unwrap());
+    s.cancel(&worker).unwrap();
+    assert!(s.delete(&worker).unwrap_err().contains("in flight"));
+    assert!(s.discard_late_completion(&worker).unwrap());
+    assert_eq!(s.delete(&worker).unwrap(), worker);
+    assert!(s.discard_late_completion(&worker).unwrap());
+}
+
+#[test]
 fn delete_removes_completed_and_idle_trees_while_preserving_siblings_and_refusing_inflight() {
     let home = Session::new();
     let mut s = home.open();
@@ -1242,12 +1357,16 @@ fn delete_removes_completed_and_idle_trees_while_preserving_siblings_and_refusin
     let w_turn = turn(&mut s);
     assert_eq!(w_turn.task, waiting);
     s.apply(&waiting, &json!({"op":"ask","text":"Need detail?"})).unwrap();
+    assert!(s.delete(&waiting).unwrap_err().contains("in flight"));
+    s.cancel(&waiting).unwrap();
     assert_eq!(s.delete(&waiting).unwrap(), waiting);
 
     let approval_root = s.submit_with_model("worker", "review op", None, true, &overrides).unwrap();
     let a_turn = turn(&mut s);
     assert_eq!(a_turn.task, approval_root);
     s.request_tool(&approval_root, &json!({"op":"shell","command":"ls"})).unwrap();
+    assert!(s.delete(&approval_root).unwrap_err().contains("in flight"));
+    s.cancel(&approval_root).unwrap();
     assert_eq!(s.delete(&approval_root).unwrap(), approval_root);
 
     // Refuse deletion whenever a model turn, tool operation, or reporter turn is in flight on sibling.
@@ -1837,4 +1956,351 @@ fn parallel_batches_readonly_sandbox_plan_steering_and_manual_compaction_work() 
     // Next turn wakes with batch_results reflecting executed/denied state (edit_file didn't start because approval blocked, or ran after deny).
     let after_deny = claim(&mut s, &rev_root);
     assert!(chat(&after_deny).contains("\"batch_results\""));
+}
+
+#[test]
+fn oversized_tool_result_is_truncated_before_history_and_cannot_exceed_the_worker_request() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "large result").unwrap();
+    claim(&mut s, &root);
+    s.request_tool(&root, &json!({"op":"read_file","path":"large.bin"})).unwrap();
+    let job = s.claim_tool_job().unwrap().unwrap();
+    let huge = "x".repeat(2 * 1024 * 1024);
+    s.tool_result_op(&job.op_id, Ok(&huge)).unwrap();
+    let next = claim(&mut s, &root);
+    let text = chat(&next);
+    assert!(text.contains("tool result truncated"), "missing truncation marker");
+    assert!(text.len() < 1100 * 1024, "stored tool result still too large: {}", text.len());
+}
+
+#[test]
+fn whiteboard_digest_only_injects_unread_entries_newest_first_and_never_advances_on_claim() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "digest bounds").unwrap();
+    for i in 0..40 {
+        let content = format!("entry-{i:02}-{}", "x".repeat(180));
+        s.user_wb_write(&root, &format!("topic:{i:02}"), "set", Some("note"), Some(&content)).unwrap();
+    }
+    let first = claim(&mut s, &root);
+    let digest = chat(&first);
+    assert!(digest.contains("40 update(s)"), "expected all unread entries in header: {digest}");
+    assert!(digest.contains("topic:39"), "newest unread entry must survive the 4 KiB cap");
+    assert!(!digest.contains("topic:00"), "oldest entries must not crowd out newest");
+    assert!(digest.contains("older unread entries"));
+
+    // Claiming a turn is not a read. The same unread digest is presented again until
+    // an explicit unfiltered wb_read advances the watermark.
+    finish(&mut s, &root, "done");
+    let root2 = s.submit("default", "digest persistence").unwrap();
+    s.user_wb_write(&root2, "one", "set", Some("note"), Some("first")).unwrap();
+    let a = claim(&mut s, &root2);
+    assert!(chat(&a).contains("Collaborative Whiteboard Digest"));
+    finish(&mut s, &root2, "done");
+    let root3 = s.submit("default", "digest filtered read").unwrap();
+    s.user_wb_write(&root3, "one", "set", Some("note"), Some("first")).unwrap();
+    s.user_wb_write(&root3, "two", "set", Some("note"), Some("second")).unwrap();
+    claim(&mut s, &root3);
+    s.apply(&root3, &json!({"op":"wb_read","key":"one"})).unwrap();
+    claim(&mut s, &root3);
+    finish(&mut s, &root3, "done");
+    let root4 = s.submit("default", "digest after filtered read").unwrap();
+    s.user_wb_write(&root4, "one", "set", Some("note"), Some("first")).unwrap();
+    s.user_wb_write(&root4, "two", "set", Some("note"), Some("second")).unwrap();
+    claim(&mut s, &root4);
+    s.apply(&root4, &json!({"op":"wb_read","key":"one"})).unwrap();
+    // A filtered read did not consume `two`; the next focus turn still advertises it.
+    let next = claim(&mut s, &root4);
+    assert_eq!(next.messages.len(), 4, "the fourth message is the transient digest");
+    assert!(!next.can_compact);
+    assert!(s.prepare_compaction(&root4).unwrap().is_none());
+    assert!(next
+        .messages
+        .iter()
+        .any(|m| m["content"].as_str().is_some_and(|c| c.contains("topic:two") || c.contains("two"))));
+}
+
+#[test]
+fn handoff_rejects_more_than_64_children_before_inserting_any() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "fanout cap").unwrap();
+    claim(&mut s, &root);
+    let children: Vec<Value> = (0..65).map(|i| json!({"agent": format!("worker-{i}"), "text": "task"})).collect();
+    let err = s.apply(&root, &json!({"op":"handoff","text":"too many","children":children})).unwrap_err();
+    assert!(err.contains("1 to 64"), "{err}");
+    let count: i64 = s.db.query_row("SELECT count(*) FROM tasks WHERE root=?1", [&root], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1, "rejected handoff must not insert children");
+}
+
+#[test]
+fn whiteboard_ops_are_accepted_in_parallel_batches_and_execute_in_the_store() {
+    use crate::model::{ModelAction, ModelOutput};
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "batch whiteboard").unwrap();
+    claim(&mut s, &root);
+    let batch = ModelOutput {
+        actions: vec![
+            ModelAction {
+                action: json!({"op":"wb_write","key":"k","mode":"set","kind":"note","content":"hello"}),
+                call_id: None,
+                fc_id: None,
+                raw_arguments: None,
+            },
+            ModelAction { action: json!({"op":"wb_read","key":"k"}), call_id: None, fc_id: None, raw_arguments: None },
+        ],
+        commentary: None,
+        reasoning_summary: None,
+        meta: None,
+        usage: None,
+    };
+    s.apply_model_output(&root, &batch).unwrap();
+    let write = s.claim_tool_job().unwrap().unwrap();
+    assert_eq!(write.action["op"], "wb_write");
+    let written = s.execute_whiteboard_op(&write.task, &write.action).unwrap();
+    assert!(written.contains("\"ok\":true"));
+    s.tool_result_op(&write.op_id, Ok(&written)).unwrap();
+    let read = s.claim_tool_job().unwrap().unwrap();
+    assert_eq!(read.action["op"], "wb_read");
+    let readback = s.execute_whiteboard_op(&read.task, &read.action).unwrap();
+    assert!(readback.contains("hello"));
+    s.tool_result_op(&read.op_id, Ok(&readback)).unwrap();
+    let next = claim(&mut s, &root);
+    assert!(chat(&next).contains("\"batch_results\""));
+}
+
+fn start_wb_batch(s: &mut Store, root: &str, actions: Vec<Value>) {
+    use crate::model::ModelAction;
+    let actions =
+        actions.into_iter().map(|action| ModelAction { action, call_id: None, fc_id: None, raw_arguments: None });
+    let output =
+        ModelOutput { actions: actions.collect(), commentary: None, reasoning_summary: None, meta: None, usage: None };
+    s.apply_model_output(root, &output).unwrap();
+}
+
+fn complete_wb_job(s: &mut Store) -> String {
+    let job = s.claim_tool_job().unwrap().unwrap();
+    let result = s.execute_whiteboard_op(&job.task, &job.action);
+    s.tool_result_op(&job.op_id, result.as_deref().map_err(String::as_str)).unwrap();
+    job.op_id
+}
+
+fn batch_feedback(s: &Store, task: &str) -> Value {
+    let text: String =
+        s.db.query_row(
+            "SELECT content FROM node_messages WHERE task=?1 AND role='user' ORDER BY rowid DESC LIMIT 1",
+            [task],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(text.len() <= BATCH_RESULTS_LIMIT, "serialized batch is {} bytes", text.len());
+    serde_json::from_str(&text).unwrap()
+}
+
+fn wb_seen(s: &Store, task: &str) -> i64 {
+    s.db.query_row("SELECT wb_seen_seq FROM tasks WHERE id=?1", [task], |r| r.get(0)).unwrap()
+}
+
+#[test]
+fn batched_whiteboard_conflict_records_failure_and_complete_read_acknowledges_only_its_snapshot() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "CAS and read snapshot").unwrap();
+    claim(&mut s, &root);
+    s.user_wb_write(&root, "k", "set", None, Some("original")).unwrap();
+    start_wb_batch(
+        &mut s,
+        &root,
+        vec![
+            json!({"op":"wb_read","since_seq":0}),
+            json!({"op":"wb_write","key":"k","content":"stale","expected_version":0}),
+        ],
+    );
+    complete_wb_job(&mut s);
+    assert_eq!(wb_seen(&s, &root), 0);
+    s.user_wb_write(&root, "later", "set", None, Some("still unread")).unwrap();
+    let op = complete_wb_job(&mut s);
+    let (ok, text): (bool, String) =
+        s.db.query_row("SELECT ok,result FROM operations WHERE id=?1", [&op], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert!(!ok);
+    let conflict: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(conflict["conflict"], true);
+    assert_eq!(conflict["expected_version"], 0);
+    assert_eq!(conflict["actual_version"], 1);
+    assert_eq!(conflict["current"]["content"], "original");
+    let feedback = batch_feedback(&s, &root);
+    let item = &feedback["batch_results"][1];
+    assert_eq!(item["tool"], "wb_write");
+    assert_eq!(item["ok"], false);
+    assert_eq!(item["result"], text);
+    assert_eq!(s.whiteboard(&root).unwrap()["seq"], 2);
+    assert_eq!(wb_seen(&s, &root), 1);
+}
+
+#[test]
+fn batched_whiteboard_reads_truncated_in_storage_or_replay_stay_unread() {
+    for (entry_count, call_count, storage_truncates) in [(3, 2, true), (2, 4, false)] {
+        let home = Session::new();
+        let mut s = home.open();
+        let root = s.submit("default", "escaped board content").unwrap();
+        claim(&mut s, &root);
+        let content = format!("界{}\"\\", "\0".repeat(64_000));
+        for i in 0..entry_count {
+            s.user_wb_write(&root, &format!("k{i}"), "set", None, Some(&content)).unwrap();
+        }
+        start_wb_batch(&mut s, &root, vec![json!({"op":"wb_read"}); call_count]);
+        for _ in 0..call_count {
+            let op = complete_wb_job(&mut s);
+            let text: String =
+                s.db.query_row("SELECT result FROM operations WHERE id=?1", [&op], |r| r.get(0)).unwrap();
+            assert!(text.len() <= TOOL_RESULT_LIMIT);
+            let stored: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(stored["truncated"] == true, storage_truncates);
+        }
+        let feedback = batch_feedback(&s, &root);
+        let items = feedback["batch_results"].as_array().unwrap();
+        assert_eq!(items.len(), call_count);
+        for item in items {
+            assert_eq!(item["ok"], true);
+            let read: Value = serde_json::from_str(item["result"].as_str().unwrap()).unwrap();
+            let entries = read["entries"].as_array().unwrap();
+            assert_eq!(read["truncated"], true);
+            assert_eq!(read["omitted_entries"], entry_count - entries.len());
+            assert_eq!(entries[0]["content"].as_str(), Some(content.as_str()));
+        }
+        assert_eq!(wb_seen(&s, &root), 0);
+        assert!(chat(&claim(&mut s, &root)).contains("Collaborative Whiteboard Digest"));
+    }
+}
+
+#[test]
+fn whiteboard_rejects_oversized_entries_and_boards() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "whiteboard caps").unwrap();
+    let too_big = "x".repeat(64 * 1024 + 1);
+    assert!(s.user_wb_write(&root, "big", "set", Some("note"), Some(&too_big)).is_err());
+    for i in 0..17 {
+        let chunk = "y".repeat(60 * 1024);
+        s.user_wb_write(&root, &format!("chunk-{i}"), "set", Some("note"), Some(&chunk)).unwrap();
+    }
+    // The board cap is enforced before SQLite commits the oversized update.
+    let overflow = "z".repeat(64 * 1024);
+    assert!(s.user_wb_write(&root, "overflow", "set", Some("note"), Some(&overflow)).is_err());
+}
+
+#[test]
+fn whiteboard_delete_wakes_a_matching_waiter() {
+    let home = Session::new();
+    let mut s = home.open();
+    let root = s.submit("default", "delete wake").unwrap();
+    claim(&mut s, &root);
+    handoff(&mut s, &root, &[("writer", "write and delete"), ("waiter", "wait for key")]).unwrap();
+    let writer = turn(&mut s);
+    let waiter = turn(&mut s);
+    s.apply(&writer.task, &json!({"op":"wb_write","key":"doomed","mode":"set","content":"x"})).unwrap();
+    claim(&mut s, &writer.task);
+    s.apply(&waiter.task, &json!({"op":"wb_wait","key":"doomed"})).unwrap();
+    s.apply(&writer.task, &json!({"op":"wb_write","key":"doomed","mode":"delete"})).unwrap();
+    // Writer has the lower task rowid, so claim it and close its stage before the
+    // woken waiter's queued turn is selected.
+    let w3 = claim(&mut s, &writer.task);
+    finish(&mut s, &w3.task, "deleted");
+    let woken = claim(&mut s, &waiter.task);
+    assert!(chat(&woken).contains("\"deleted\":\"doomed\""), "delete must wake the keyed waiter: {}", chat(&woken));
+}
+
+#[test]
+fn batched_wb_write_review_mode_incremental_since_seq_and_batch_size_cap_work() {
+    use crate::model::{ModelAction, ModelOutput};
+    let home = Session::new();
+    let mut s = home.open();
+
+    // (a) Under --review, batched wb_write must be runnable immediately without blocking on human approval.
+    let overrides = crate::model::ModelSettings::default();
+    let rev_root = s.submit_with_model("default", "review batch wb_write", None, true, &overrides).unwrap();
+    claim(&mut s, &rev_root);
+    let batch = ModelOutput {
+        actions: vec![
+            ModelAction {
+                action: json!({"op":"wb_write","key":"k1","mode":"set","kind":"note","content":"v1"}),
+                call_id: None,
+                fc_id: None,
+                raw_arguments: None,
+            },
+            ModelAction { action: json!({"op":"wb_read"}), call_id: None, fc_id: None, raw_arguments: None },
+        ],
+        commentary: None,
+        reasoning_summary: None,
+        meta: None,
+        usage: None,
+    };
+    s.apply_model_output(&rev_root, &batch).unwrap();
+    let j1 = s.claim_tool_job().unwrap().unwrap();
+    assert_eq!(j1.action["op"], "wb_write");
+    let r1 = s.execute_whiteboard_op(&j1.task, &j1.action).unwrap();
+    s.tool_result_op(&j1.op_id, Ok(&r1)).unwrap();
+    let j2 = s.claim_tool_job().unwrap().unwrap();
+    assert_eq!(j2.action["op"], "wb_read");
+    let r2 = s.execute_whiteboard_op(&j2.task, &j2.action).unwrap();
+    s.tool_result_op(&j2.op_id, Ok(&r2)).unwrap();
+    assert!(claim(&mut s, &rev_root).messages.last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"batch_results\""));
+
+    // (b) Incremental unfiltered wb_read(since_seq <= current_seen) advances wb_seen_seq, while since_seq > current_seen does not.
+    let inc_root = s.submit("default", "incremental wb watermark").unwrap();
+    claim(&mut s, &inc_root);
+    s.user_wb_write(&inc_root, "k1", "set", Some("note"), Some("v1")).unwrap();
+    s.apply(&inc_root, &json!({"op":"wb_read","since_seq": 5})).unwrap();
+    claim(&mut s, &inc_root);
+    let seen_after_skip: i64 =
+        s.db.query_row("SELECT wb_seen_seq FROM tasks WHERE id=?1", [&inc_root], |r| r.get(0)).unwrap();
+    assert_eq!(seen_after_skip, 0);
+    s.apply(&inc_root, &json!({"op":"wb_read","since_seq": 0})).unwrap();
+    claim(&mut s, &inc_root);
+    let seen_after_inc: i64 =
+        s.db.query_row("SELECT wb_seen_seq FROM tasks WHERE id=?1", [&inc_root], |r| r.get(0)).unwrap();
+    assert_eq!(seen_after_inc, 1);
+
+    // (c) Bound both the stored UTF-8 prefix plus its marker and the escaped batch JSON plus its markers.
+    let cap_root = s.submit("default", "batch cap").unwrap();
+    claim(&mut s, &cap_root);
+    let four_reads = ModelOutput {
+        actions: (0..4)
+            .map(|i| ModelAction {
+                action: json!({"op":"read_file","path":format!("f{i}.txt")}),
+                call_id: None,
+                fc_id: None,
+                raw_arguments: None,
+            })
+            .collect(),
+        commentary: None,
+        reasoning_summary: None,
+        meta: None,
+        usage: None,
+    };
+    s.apply_model_output(&cap_root, &four_reads).unwrap();
+    let mut jobs = Vec::new();
+    while let Some(job) = s.claim_tool_job().unwrap() {
+        jobs.push(job);
+    }
+    assert_eq!(jobs.len(), 4);
+    let large = "\0\"\\\n界".repeat(TOOL_RESULT_LIMIT / 7 + 1);
+    for job in jobs {
+        s.tool_result_op(&job.op_id, Ok(&large)).unwrap();
+        let stored: String =
+            s.db.query_row("SELECT result FROM operations WHERE id=?1", [&job.op_id], |r| r.get(0)).unwrap();
+        assert!(stored.len() <= TOOL_RESULT_LIMIT && stored.contains("tool result truncated"));
+    }
+    let feedback = batch_feedback(&s, &cap_root);
+    let items = feedback["batch_results"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+    for item in items {
+        let (prefix, _) = item["result"].as_str().unwrap().split_once("\n\n[batch tool result truncated").unwrap();
+        assert!(large.starts_with(prefix));
+    }
 }

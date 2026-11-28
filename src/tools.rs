@@ -534,7 +534,7 @@ fn glob_match(pat: &str, text: &str) -> bool {
 }
 
 fn list_dir(workspace: &Path, rel_path: Option<&str>, max_depth: usize, limit: usize) -> Result<String> {
-    let lock = sandbox::Lock::workspace(workspace)?;
+    let lock = sandbox::Lock::shared_workspace(workspace)?;
     let start_dir = lock.dir(rel_path.map(Path::new))?;
     let max_depth = max_depth.clamp(1, 8);
     let limit = limit.clamp(1, 1000);
@@ -617,7 +617,7 @@ fn grep_files(
     if pattern.is_empty() {
         return Err("grep_files requires nonempty pattern".into());
     }
-    let lock = sandbox::Lock::workspace(workspace)?;
+    let lock = sandbox::Lock::shared_workspace(workspace)?;
     let start_dir = lock.dir(rel_path.map(Path::new))?;
     let prefix = rel_path.filter(|s| !s.trim().is_empty() && *s != ".").map(PathBuf::from).unwrap_or_default();
     let limit = limit.clamp(1, 500);
@@ -748,12 +748,20 @@ pub(crate) fn execute_with_options(
     if mode.is_read_only() && matches!(op, "edit_file" | "apply_patch") {
         return Err("workspace is in read-only mode; file edits are disabled".into());
     }
+    // MCP servers are host processes, not bwrap children. They cannot participate in
+    // read-only/staged isolation, so do not let a model use them as a workspace bypass.
+    if mode != SandboxMode::Direct && matches!(op, "mcp_list" | "mcp_call") {
+        return Err(format!(
+            "MCP tools are unavailable in {} mode because MCP servers run outside the workspace sandbox",
+            mode.as_str()
+        ));
+    }
     match op {
         "read_file" => {
             let offset = opt_usize(action, "offset")?;
             let limit = opt_usize(action, "limit")?;
             let line_numbers = opt_bool(action, "line_numbers")?.unwrap_or(false);
-            let lock = sandbox::Lock::workspace(workspace)?;
+            let lock = sandbox::Lock::shared_workspace(workspace)?;
             let (dir, target) = lock.parent(Path::new(field(action, "path")?))?;
             load_slice(&dir, &target, offset, limit, line_numbers)
         }
@@ -951,6 +959,15 @@ mod tests {
         thread::sleep(Duration::from_millis(600));
         assert!(!t.0.join("leaked").exists() && !t.0.join("orphan").exists());
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn mcp_tools_are_refused_outside_direct_sandbox_mode() {
+        let ws = Temp::new();
+        for mode in [SandboxMode::ReadOnly, SandboxMode::Staged] {
+            let err = execute_with_options(&ws.0, &json!({"op":"mcp_list"}), mode, None).unwrap_err();
+            assert!(err.contains("outside the workspace sandbox"), "{err}");
+        }
     }
 
     #[test]

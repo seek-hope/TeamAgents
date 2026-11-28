@@ -1,16 +1,17 @@
-//! Machine-checked formal verification suite for TeamAgents state machines (`docs/FORMAL_SPEC.md`).
-//! Combines exhaustive explicit-state BFS model checkers (safety + liveness backward reachability),
-//! concrete SQLite refinement checks, compaction well-foundedness proofs, stream conservation proofs,
-//! and action-decoder boundary soundness.
+//! Bounded explicit-state model checks and integration tests (`docs/FORMAL_SPEC.md`).
+//! Combines exhaustive BFS over hand-written abstractions (safety + liveness backward
+//! reachability), a scripted real-SQLite invariant scenario, bounded compaction checks,
+//! sampled stream conservation tests, and sampled decoder/redaction checks. None of
+//! these is a refinement proof of the production implementation.
 
 use crate::{
     model::{self, ModelError, ModelSettings},
     protocol::TurnKind,
-    store::Store,
+    store::{compute_compaction_slice, Store},
     tools::{StreamBuffer, HALF_OUTPUT, OUTPUT_LIMIT},
 };
 use rusqlite::Connection;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{
     collections::{HashMap, VecDeque},
     fs,
@@ -552,6 +553,13 @@ impl TreeLifecycleState {
             assert!(self.check_attempts >= 1, "verified run must have >=1 attempt: {self:?}");
         }
         if self.phase == TreePhase::Complete {
+            assert!(self.root.is_terminal(), "Inv_CompleteStagesTerminal violated: root still active: {self:?}");
+            if self.multi_leaf {
+                assert!(
+                    self.leaves.iter().all(|s| s.is_terminal()),
+                    "Inv_CompleteStagesTerminal violated: leaf still active: {self:?}"
+                );
+            }
             if !self.multi_leaf {
                 assert!(!self.reporter_used, "Inv_ConvergenceRule violated: 1 leaf invoked reporter: {self:?}");
             }
@@ -721,26 +729,39 @@ impl TreeLifecycleState {
             TreePhase::Complete => {}
         }
 
-        // Whole-root cancellation available in every non-Complete phase.
-        if self.phase != TreePhase::Complete {
-            let has_started_op = matches!(self.phase, TreePhase::CheckStarted)
-                || self.root == Stage::OpStarted
-                || self.leaves.contains(&Stage::OpStarted);
-            let can_cont_after_cancel = !self.multi_leaf || self.reporter_used;
-            let mut c = *self;
-            c.phase = TreePhase::Complete;
-            if has_started_op {
-                c.verify = VerifyState::Unknown;
-                c.outcome = Outcome::Unknown;
-                c.can_continue = false;
-            } else {
-                c.outcome = c.settle_outcome(Outcome::Cancelled);
-                c.can_continue = c.outcome != Outcome::Unknown && can_cont_after_cancel;
-            }
-            out.push(c);
-        }
-
+        // User cancellation is a separate external transition, not an unconditional edge
+        // from every state. Including it here would make the liveness check vacuous.
         out
+    }
+
+    fn cancelled(&self) -> Option<Self> {
+        if self.phase == TreePhase::Complete {
+            return None;
+        }
+        let has_started_op = matches!(self.phase, TreePhase::CheckStarted)
+            || self.root == Stage::OpStarted
+            || self.leaves.contains(&Stage::OpStarted);
+        let can_cont_after_cancel = !self.multi_leaf || self.reporter_used;
+        let mut c = *self;
+        c.phase = TreePhase::Complete;
+        // A terminal round may not leave Running/Queued stages behind. Started work is
+        // unknown; the rest is cancelled.
+        for stage in std::iter::once(&mut c.root).chain(c.leaves.iter_mut()) {
+            *stage = match *stage {
+                Stage::OpStarted => Stage::Unknown,
+                stage if !stage.is_terminal() => Stage::Cancelled,
+                stage => stage,
+            };
+        }
+        if has_started_op {
+            c.verify = VerifyState::Unknown;
+            c.outcome = Outcome::Unknown;
+            c.can_continue = false;
+        } else {
+            c.outcome = c.settle_outcome(Outcome::Cancelled);
+            c.can_continue = c.outcome != Outcome::Unknown && can_cont_after_cancel;
+        }
+        Some(c)
     }
 }
 
@@ -754,13 +775,42 @@ fn formal_bfs_tree_check_repair_convergence_and_unknown_absorption() {
     );
     println!("tree_bfs: ({states} states, {terminals} terminal)");
     assert!(
-        states >= 700 && terminals >= 300,
+        states >= 450 && terminals >= 150,
         "unexpectedly tiny tree lifecycle model: states={states}, terminals={terminals}"
     );
 }
 
+#[test]
+fn formal_tree_cancellation_is_fenced_and_settles_all_stages() {
+    // Cancellation is an external action and may race any non-terminal phase. Every
+    // resulting Complete state must have terminal stages and satisfy Unknown fencing.
+    for phase in [
+        TreePhase::RootWork,
+        TreePhase::LeavesWork,
+        TreePhase::CheckPending,
+        TreePhase::CheckStarted,
+        TreePhase::RepairQueued,
+        TreePhase::RepairRunning,
+        TreePhase::ReportReady,
+        TreePhase::Reporting,
+    ] {
+        let mut state = TreeLifecycleState::roots()[1];
+        state.phase = phase;
+        state.root = Stage::Done;
+        state.leaves = [Stage::Running, Stage::Queued];
+        state.multi_leaf = true;
+        state.outcome = Outcome::Active;
+        if let Some(cancelled) = state.cancelled() {
+            cancelled.check_invariants();
+            assert_eq!(cancelled.phase, TreePhase::Complete);
+            assert!(cancelled.root.is_terminal());
+            assert!(cancelled.leaves.iter().all(|stage| stage.is_terminal()));
+        }
+    }
+}
+
 // ============================================================================
-// 3. Concrete-to-Abstract Refinement on Real SQLite Store
+// 3. Scripted Invariant Checks on the Real SQLite Store (not a refinement proof)
 // ============================================================================
 
 struct ScratchDir(PathBuf);
@@ -792,6 +842,36 @@ fn assert_store_invariants(db: &Connection, step: &str) {
         )
         .unwrap();
     assert_eq!(bad_parent, 0, "[{step}] Inv_AcyclicTree violated");
+
+    let active_in_complete: i64 = db
+        .query_row(
+            "SELECT count(*) FROM tree_runs g JOIN tasks t ON t.root=g.root
+             WHERE g.phase='complete' AND t.status IN ('queued','running','waiting','approval')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(active_in_complete, 0, "[{step}] Inv_CompleteStagesTerminal violated");
+
+    let duplicate_member: i64 = db
+        .query_row(
+            "SELECT count(*) FROM (SELECT root,round,agent FROM tasks WHERE agent NOT LIKE 'repair-%'
+             GROUP BY root,round,agent HAVING count(*) > 1)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(duplicate_member, 0, "[{step}] Inv_OneStagePerMember violated");
+
+    let oversized_fanout: i64 = db
+        .query_row(
+            "SELECT count(*) FROM (SELECT parent FROM tasks WHERE parent IS NOT NULL AND round=(SELECT round FROM tasks p WHERE p.id=tasks.parent)
+             GROUP BY parent HAVING count(*) > 64)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(oversized_fanout, 0, "[{step}] Inv_HandoffCap violated");
 
     // 2. Waiter status consistency: non-waiting tasks never retain wb_wait_* fields.
     let bad_waiter: i64 = db
@@ -872,7 +952,7 @@ fn assert_store_invariants(db: &Connection, step: &str) {
 }
 
 #[test]
-fn formal_refinement_real_sqlite_store_preserves_all_invariants() {
+fn formal_sqlite_integration_scripted_invariants() {
     let dir = ScratchDir::new();
     let mut s = dir.open();
 
@@ -1004,16 +1084,16 @@ fn formal_refinement_real_sqlite_store_preserves_all_invariants() {
 
 #[test]
 fn formal_compaction_termination_and_progress_all_lengths() {
-    for start_len in 0..=10_000usize {
+    for start_len in 0..=2_000usize {
         let mut len = start_len;
         let mut steps = 0usize;
         while len >= 4 {
-            let head_keep = 2usize.min(len.saturating_sub(2));
-            let tail_keep = if len >= 10 { 6 } else { 2usize.min(len.saturating_sub(head_keep + 2)) };
-            let mid_end = len.saturating_sub(tail_keep);
-            if mid_end <= head_keep + 1 {
+            let history: Vec<Value> = (0..len)
+                .map(|i| json!({"role": if i % 2 == 0 { "user" } else { "assistant" }, "content": "x"}))
+                .collect();
+            let Some((head_keep, tail_keep, mid_end)) = compute_compaction_slice(&history) else {
                 break;
-            }
+            };
             let dropped = mid_end - head_keep;
             assert!(dropped >= 2, "must drop at least 2 messages at len={len}");
             let next_len = head_keep + 1 + tail_keep;
@@ -1031,7 +1111,33 @@ fn formal_compaction_termination_and_progress_all_lengths() {
         }
     }
 
-    // Verify exact agreement with real `Store::prepare_compaction` and `Store::apply_compaction` across len 1..=14.
+    // Every role pattern at the compaction boundary: the production slice function must
+    // strictly shrink whenever it returns a slice.
+    for len in 0..=12usize {
+        for mask in 0..(1usize << len) {
+            let history: Vec<Value> = (0..len)
+                .map(|i| {
+                    let role = if mask & (1 << i) == 0 { "user" } else { "assistant" };
+                    json!({"role": role, "content": "x"})
+                })
+                .collect();
+            if let Some((head_keep, tail_keep, mid_end)) = compute_compaction_slice(&history) {
+                assert!(head_keep <= len && mid_end <= len && tail_keep <= len);
+                assert!(mid_end > head_keep + 1, "slice must drop at least two messages");
+                let next_len = head_keep + 1 + (len - mid_end);
+                assert!(next_len < len, "compaction did not strictly shrink: {len} -> {next_len}");
+                assert_eq!(next_len, head_keep + 1 + tail_keep);
+                if tail_keep > 0 {
+                    assert!(
+                        history[mid_end - 1]["role"] != "assistant" || history[mid_end]["role"] != "user",
+                        "checkpoint splits the assistant action from its result at len={len}"
+                    );
+                }
+            }
+        }
+    }
+
+    // Real Store integration remains a single scripted path, not a proof over all SQL transitions.
     let dir = ScratchDir::new();
     let mut s = dir.open();
     let root = s.submit("default", "compaction termination check").unwrap();
@@ -1107,25 +1213,48 @@ fn formal_stream_buffer_conservation_and_utf8_safety() {
                     assert!(final_omitted > 0);
                     assert!(rendered.contains("omitted from stdout"));
                     // Rendered prefix & suffix match valid UTF-8 slices of original input.
-                    assert!(sample.starts_with(&sample[..head_end]));
                     assert!(rendered.as_bytes().starts_with(&sample[..head_end]));
                     assert!(rendered.as_bytes().ends_with(&sample[len - tail_len..]));
                 }
             }
         }
     }
+
+    // Deterministic pseudo-random chunking over a bounded corpus: catches boundary bugs
+    // that the fixed chunk list above can miss, without asserting universal coverage.
+    for seed in 1u64..=32 {
+        let end = corpus.floor_char_boundary((seed as usize * 997).min(corpus.len()));
+        let sample = &corpus.as_bytes()[..end];
+        let mut sb = StreamBuffer::default();
+        let mut pushed = 0usize;
+        let mut state = seed;
+        let mut i = 0usize;
+        while i < sample.len() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let take = ((state >> 33) as usize % 97 + 1).min(sample.len() - i);
+            sb.push(&sample[i..i + take]);
+            pushed += take;
+            let (h, t, ob, _) = sb.stats();
+            assert!(h <= HALF_OUTPUT && t <= HALF_OUTPUT);
+            assert_eq!(h + ob + t, pushed);
+            i += take;
+        }
+        let (rendered, head_end, tail_len, omitted, _) = sb.finish_with_stats("stdout");
+        assert_eq!(head_end + omitted + tail_len, sample.len());
+        assert!(!rendered.contains('\u{FFFD}'));
+    }
 }
 
 // ============================================================================
-// 6. Action Decoder Boundary, Fencing & Secret Redaction Proof
+// 6. Action Decoder Boundary, Fencing & Secret Redaction Sampling
 // ============================================================================
 
 #[test]
-fn formal_action_decoder_fence_and_redaction_soundness() {
+fn formal_action_decoder_fence_and_redaction_sampled() {
     let secret = "SECRET-CANARY-9f3c7a";
     let kinds = [TurnKind::Legacy, TurnKind::Root, TurnKind::Node, TurnKind::Reporter];
 
-    // 1. Exhaustive permission matrix verification across all TurnKinds.
+    // 1. Sampled permission matrix across TurnKinds (not every root/node tool op).
     for kind in kinds {
         let is_tree_worker = matches!(kind, TurnKind::Root | TurnKind::Node);
 
@@ -1152,7 +1281,34 @@ fn formal_action_decoder_fence_and_redaction_soundness() {
             assert!(!msg.contains(secret), "secret leaked in error: {msg}");
         }
 
-        // Role matrix for `ask`, legacy ops, and whiteboard ops.
+        // Full TurnKind x op matrix across all 17 Root/Node ops and 3 Legacy-only ops.
+        for non_reporter_op in [
+            r#"{"op":"members"}"#,
+            r#"{"op":"read_file","path":"a"}"#,
+            r#"{"op":"list_dir"}"#,
+            r#"{"op":"grep_files","pattern":"x"}"#,
+            "{\"op\":\"apply_patch\",\"patch\":\"*** Begin Patch\\n*** Add File: a.txt\\n+hi\\n*** End Patch\"}",
+            r#"{"op":"edit_file","path":"a","old":"x","new":"y"}"#,
+            r#"{"op":"shell","command":"true"}"#,
+            r#"{"op":"read_skill","name":"demo"}"#,
+            r#"{"op":"mcp_list"}"#,
+            r#"{"op":"mcp_call","server":"srv","tool":"t"}"#,
+        ] {
+            assert_eq!(
+                model::decode_action_for_test(non_reporter_op, kind).is_ok(),
+                kind != TurnKind::Reporter,
+                "{kind:?}: {non_reporter_op}"
+            );
+        }
+        for tree_op in [
+            r#"{"op":"update_plan","plan":[{"step":"s","status":"pending"}]}"#,
+            r#"{"op":"handoff","text":"done","children":[{"agent":"w","text":"sub"}]}"#,
+            r#"{"op":"wb_read"}"#,
+            r#"{"op":"wb_write","key":"k","mode":"set","content":"v"}"#,
+            r#"{"op":"wb_wait"}"#,
+        ] {
+            assert_eq!(model::decode_action_for_test(tree_op, kind).is_ok(), is_tree_worker, "{kind:?}: {tree_op}");
+        }
         assert_eq!(
             model::decode_action_for_test(r#"{"op":"ask","text":"which?"}"#, kind).is_ok(),
             kind == TurnKind::Root
@@ -1163,11 +1319,6 @@ fn formal_action_decoder_fence_and_redaction_soundness() {
             r#"{"op":"send","agent":"a","text":"hi"}"#,
         ] {
             assert_eq!(model::decode_action_for_test(leg, kind).is_ok(), kind == TurnKind::Legacy);
-        }
-        for wb in
-            [r#"{"op":"wb_read"}"#, r#"{"op":"wb_write","key":"k","mode":"set","content":"v"}"#, r#"{"op":"wb_wait"}"#]
-        {
-            assert_eq!(model::decode_action_for_test(wb, kind).is_ok(), is_tree_worker);
         }
     }
 

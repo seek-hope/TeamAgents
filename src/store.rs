@@ -56,6 +56,63 @@ fn is_readonly_shell_probe(cmd: &str) -> bool {
     )
 }
 
+/// Tool output is model context, not an archival channel. Keep one result below the
+/// worker request limit even when there are too few messages for auto-compaction.
+const TOOL_RESULT_LIMIT: usize = 1024 * 1024;
+const BATCH_RESULTS_LIMIT: usize = 2 * 1024 * 1024;
+
+fn bound_tool_result(text: &str) -> String {
+    if text.len() <= TOOL_RESULT_LIMIT {
+        return text.to_owned();
+    }
+    let marker = format!("\n\n[tool result truncated at {TOOL_RESULT_LIMIT} bytes]");
+    let end = text.floor_char_boundary(TOOL_RESULT_LIMIT - marker.len());
+    format!("{}{marker}", &text[..end])
+}
+
+// Bytes inside a compact serde_json string, excluding its two enclosing quotes.
+fn escaped_byte_len(b: u8) -> usize {
+    match b {
+        b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+        0..=31 => 6,
+        _ => 1,
+    }
+}
+
+fn escaped_len(text: &str) -> usize {
+    text.bytes().map(escaped_byte_len).sum()
+}
+
+// Keep whole entries in seq order. A storage-truncated receipt can be shortened again
+// for replay, so include the entries omitted by the first pass in the final count.
+fn truncate_wb_read(receipt: &mut Value, limit: usize, size: fn(&str) -> usize) {
+    let entries = std::mem::take(receipt["entries"].as_array_mut().expect("whiteboard read entries"));
+    let omitted = receipt["omitted_entries"].as_u64().unwrap_or(0) + entries.len() as u64;
+    receipt["truncated"] = json!(true);
+    receipt["omitted_entries"] = json!(omitted);
+    let mut used = size(&receipt.to_string());
+    let mut kept = Vec::new();
+    for entry in entries {
+        used += size(&entry.to_string()) + usize::from(!kept.is_empty());
+        if used > limit {
+            break;
+        }
+        kept.push(entry);
+    }
+    receipt["omitted_entries"] = json!(omitted - kept.len() as u64);
+    receipt["entries"] = Value::Array(kept);
+}
+
+fn truncate_wb_write(receipt: &mut Value) {
+    for field in ["current", "entry"] {
+        if let Some(entry) = receipt[field].as_object_mut() {
+            // Keep identity, sequence and CAS metadata, even with oversized legacy author names.
+            entry.retain(|key, _| !matches!(key.as_str(), "content" | "author_agent" | "author_task"));
+        }
+    }
+    receipt["truncated"] = json!(true);
+}
+
 fn repetition_nudge(messages: &[Value]) -> Option<&'static str> {
     let mut actions: Vec<(String, Value, Option<String>)> = Vec::new();
     for msg in messages.iter().rev() {
@@ -105,6 +162,8 @@ fn repetition_nudge(messages: &[Value]) -> Option<&'static str> {
     }
 }
 
+/// A session store is designed for one daemon process. Tests may open two handles to
+/// exercise SQLite serialization, but production multi-daemon sharing is unsupported.
 pub struct Store {
     db: Connection,
 }
@@ -116,6 +175,8 @@ pub struct Turn {
     pub task: String,
     pub agent: String,
     pub messages: Vec<Value>,
+    /// Computed before adding transient instructions to the outbound request.
+    pub can_compact: bool,
     /// Pre-snapshot roots retain the provider's legacy environment-based selection.
     pub settings: Option<ModelSettings>,
     pub last_input_tokens: u64,
@@ -928,6 +989,10 @@ impl Store {
             "passed"
         } else if task["check"].is_null() {
             "not_requested"
+        } else if interrupted {
+            "unknown"
+        } else if terminal && !attempted {
+            "not_run"
         } else if attempted && terminal {
             "failed"
         } else {
@@ -1178,6 +1243,7 @@ impl Store {
                 let rows = q.query_map([&agent], history_msg).db()?;
                 rows.collect::<rusqlite::Result<_>>().db()?
             };
+            let can_compact = compute_compaction_slice(&messages).is_some();
             if introduced || is_tree {
                 let mut parts = Vec::new();
                 if introduced {
@@ -1207,9 +1273,8 @@ impl Store {
                     let seen_seq: i64 = db
                         .query_row("SELECT wb_seen_seq FROM tasks WHERE id=?1", [&task], |r| r.get(0))
                         .db()?;
-                    if let Some((wb_seq, digest)) = tree::whiteboard_digest(db, &root, seen_seq)? {
+                    if let Some((_wb_seq, digest)) = tree::whiteboard_digest(db, &root, seen_seq)? {
                         parts.push(digest);
-                        db.execute("UPDATE tasks SET wb_seen_seq=?2 WHERE id=?1", params![task, wb_seq]).db()?;
                     }
                 }
                 if !parts.is_empty() {
@@ -1231,6 +1296,7 @@ impl Store {
                 task,
                 agent,
                 messages,
+                can_compact,
                 settings,
                 last_input_tokens: last_in.max(0) as u64,
                 last_history_bytes: last_bytes.max(0) as usize,
@@ -1477,8 +1543,10 @@ impl Store {
             let op = field(&ma.action, "op")?;
             if op == "update_plan" {
                 validated_plans.push(Some(validate_update_plan(&ma.action)?.to_string()));
-            } else if is_local_tool_op(op) {
-                validate_local_tool(&ma.action)?;
+            } else if is_batch_tool_op(op) {
+                if is_local_tool_op(op) {
+                    validate_local_tool(&ma.action)?;
+                }
                 validated_plans.push(None);
             } else {
                 return Err(format!("action {op} cannot be batched with other tools"));
@@ -1511,7 +1579,8 @@ impl Store {
                     .db()?;
                 } else {
                     let op = ma.action["op"].as_str().unwrap_or("");
-                    let state = if auto || is_read_only_local_tool(op) { "ready" } else { "approval" };
+                    let state =
+                        if auto || is_batch_read_only_op(op) || op == "wb_write" { "ready" } else { "approval" };
                     operation_with_meta(
                         db,
                         task,
@@ -1580,10 +1649,10 @@ impl Store {
                            AND NOT EXISTS (
                                SELECT 1 FROM operations s
                                WHERE s.task=o.task AND s.state='started'
-                                 AND COALESCE(json_extract(s.action,'$.op'),'') NOT IN ('read_file','list_dir','grep_files','read_skill','mcp_list')
+                                 AND COALESCE(json_extract(s.action,'$.op'),'') NOT IN ('read_file','list_dir','grep_files','read_skill','mcp_list','wb_read')
                            )
                            AND (
-                               COALESCE(json_extract(o.action,'$.op'),'') IN ('read_file','list_dir','grep_files','read_skill','mcp_list')
+                               COALESCE(json_extract(o.action,'$.op'),'') IN ('read_file','list_dir','grep_files','read_skill','mcp_list','wb_read')
                                OR (
                                    NOT EXISTS (SELECT 1 FROM operations s WHERE s.task=o.task AND s.state='started')
                                    AND NOT EXISTS (
@@ -1615,6 +1684,61 @@ impl Store {
         })
     }
 
+    /// Execute a batched whiteboard operation in the store's single-writer transaction.
+    /// The daemon calls this instead of dispatching wb_read/wb_write to the filesystem tool worker.
+    pub fn execute_whiteboard_op(&mut self, task: &str, action: &Value) -> Result<String> {
+        self.transaction(|db| {
+            let root = tree::work_root(db, task)?.ok_or("whiteboard operations require a tree stage")?;
+            let round: i64 = db.query_row("SELECT round FROM tree_runs WHERE root=?1", [&root], |r| r.get(0)).db()?;
+            match field(action, "op")? {
+                "wb_read" => {
+                    let key = action.get("key").and_then(Value::as_str);
+                    let prefix = action.get("prefix").and_then(Value::as_str);
+                    let since_seq = action.get("since_seq").and_then(Value::as_i64);
+                    let (seq, entries) = tree::whiteboard_entries(db, &root, key, prefix, since_seq)?;
+                    let mut receipt = json!({"whiteboard":true,"op":"wb_read","seq":seq,"entries":entries});
+                    let text = receipt.to_string();
+                    if text.len() <= TOOL_RESULT_LIMIT {
+                        return Ok(text);
+                    }
+                    truncate_wb_read(&mut receipt, TOOL_RESULT_LIMIT, str::len);
+                    Ok(receipt.to_string())
+                }
+                "wb_write" => {
+                    let key = field(action, "key")?;
+                    let mode = action.get("mode").and_then(Value::as_str).unwrap_or("set");
+                    let kind = action.get("kind").and_then(Value::as_str);
+                    let content = action.get("content").and_then(Value::as_str);
+                    let expected_version = action.get("expected_version").and_then(Value::as_i64);
+                    let author_agent: String =
+                        db.query_row("SELECT agent FROM tasks WHERE id=?1", [task], |r| r.get(0)).db()?;
+                    let mut receipt = tree::wb_write_entry(
+                        db,
+                        &root,
+                        round,
+                        Some(task),
+                        &author_agent,
+                        key,
+                        mode,
+                        kind,
+                        content,
+                        expected_version,
+                    )?;
+                    let mut text = receipt.to_string();
+                    if text.len() > TOOL_RESULT_LIMIT {
+                        truncate_wb_write(&mut receipt);
+                        text = receipt.to_string();
+                    }
+                    if receipt["ok"] == false {
+                        return Err(text);
+                    }
+                    Ok(text)
+                }
+                op => Err(format!("action {op} is not a whiteboard operation")),
+            }
+        })
+    }
+
     #[cfg(test)]
     pub fn claim_tool(&mut self) -> Result<Option<(String, Value)>> {
         Ok(self.claim_tool_job()?.map(|j| (j.task, j.action)))
@@ -1638,13 +1762,13 @@ impl Store {
     pub fn tool_result_op(&mut self, op_id: &str, result: std::result::Result<&str, &str>) -> Result<()> {
         self.transaction(|db| {
             let (ok, text) = match result {
-                Ok(text) => (true, text),
-                Err(error) => (false, error),
+                Ok(text) => (true, bound_tool_result(text)),
+                Err(error) => (false, bound_tool_result(error)),
             };
             let (task, action, batch_id): (String, Value, Option<String>) = db
                 .query_row(
                     "UPDATE operations SET state='done',reserved=0,ok=?2,result=?3 WHERE id=?1 AND state='started' RETURNING task,action,batch_id",
-                    params![op_id, ok, text],
+                    params![op_id, ok, &text],
                     |r| Ok((r.get(0)?, action_at(r, 1)?, r.get(2)?)),
                 )
                 .optional()
@@ -1652,9 +1776,9 @@ impl Store {
                 .ok_or("operation is not active")?;
             if action["op"] == "verify" {
                 if let Some(root) = tree::work_root(db, &task)? {
-                    tree::finish_check(db, &root, ok, text)
+                    tree::finish_check(db, &root, ok, &text)
                 } else {
-                    finish_check(db, &task, ok, text)
+                    finish_check(db, &task, ok, &text)
                 }
             } else if let Some(bid) = batch_id {
                 refresh_batch_or_queue(db, &task, &bid)
@@ -1721,7 +1845,8 @@ impl Store {
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM tasks WHERE root=?1 AND model_reserved=1)
                         OR EXISTS(SELECT 1 FROM operations o JOIN tasks t ON t.id=o.task WHERE t.root=?1 AND o.reserved=1)
-                        OR EXISTS(SELECT 1 FROM tree_runs WHERE root=?1 AND phase='reporting')",
+                        OR EXISTS(SELECT 1 FROM tasks WHERE root=?1 AND status IN ('queued','running','waiting','approval'))
+                        OR EXISTS(SELECT 1 FROM tree_runs WHERE root=?1 AND phase<>'complete')",
                     [&root],
                     |r| r.get(0),
                 )
@@ -1767,19 +1892,20 @@ impl Store {
     }
 
     pub fn whiteboard(&mut self, task_or_root: &str) -> Result<Value> {
-        let root: String = self
-            .db
-            .query_row("SELECT root FROM tasks WHERE id=?1", [task_or_root], |r| r.get(0))
-            .optional()
-            .db()?
-            .ok_or_else(|| format!("unknown task: {task_or_root}"))?;
-        let exists: bool =
-            self.db.query_row("SELECT EXISTS(SELECT 1 FROM tree_runs WHERE root=?1)", [&root], |r| r.get(0)).db()?;
-        if !exists {
-            return Err("legacy tasks do not have a collaborative whiteboard".into());
-        }
-        let (seq, entries) = tree::whiteboard_entries(&self.db, &root, None, None, None)?;
-        Ok(json!({"root": root, "seq": seq, "entries": entries}))
+        self.transaction(|db| {
+            let root: String = db
+                .query_row("SELECT root FROM tasks WHERE id=?1", [task_or_root], |r| r.get(0))
+                .optional()
+                .db()?
+                .ok_or_else(|| format!("unknown task: {task_or_root}"))?;
+            let exists: bool =
+                db.query_row("SELECT EXISTS(SELECT 1 FROM tree_runs WHERE root=?1)", [&root], |r| r.get(0)).db()?;
+            if !exists {
+                return Err("legacy tasks do not have a collaborative whiteboard".into());
+            }
+            let (seq, entries) = tree::whiteboard_entries(db, &root, None, None, None)?;
+            Ok(json!({"root": root, "seq": seq, "entries": entries}))
+        })
     }
 
     pub fn user_wb_write(
@@ -1872,7 +1998,7 @@ impl Store {
     }
 }
 
-fn compute_compaction_slice(history: &[Value]) -> Option<(usize, usize, usize)> {
+pub(crate) fn compute_compaction_slice(history: &[Value]) -> Option<(usize, usize, usize)> {
     let len = history.len();
     if len < 4 {
         return None;
@@ -1883,7 +2009,7 @@ fn compute_compaction_slice(history: &[Value]) -> Option<(usize, usize, usize)> 
     }
     let mut tail_keep = if len >= 10 { 6 } else { 2.min(len.saturating_sub(head_keep + 2)) };
     let mut mid_end = len.saturating_sub(tail_keep);
-    if tail_keep > 1 && mid_end > 0 && history[mid_end - 1]["role"] == "assistant" && history[mid_end]["role"] == "user"
+    if tail_keep > 0 && mid_end > 0 && history[mid_end - 1]["role"] == "assistant" && history[mid_end]["role"] == "user"
     {
         tail_keep -= 1;
         mid_end = len.saturating_sub(tail_keep);
@@ -2079,6 +2205,13 @@ impl Store {
                 let rows = q.query_map([], |r| r.get::<_, String>(0)).db()?;
                 rows.collect::<rusqlite::Result<Vec<_>>>().db()?
             };
+            // Once a stage has an unknown outcome, neither an unstarted job nor an approval may resume it.
+            db.execute(
+                "UPDATE operations SET state='cancelled' WHERE state IN ('ready','approval')
+                 AND (task,round) IN (SELECT task,round FROM operations WHERE state='unknown')",
+                [],
+            )
+            .db()?;
             let mut seen_lost = HashSet::new();
             for task in lost {
                 if !seen_lost.insert(task.clone()) {
@@ -2109,6 +2242,14 @@ fn is_read_only_local_tool(op: &str) -> bool {
 
 fn is_local_tool_op(op: &str) -> bool {
     is_read_only_local_tool(op) || matches!(op, "edit_file" | "apply_patch" | "shell" | "mcp_call")
+}
+
+fn is_batch_tool_op(op: &str) -> bool {
+    is_local_tool_op(op) || matches!(op, "wb_read" | "wb_write")
+}
+
+fn is_batch_read_only_op(op: &str) -> bool {
+    is_read_only_local_tool(op) || op == "wb_read"
 }
 
 fn validate_local_tool(action: &Value) -> Result<()> {
@@ -2176,6 +2317,35 @@ fn validate_update_plan(action: &Value) -> Result<Value> {
     Ok(Value::Array(out))
 }
 
+fn truncate_batch_result(op: &Value, text: &str, limit: usize) -> String {
+    if matches!(op.as_str(), Some("wb_read" | "wb_write")) {
+        if let Ok(mut receipt) = serde_json::from_str::<Value>(text) {
+            if receipt["op"] == *op && receipt["whiteboard"] == true {
+                if op == "wb_read" && receipt["entries"].is_array() {
+                    truncate_wb_read(&mut receipt, limit, escaped_len);
+                    return receipt.to_string();
+                }
+                if op == "wb_write" {
+                    truncate_wb_write(&mut receipt);
+                    return receipt.to_string();
+                }
+            }
+        }
+    }
+    let marker = "\n\n[batch tool result truncated]";
+    let mut remaining = limit - escaped_len(marker);
+    let end = text.bytes().position(|b| {
+        let cost = escaped_byte_len(b);
+        if cost > remaining {
+            return true;
+        }
+        remaining -= cost;
+        false
+    });
+    let end = text.floor_char_boundary(end.unwrap_or(text.len()));
+    format!("{}{marker}", &text[..end])
+}
+
 fn refresh_batch_or_queue(db: &Connection, task: &str, batch_id: &str) -> Result<()> {
     let (approval_cnt, active_cnt): (i64, i64) = db
         .query_row(
@@ -2204,24 +2374,47 @@ fn refresh_batch_or_queue(db: &Connection, task: &str, batch_id: &str) -> Result
         })
         .db()?;
     let mut results = Vec::new();
+    let mut reads = Vec::new();
+    let mut overhead = r#"{"batch_results":[]}"#.len();
+    let mut payload_size = 0;
     for row in rows {
         let (action, state, ok, res) = row.db()?;
-        let item = if state == "denied" {
-            json!({
-                "task": task,
-                "tool": action["op"],
-                "ok": false,
-                "result": res.unwrap_or_else(|| "tool denied by user".into())
-            })
-        } else {
-            json!({
-                "task": task,
-                "tool": action["op"],
-                "ok": ok.unwrap_or(false),
-                "result": res.unwrap_or_default()
-            })
-        };
+        let ok = state == "done" && ok == Some(true);
+        if ok && action["op"] == "wb_read" && !action["key"].is_string() && !action["prefix"].is_string() {
+            reads.push((results.len(), action["since_seq"].as_i64().unwrap_or(0)));
+        }
+        let text = res.unwrap_or_else(|| if state == "denied" { "tool denied by user".into() } else { String::new() });
+        let mut item = json!({"task":task,"tool":action["op"],"ok":ok,"result":""});
+        overhead += item.to_string().len() + usize::from(!results.is_empty());
+        payload_size += escaped_len(&text);
+        item["result"] = Value::String(text);
         results.push(item);
+    }
+    // UUID task IDs, fixed tool names and <=16 calls leave ample room for a marker per item.
+    if overhead + payload_size > BATCH_RESULTS_LIMIT {
+        let per_item = (BATCH_RESULTS_LIMIT - overhead) / results.len();
+        for item in &mut results {
+            let text = item["result"].as_str().unwrap();
+            if escaped_len(text) > per_item {
+                item["result"] = Value::String(truncate_batch_result(&item["tool"], text, per_item));
+            }
+        }
+    }
+    // Acknowledge only complete snapshots in the exact feedback being queued. Interleaved
+    // writes (including after the snapshot) must not let a read skip or regress the watermark.
+    for (idx, since) in reads {
+        let text = results[idx]["result"].as_str().unwrap();
+        if let Ok(receipt) = serde_json::from_str::<Value>(text) {
+            if receipt["op"] == "wb_read" && receipt["entries"].is_array() && receipt["truncated"] != true {
+                if let Some(seq) = receipt["seq"].as_i64() {
+                    db.execute(
+                        "UPDATE tasks SET wb_seen_seq=?2 WHERE id=?1 AND wb_seen_seq BETWEEN ?3 AND ?2",
+                        params![task, seq, since],
+                    )
+                    .db()?;
+                }
+            }
+        }
     }
     queue(db, task, json!({"batch_results": results}))
 }

@@ -83,6 +83,7 @@ pub(crate) enum Verification {
     Failed,
     Pending,
     NotRequested,
+    NotRun,
     Unknown,
     Other(String),
 }
@@ -94,6 +95,7 @@ impl Verification {
             "failed" => Self::Failed,
             "pending" => Self::Pending,
             "not_requested" => Self::NotRequested,
+            "not_run" => Self::NotRun,
             "unknown" => Self::Unknown,
             other => Self::Other(other.to_owned()),
         }
