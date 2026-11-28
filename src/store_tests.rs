@@ -32,7 +32,15 @@ impl Store {
         review: bool,
         tree: bool,
     ) -> Result<String> {
-        self.create_root(agent, prompt, check, review, false, tree.then_some(&ModelSettings::default()))
+        self.create_root(
+            agent,
+            prompt,
+            check,
+            review,
+            SandboxMode::Direct,
+            tree.then_some(&ModelSettings::default()),
+            None,
+        )
     }
 }
 
@@ -465,7 +473,7 @@ fn migration_preserves_legacy_root_policy_pending_and_ready_operations() {
 
     let mut s = home.open();
     s.recover().unwrap();
-    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 8);
+    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 10);
     for t in s.tasks().unwrap().as_array().unwrap() {
         assert_eq!(t["policy"], "review");
     }
@@ -506,7 +514,7 @@ fn migration_rolls_back_and_unknown_versions_do_not_open() {
     let other = Session::new();
     let path = other.0.join("swarm.db");
     let db = legacy_database(&other);
-    for (app, version) in [(APP_ID, 9), (APP_ID, 0), (0, 1), (0, 2), (42, 2)] {
+    for (app, version) in [(APP_ID, 11), (APP_ID, 0), (0, 1), (0, 2), (42, 2)] {
         db.pragma_update(None, "application_id", app).unwrap();
         db.pragma_update(None, "user_version", version).unwrap();
         assert!(Store::open(&path).is_err());
@@ -563,8 +571,9 @@ fn packet(reporter: &Turn) -> Value {
 fn model_overrides_are_scoped_to_session_and_provider() {
     let home = Session::new();
     let mut s = home.open();
-    let api = ModelSettings { model: Some("api-model".into()), effort: Some("high".into()) };
-    let chatgpt = ModelSettings { model: None, effort: Some("medium".into()) };
+    let api =
+        ModelSettings { provider: Some("api".into()), model: Some("api-model".into()), effort: Some("high".into()) };
+    let chatgpt = ModelSettings { provider: Some("chatgpt".into()), model: None, effort: Some("medium".into()) };
     s.set_model_settings("api", &api).unwrap();
     s.set_model_settings("chatgpt", &chatgpt).unwrap();
     drop(s);
@@ -574,25 +583,35 @@ fn model_overrides_are_scoped_to_session_and_provider() {
     assert_eq!(s.model_settings("chatgpt", None).unwrap(), chatgpt);
     assert_eq!(
         s.model_settings("chatgpt", Some("env-model")).unwrap(),
-        ModelSettings { model: Some("env-model".into()), ..chatgpt.clone() },
+        ModelSettings { provider: Some("chatgpt".into()), model: Some("env-model".into()), ..chatgpt.clone() },
     );
     s.set_model_settings("api", &ModelSettings::default()).unwrap();
-    assert_eq!(s.model_settings("api", None).unwrap(), ModelSettings::default());
+    assert_eq!(
+        s.model_settings("api", None).unwrap(),
+        ModelSettings { provider: Some("api".into()), ..ModelSettings::default() }
+    );
     assert_eq!(s.model_settings("chatgpt", None).unwrap(), chatgpt);
 
     let other = Session::new();
-    assert_eq!(other.open().model_settings("chatgpt", None).unwrap(), ModelSettings::default());
+    assert_eq!(
+        other.open().model_settings("chatgpt", None).unwrap(),
+        ModelSettings { provider: Some("chatgpt".into()), ..ModelSettings::default() }
+    );
 }
 
 #[test]
 fn submitted_settings_survive_changes_and_restart_through_handoff_repair_and_report() {
     let home = Session::new();
     let mut s = home.open();
-    let overrides = ModelSettings { model: None, effort: Some("low".into()) };
+    let overrides = ModelSettings { provider: None, model: None, effort: Some("low".into()) };
     s.set_model_settings("api", &overrides).unwrap();
     let submitted = s.model_settings("api", Some("at-submission")).unwrap();
     let root = s.submit_with_model("default", "fix", Some("check it"), false, &submitted).unwrap();
-    s.set_model_settings("api", &ModelSettings { model: Some("later-model".into()), effort: None }).unwrap();
+    s.set_model_settings(
+        "api",
+        &ModelSettings { provider: Some("api".into()), model: Some("later-model".into()), effort: None },
+    )
+    .unwrap();
     drop(s);
 
     let mut s = home.open();
@@ -648,7 +667,11 @@ fn schema_three_tree_keeps_legacy_model_selection_alongside_an_empty_snapshot() 
 
     let mut s = home.open();
     let new = s.submit_with_model("default", "new work", None, false, &ModelSettings::default()).unwrap();
-    s.set_model_settings("api", &ModelSettings { model: Some("future-model".into()), effort: None }).unwrap();
+    s.set_model_settings(
+        "api",
+        &ModelSettings { provider: Some("api".into()), model: Some("future-model".into()), effort: None },
+    )
+    .unwrap();
     assert_eq!(claim(&mut s, "old").settings, None);
     handoff(&mut s, "old", &[("o1", "1"), ("o2", "2")]).unwrap();
     assert_eq!(claim(&mut s, &new).settings, Some(ModelSettings::default()));
@@ -1150,7 +1173,8 @@ fn tree_reports_have_one_durable_claim_no_budget_cap_and_deterministic_partial_r
 fn delete_removes_completed_and_idle_trees_while_preserving_siblings_and_refusing_inflight() {
     let home = Session::new();
     let mut s = home.open();
-    let overrides = ModelSettings { model: Some("m1".into()), effort: Some("high".into()) };
+    let overrides =
+        ModelSettings { provider: Some("api".into()), model: Some("m1".into()), effort: Some("high".into()) };
     let target = s.submit_with_model("default", "delete me", Some("cargo test"), true, &overrides).unwrap();
 
     // Clarify and handoff target tree with child + repair stage + clarifications + operations + model settings.
@@ -1433,7 +1457,7 @@ fn schema_four_database_migrates_cleanly_to_v6_and_allows_concurrent_same_agent(
 
     let mut s = home.open();
     s.recover().unwrap();
-    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 8);
+    assert_eq!(s.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 10);
     let t1 = s.task("r1").unwrap();
     assert_eq!(t1["continuation_node"], "c1");
     assert_eq!(t1["rounds"].as_array().unwrap().len(), 1);
@@ -1545,7 +1569,7 @@ fn compaction_prepares_and_applies_checkpoint_and_staged_tool_job_preserves_mode
     claim(&mut s, &r_direct);
     s.request_tool(&r_direct, &json!({"op":"shell","command":"echo hi"})).unwrap();
     let job_direct = s.claim_tool_job().unwrap().unwrap();
-    assert!(!job_direct.staged);
+    assert_eq!(job_direct.sandbox, SandboxMode::Direct);
     s.tool_result(&r_direct, Ok("hi")).unwrap();
 
     // Grow `r_direct`'s node_messages to >= 6 messages and verify prepare/apply compaction.
@@ -1572,7 +1596,7 @@ fn compaction_prepares_and_applies_checkpoint_and_staged_tool_job_preserves_mode
     claim(&mut s, &r_staged);
     s.request_tool(&r_staged, &json!({"op":"shell","command":"echo staged"})).unwrap();
     let job_staged = s.claim_tool_job().unwrap().unwrap();
-    assert!(job_staged.staged);
+    assert_eq!(job_staged.sandbox, SandboxMode::Staged);
     s.tool_result(&r_staged, Ok("staged")).unwrap();
 }
 
@@ -1621,4 +1645,196 @@ fn tree_continuation_skips_prompt_echo_nudges_repetition_and_keeps_compaction_pa
     // Compaction keeps head_keep == 1 on a root task so assistant/user tool pairs are never split.
     let cjob = s.prepare_compaction(&r).unwrap().unwrap();
     assert_eq!(cjob.head_keep, 1);
+}
+
+#[test]
+fn active_provider_and_multi_provider_root_snapshots_persist_across_restart() {
+    let home = Session::new();
+    let mut s = home.open();
+    assert_eq!(s.active_provider().unwrap(), None);
+
+    s.set_active_provider(Some("chatgpt")).unwrap();
+    let gpt_settings =
+        ModelSettings { provider: Some("chatgpt".into()), model: Some("gpt-5.4".into()), effort: Some("high".into()) };
+    s.set_model_settings("chatgpt", &gpt_settings).unwrap();
+    let root1 = s.submit_with_model("default", "gpt root", None, false, &gpt_settings).unwrap();
+
+    // Switch session active provider and submit a second root under deepseek while root1 stays in flight.
+    s.set_active_provider(Some("deepseek")).unwrap();
+    let ds_settings = ModelSettings {
+        provider: Some("deepseek".into()),
+        model: Some("deepseek-flash".into()),
+        effort: Some("medium".into()),
+    };
+    s.set_model_settings("deepseek", &ds_settings).unwrap();
+    let root2 = s.submit_with_model("default", "deepseek root", None, false, &ds_settings).unwrap();
+    drop(s);
+
+    // Reopen across simulated restart: active_provider persists, and each root stays pinned to its snapshot.
+    let mut s = home.open();
+    s.recover().unwrap();
+    assert_eq!(s.active_provider().unwrap().as_deref(), Some("deepseek"));
+
+    let t1 = s.claim().unwrap().unwrap();
+    let t2 = s.claim().unwrap().unwrap();
+    let (turn1, turn2) = if t1.task == root1 { (t1, t2) } else { (t2, t1) };
+    assert_eq!(turn1.task, root1);
+    assert_eq!(turn2.task, root2);
+    assert_eq!(turn1.settings.as_ref(), Some(&gpt_settings));
+    assert_eq!(turn2.settings.as_ref(), Some(&ds_settings));
+
+    // Handoff + reporter on root1 stay pinned to chatgpt even while active_provider is deepseek.
+    handoff(&mut s, &root1, &[("a", "leaf a"), ("b", "leaf b")]).unwrap();
+    let c1 = turn(&mut s);
+    let c2 = turn(&mut s);
+    assert_eq!(c1.settings.as_ref(), Some(&gpt_settings));
+    assert_eq!(c2.settings.as_ref(), Some(&gpt_settings));
+    finish(&mut s, &c1.task, "a ok");
+    finish(&mut s, &c2.task, "b ok");
+    let rep = turn(&mut s);
+    assert_eq!(rep.kind, TurnKind::Reporter);
+    assert_eq!(rep.settings.as_ref(), Some(&gpt_settings));
+    finish(&mut s, &rep.task, "gpt done");
+
+    // Clearing active_provider returns to None and preserves per-provider model overrides.
+    s.set_active_provider(None).unwrap();
+    assert_eq!(s.active_provider().unwrap(), None);
+    assert_eq!(s.model_settings("chatgpt", None).unwrap(), gpt_settings);
+    assert_eq!(s.model_settings("deepseek", None).unwrap(), ds_settings);
+}
+
+#[test]
+fn parallel_batches_readonly_sandbox_plan_steering_and_manual_compaction_work() {
+    use crate::model::{ModelAction, ModelOutput};
+
+    let home = Session::new();
+    let mut s = home.open();
+
+    // 1. ReadOnly sandbox, context prefix in handoff_context -> node_messages[0], update_plan, steer, manual compact.
+    let ro_root = s
+        .submit_with_full_options(
+            "default",
+            "Inspect bug cleanly",
+            None,
+            false,
+            SandboxMode::ReadOnly,
+            &ModelSettings::default(),
+            Some("<instructions source=\"AGENTS.md\">\nBe careful.\n</instructions>"),
+        )
+        .unwrap();
+    assert_eq!(s.task(&ro_root).unwrap()["sandbox"], "read_only");
+    let first_turn = claim(&mut s, &ro_root);
+    assert_eq!(first_turn.messages[0]["content"], "<instructions source=\"AGENTS.md\">\nBe careful.\n</instructions>");
+    assert!(first_turn.messages[1]["content"].as_str().unwrap().contains("Inspect bug cleanly"));
+
+    // Mid-turn steer queues durably, shows in task view, and is injected into history on next claim.
+    s.steer(&ro_root, "Also check src/lib.rs").unwrap();
+    assert_eq!(s.task(&ro_root).unwrap()["pending_steerings"], 1);
+
+    // Parallel batch mixing read_file + update_plan + edit_file (auto mode): read-only starts first, mutating waits.
+    let batch_out = ModelOutput {
+        actions: vec![
+            ModelAction {
+                action: json!({"op":"read_file","path":"a.rs"}),
+                call_id: Some("c1".into()),
+                fc_id: None,
+                raw_arguments: None,
+            },
+            ModelAction {
+                action: json!({"op":"read_file","path":"b.rs"}),
+                call_id: Some("c2".into()),
+                fc_id: None,
+                raw_arguments: None,
+            },
+            ModelAction {
+                action: json!({"op":"update_plan","plan":[{"step":"Inspect","status":"in_progress"},{"step":"Report","status":"pending"}]}),
+                call_id: Some("c3".into()),
+                fc_id: None,
+                raw_arguments: None,
+            },
+            ModelAction {
+                action: json!({"op":"shell","command":"echo check"}),
+                call_id: Some("c4".into()),
+                fc_id: None,
+                raw_arguments: None,
+            },
+        ],
+        commentary: None,
+        reasoning_summary: None,
+        meta: None,
+        usage: None,
+    };
+    s.apply_model_output(&ro_root, &batch_out).unwrap();
+    assert_eq!(s.task(&ro_root).unwrap()["plan"][0]["step"], "Inspect");
+
+    // Both read_file jobs claim concurrently while shell waits behind them!
+    let j1 = s.claim_tool_job().unwrap().unwrap();
+    let j2 = s.claim_tool_job().unwrap().unwrap();
+    assert_eq!(j1.sandbox, SandboxMode::ReadOnly);
+    assert_eq!(j1.action["op"], "read_file");
+    assert_eq!(j2.action["op"], "read_file");
+    assert!(s.claim_tool_job().unwrap().is_none(), "mutating shell must wait for read_file ops");
+    s.tool_result_op(&j1.op_id, Ok("A")).unwrap();
+    s.tool_result_op(&j2.op_id, Ok("B")).unwrap();
+
+    let j3 = s.claim_tool_job().unwrap().unwrap();
+    assert_eq!(j3.action["op"], "shell");
+    assert!(s.claim_tool_job().unwrap().is_none());
+    s.tool_result_op(&j3.op_id, Ok("SHELL_OK")).unwrap();
+
+    // Next claim receives batch_results in order AND consumed steering note!
+    let next_turn = claim(&mut s, &ro_root);
+    let joined: String = next_turn.messages.iter().filter_map(|m| m["content"].as_str()).collect::<Vec<_>>().join("\n");
+    assert!(joined.contains("\"batch_results\"") && joined.contains("\"A\"") && joined.contains("\"Plan updated\""));
+    assert!(joined.contains("\"steering\":true") && joined.contains("Also check src/lib.rs"));
+    assert!(s.task(&ro_root).unwrap()["pending_steerings"].is_null());
+
+    // Add one more round trip so settled node has >= 4 messages for manual compaction, then compact while settled.
+    s.apply_model_output(&ro_root, &ModelOutput::single(json!({"op":"read_file","path":"c.rs"}), None, None)).unwrap();
+    let j4 = s.claim_tool_job().unwrap().unwrap();
+    s.tool_result_op(&j4.op_id, Ok("C")).unwrap();
+    let _ = claim(&mut s, &ro_root);
+    finish(&mut s, &ro_root, "verified");
+    let cjob = s.prepare_manual_compaction(&ro_root).unwrap();
+    assert!(!cjob.middle.is_empty());
+    s.apply_manual_compaction(&cjob.task, cjob.head_keep, cjob.tail_keep, "manual summary").unwrap();
+    assert_eq!(s.task(&ro_root).unwrap()["status"], "done");
+
+    // 2. Multi-approval batch under --review: deny cascades to remaining batch items cleanly.
+    let rev_root = s.submit_with_policy("default", "review batch", None, true).unwrap();
+    claim(&mut s, &rev_root);
+    let rev_batch = ModelOutput {
+        actions: vec![
+            ModelAction {
+                action: json!({"op":"edit_file","path":"x.txt","old":"","new":"1"}),
+                call_id: None,
+                fc_id: None,
+                raw_arguments: None,
+            },
+            ModelAction {
+                action: json!({"op":"shell","command":"echo 2"}),
+                call_id: None,
+                fc_id: None,
+                raw_arguments: None,
+            },
+        ],
+        commentary: None,
+        reasoning_summary: None,
+        meta: None,
+        usage: None,
+    };
+    s.apply_model_output(&rev_root, &rev_batch).unwrap();
+    let tv1 = s.task(&rev_root).unwrap();
+    assert_eq!(tv1["status"], "approval");
+    let aid1 = tv1["approval_id"].as_str().unwrap().to_owned();
+    s.approve(&aid1, true).unwrap();
+    // Second op still needs approval -> task remains approval with new approval_id!
+    let tv2 = s.task(&rev_root).unwrap();
+    assert_eq!(tv2["status"], "approval");
+    let aid2 = tv2["approval_id"].as_str().unwrap().to_owned();
+    assert_ne!(aid1, aid2);
+    s.approve(&aid2, false).unwrap();
+    // Next turn wakes with batch_results reflecting executed/denied state (edit_file didn't start because approval blocked, or ran after deny).
+    let after_deny = claim(&mut s, &rev_root);
+    assert!(chat(&after_deny).contains("\"batch_results\""));
 }

@@ -1,6 +1,11 @@
 use crate::{
     daemon,
-    protocol::{field, is_terminal_str, outcome_label, preview, sanitize_terminal, Client, QuestionTracker},
+    mcp::{self, McpServerSpec},
+    model::{self, CustomProviderSpec, ProviderInfo, ToolChoiceMode, WireProtocol},
+    protocol::{
+        field, is_terminal_str, outcome_label, preview, sanitize_terminal, Client, ProviderSummary, QuestionTracker,
+    },
+    sandbox::SandboxMode,
     Result,
 };
 use serde_json::{json, Value};
@@ -15,10 +20,17 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(500);
 const HELP: &str = "TeamAgents — persistent agent sessions
 
-  teamagents [chat] [--review] [--staged] [--plain] Submit prompts and receive final reports (TUI on TTY)
-  teamagents tui [--review] [--staged]   Launch the interactive terminal interface
+  teamagents [chat] [--review] [--staged|--sandbox MODE] [--plain] Submit prompts and receive reports (TUI on TTY)
+  teamagents tui [--review] [--staged|--sandbox MODE]   Launch the interactive terminal interface
   teamagents exec [OPTIONS] TEXT         Submit a task (use - or pipe stdin for text)
+  teamagents review [--uncommitted|--base REF|--commit SHA] [TEXT]  Run a read-only code review
   teamagents continue TASK_ID [OPTIONS] TEXT  Continue a settled leaf or summarizer as the next subtree
+  teamagents resume [TASK_ID [TEXT]]     Resume the latest or named settled session
+  teamagents steer TASK_ID TEXT          Send mid-turn guidance to an active session tree
+  teamagents compact TASK_ID             Compact conversation history for a settled or idle node
+  teamagents diff [--base REF|--commit SHA]  Show workspace git status and unified diff
+  teamagents skills                      List discovered local SKILL.md skills
+  teamagents mcp [list|add|remove|tools] Manage MCP servers in mcp.json (env-var refs only)
   teamagents whiteboard ROOT_ID [set|append|resolve|delete KEY [TEXT]]  Inspect or update a tree whiteboard
   teamagents members | tasks             List session members or tasks
   teamagents status TASK_ID              Inspect progress, result and pending action
@@ -27,6 +39,7 @@ const HELP: &str = "TeamAgents — persistent agent sessions
   teamagents delete ROOT_ID              Delete a settled or idle session tree
   teamagents approve | deny APPROVAL_ID  Decide one pending action, not a whole task
   teamagents auth login | status | logout  Manage ChatGPT subscription sign-in
+  teamagents provider [list|show|add|remove|default]  Manage custom model providers (env-var refs only)
   teamagents stop                        Stop an idle daemon; keep the session
   teamagents help | version
 
@@ -35,29 +48,55 @@ Options may appear before or after the command. Use -- before literal arguments.
   --workspace PATH     Workspace (default: current directory)
   --agent NAME         Recipient for a new task or chat (default: default)
   --json               Print machine-readable JSON
+  --jsonl              Stream newline-delimited live events during exec, continue, and review
   --plain              Use the line-oriented chat REPL even on a terminal (chat)
-  --detach             Return the submission receipt without waiting (exec and continue)
-  --timeout SECONDS    Limit the wait after submission (exec and continue wait indefinitely)
+  --detach             Return the submission receipt without waiting (exec, continue, and review)
+  --timeout SECONDS    Limit the wait after submission (exec, continue, and review wait indefinitely)
   --review             Require approval for each shell command and edit requested by
-                       the model on this round or its children (exec, continue, chat, and tui)
-  --staged             Use copy-on-exit workspace staging instead of direct workspace-write bwrap
+                       the model on this round or its children (exec, continue, review, chat, and tui)
+  --sandbox MODE       Sandbox mode: direct (default), staged, or read-only
+  --staged             Shorthand for --sandbox staged (copy-on-exit workspace staging)
   --check COMMAND      Run this exact trusted command at proposed completion (exec and continue).
                        A failure returns diagnostics for repair, up to 10 check attempts.
 
+Review / diff / MCP options:
+  --uncommitted        Review uncommitted workspace changes (default for `review`)
+  --base REF           Diff or review against git base revision REF
+  --commit SHA         Diff or review a specific commit SHA
+  --command CMD        Stdio MCP server executable (for `mcp add NAME`)
+  --arg VALUE          Repeatable stdio MCP server argument (for `mcp add NAME`)
+  --env ENV_VAR        Repeatable host env-var name to forward to stdio MCP server (for `mcp add NAME`)
+  --url URL            Streamable HTTP MCP endpoint URL (for `mcp add NAME`)
+  --bearer-token-env VAR  Env var holding bearer token for HTTP MCP server (for `mcp add NAME`)
+
+Provider options (with `provider add NAME`):
+  --wire WIRE          Protocol wire: responses, chat_completions (or api), or anthropic
+  --base-url URL       Endpoint URL (HTTPS required except localhost / 127.0.0.1 / [::1])
+  --api-key-env VAR    Environment variable NAME holding the credential (required off loopback)
+  --model ID           Default model ID for this provider
+  --context-window N   Model context window in tokens
+  --tool-choice MODE   Tool choice mode when tools attach: required (default) or auto
+  --max-tokens N       Default max_tokens (Anthropic wire)
+  --replay-reasoning   Replay reasoning_content on Chat Completions tool turns
+  --default            Also make this provider the configured default
+
 By default, agents work unattended in a direct workspace-write bwrap sandbox (protecting .git/admin dirs
-and credential stores) with network access; pass --staged for isolated copy-on-exit staging. Leaves
-collaborate via the per-tree Collaborative Whiteboard (whiteboard ROOT_ID / TUI 5 Board).
-Leaving or timing out keeps work running. Use status to reconnect and tasks to find pending approvals.
-When a root needs clarification, exec prints its question and exits. Use /model in chat to select model
-and reasoning effort, answer ROOT_ID TEXT to clarify, or continue TASK_ID TEXT on a sole leaf/summarizer.";
+and credential stores) with network access; pass --sandbox staged for isolated staging or --sandbox
+read-only for analysis. Leaves coordinate via the Collaborative Whiteboard (whiteboard ROOT_ID / TUI 5 Board).
+Leaving or timing out keeps work running. Use status or resume to reconnect and tasks to inspect approvals.
+When a root needs clarification, exec prints its question and exits. Use `teamagents provider` to register
+endpoints and `/model provider NAME` in chat/TUI to switch providers live without restarting.";
 
 const CHAT_HELP: &str = "Opening chat starts a fresh session. In a settled session, plain input continues
-the sole leaf or summarizer node as the next subtree root (unless a question waits).
-/new [TEXT]   /to NAME   /members   /tasks   /status TASK_ID   /cancel TASK_ID
-/wb [KEY TEXT|append KEY TEXT|resolve KEY|delete KEY]   /staged [on|off]
+the sole leaf or summarizer node as the next subtree root (or steers an active session in TUI).
+/new [TEXT]   /plan TEXT   /review code [REF]   /to NAME   /members   /tasks   /status TASK_ID
+/cancel TASK_ID   /steer TEXT   /compact   /diff [REF]   /skills   /mcp
+/wb [KEY TEXT|append KEY TEXT|resolve KEY|delete KEY]   /sandbox [direct|staged|read-only]   /staged [on|off]
 /answer ROOT_ID TEXT   /approve APPROVAL_ID   /deny APPROVAL_ID   /help   /quit
-/model shows the selection for new roots. /model list shows visible ChatGPT plan models.
-/model MODEL [EFFORT]   /model effort EFFORT   /model default";
+/model shows the selection for new roots. /model list queries visible provider models.
+/model MODEL [EFFORT]   /model effort EFFORT   /model default
+/model providers   /model provider NAME [MODEL [EFFORT]]
+/provider [list|show NAME|use NAME|add NAME ...|remove NAME|default [NAME|auto]]";
 
 struct GlobalOptions {
     session: Option<PathBuf>,
@@ -72,13 +111,39 @@ enum AuthAction {
     Logout,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProviderAction {
+    List,
+    Show(String),
+    Add { name: String, spec: CustomProviderSpec, set_default: bool },
+    Remove(String),
+    DefaultGet,
+    DefaultSet(Option<String>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ReviewTarget {
+    Uncommitted,
+    Base(String),
+    Commit(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum McpAction {
+    List,
+    Add { name: String, spec: McpServerSpec },
+    Remove(String),
+    Tools(Option<String>),
+}
+
 struct ExecOptions {
     agent: String,
     review: bool,
-    staged: bool,
+    sandbox: SandboxMode,
     check: Option<String>,
     detach: bool,
     timeout: Option<Duration>,
+    jsonl: bool,
     args: Vec<String>,
 }
 
@@ -86,11 +151,19 @@ enum Command {
     Help,
     Version,
     Auth(AuthAction),
+    Provider(ProviderAction),
     Daemon,
-    Chat { agent: String, review: bool, staged: bool, plain: bool },
-    Tui { agent: String, review: bool, staged: bool },
+    Chat { agent: String, review: bool, sandbox: SandboxMode, plain: bool },
+    Tui { agent: String, review: bool, sandbox: SandboxMode },
     Exec(ExecOptions),
     Continue { id: String, opt: ExecOptions },
+    Review { target: ReviewTarget, opt: ExecOptions },
+    Resume { id: Option<String>, opt: ExecOptions },
+    Steer { id: String, text: String },
+    Compact { id: String },
+    Diff { base: Option<String>, commit: Option<String> },
+    Skills,
+    Mcp(McpAction),
     Whiteboard { id: String, write: Option<(String, String, Option<String>, Option<String>)> },
     Members,
     Tasks,
@@ -126,8 +199,27 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
     let mut timeout = None;
     let mut review = false;
     let mut staged = false;
+    let mut sandbox_opt: Option<SandboxMode> = None;
+    let mut jsonl = false;
     let mut plain = false;
     let mut check = None;
+    let mut uncommitted = false;
+    let mut base_ref: Option<String> = None;
+    let mut commit_ref: Option<String> = None;
+    let mut mcp_command: Option<String> = None;
+    let mut mcp_args: Vec<String> = Vec::new();
+    let mut mcp_env: Vec<String> = Vec::new();
+    let mut mcp_url: Option<String> = None;
+    let mut mcp_bearer_env: Option<String> = None;
+    let mut wire: Option<String> = None;
+    let mut base_url: Option<String> = None;
+    let mut api_key_env: Option<String> = None;
+    let mut model_opt: Option<String> = None;
+    let mut context_window: Option<u64> = None;
+    let mut tool_choice: Option<ToolChoiceMode> = None;
+    let mut max_tokens: Option<u32> = None;
+    let mut replay_reasoning = false;
+    let mut make_default = false;
     let mut cmd_name = String::new();
     let mut pos_args: Vec<String> = Vec::new();
     let mut args = args.into_iter();
@@ -152,11 +244,42 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
             "--workspace" => workspace = Some(value()?.into()),
             "--agent" => agent = text(value()?)?,
             "--check" => check = Some(text(value()?)?),
+            "--sandbox" => sandbox_opt = Some(SandboxMode::parse(&text(value()?)?)?),
+            "--uncommitted" => uncommitted = true,
+            "--base" => base_ref = Some(text(value()?)?),
+            "--commit" => commit_ref = Some(text(value()?)?),
+            "--command" => mcp_command = Some(text(value()?)?),
+            "--arg" => mcp_args.push(text(value()?)?),
+            "--env" => mcp_env.push(text(value()?)?),
+            "--url" => mcp_url = Some(text(value()?)?),
+            "--bearer-token-env" => mcp_bearer_env = Some(text(value()?)?),
+            "--wire" => wire = Some(WireProtocol::parse_custom(&text(value()?)?)?.as_str().to_owned()),
+            "--base-url" => base_url = Some(text(value()?)?),
+            "--api-key-env" => api_key_env = Some(text(value()?)?),
+            "--model" => model_opt = Some(text(value()?)?),
+            "--context-window" => {
+                let n: u64 = text(value()?)?.parse().map_err(|_| "--context-window requires a positive integer")?;
+                if n == 0 {
+                    return Err("--context-window requires a positive integer".into());
+                }
+                context_window = Some(n);
+            }
+            "--tool-choice" => tool_choice = Some(ToolChoiceMode::parse(&text(value()?)?)?),
+            "--max-tokens" => {
+                let n: u32 = text(value()?)?.parse().map_err(|_| "--max-tokens requires a positive integer")?;
+                if n == 0 {
+                    return Err("--max-tokens requires a positive integer".into());
+                }
+                max_tokens = Some(n);
+            }
+            "--replay-reasoning" => replay_reasoning = true,
+            "--default" => make_default = true,
             "--timeout" => {
                 let seconds = text(value()?)?.parse().map_err(|_| "--timeout requires nonnegative whole seconds")?;
                 timeout = Some(Duration::from_secs(seconds));
             }
             "--json" => json = true,
+            "--jsonl" => jsonl = true,
             "--review" => review = true,
             "--staged" => staged = true,
             "--plain" => plain = true,
@@ -179,20 +302,59 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
         cmd_name = "chat".into();
     }
 
-    if !matches!(cmd_name.as_str(), "exec" | "continue") && (check.is_some() || detach || timeout.is_some()) {
-        return Err("--check, --timeout and --detach apply only to exec and continue".into());
+    if staged && sandbox_opt.is_some_and(|m| m != SandboxMode::Staged) {
+        return Err("--staged cannot be combined with a different --sandbox mode".into());
     }
-    if review && !matches!(cmd_name.as_str(), "chat" | "exec" | "continue" | "tui") {
-        return Err("--review applies only to exec, continue, chat, and tui".into());
+    let has_provider_flags = wire.is_some()
+        || base_url.is_some()
+        || api_key_env.is_some()
+        || model_opt.is_some()
+        || context_window.is_some()
+        || tool_choice.is_some()
+        || max_tokens.is_some()
+        || replay_reasoning
+        || make_default;
+    if cmd_name != "provider" && has_provider_flags {
+        return Err(
+            "--wire, --base-url, --api-key-env, --model, --context-window, --tool-choice, --max-tokens, --replay-reasoning and --default apply only to provider"
+                .into(),
+        );
     }
-    if staged && !matches!(cmd_name.as_str(), "chat" | "exec" | "continue" | "tui") {
-        return Err("--staged applies only to exec, continue, chat, and tui".into());
+    let has_mcp_flags = mcp_command.is_some()
+        || !mcp_args.is_empty()
+        || !mcp_env.is_empty()
+        || mcp_url.is_some()
+        || mcp_bearer_env.is_some();
+    if cmd_name != "mcp" && has_mcp_flags {
+        return Err("--command, --arg, --env, --url and --bearer-token-env apply only to mcp".into());
+    }
+    if (uncommitted || base_ref.is_some() || commit_ref.is_some()) && !matches!(cmd_name.as_str(), "review" | "diff") {
+        return Err("--uncommitted, --base and --commit apply only to review and diff".into());
+    }
+    if uncommitted && cmd_name == "diff" {
+        return Err("--uncommitted applies only to review".into());
+    }
+    if usize::from(uncommitted) + usize::from(base_ref.is_some()) + usize::from(commit_ref.is_some()) > 1 {
+        return Err("specify at most one of --uncommitted, --base, or --commit".into());
+    }
+    if !matches!(cmd_name.as_str(), "exec" | "continue" | "review" | "resume")
+        && (check.is_some() || detach || timeout.is_some() || jsonl)
+    {
+        return Err("--check, --timeout, --detach and --jsonl apply only to exec, continue, review and resume".into());
+    }
+    if review && !matches!(cmd_name.as_str(), "chat" | "exec" | "continue" | "tui" | "review" | "resume") {
+        return Err("--review applies only to exec, continue, review, resume, chat, and tui".into());
+    }
+    if (staged || sandbox_opt.is_some())
+        && !matches!(cmd_name.as_str(), "chat" | "exec" | "continue" | "tui" | "review" | "resume")
+    {
+        return Err("--staged and --sandbox apply only to exec, continue, review, resume, chat, and tui".into());
     }
     if cmd_name == "continue" && agent != "default" {
         return Err("--agent applies only when starting a new session".into());
     }
-    if plain && cmd_name != "chat" {
-        return Err("--plain applies only to chat".into());
+    if plain && !matches!(cmd_name.as_str(), "chat" | "resume") {
+        return Err("--plain applies only to chat and resume".into());
     }
     if json && cmd_name == "tui" {
         return Err("--json does not apply to tui".into());
@@ -203,6 +365,15 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
     if check.as_deref().is_some_and(|s| s.trim().is_empty()) {
         return Err("--check requires a command".into());
     }
+    let sandbox = sandbox_opt.unwrap_or_else(|| {
+        if staged {
+            SandboxMode::Staged
+        } else if cmd_name == "review" {
+            SandboxMode::ReadOnly
+        } else {
+            SandboxMode::Direct
+        }
+    });
 
     let command = match cmd_name.as_str() {
         "help" => Command::Help,
@@ -224,7 +395,74 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
                 _ => unreachable!("validated auth action"),
             })
         }
-        "exec" => Command::Exec(ExecOptions { agent, review, staged, check, detach, timeout, args: pos_args }),
+        "provider" => {
+            if global.session.is_some() || global.workspace.is_some() || agent != "default" {
+                return Err(
+                    "provider manages user-level configuration and does not take session, workspace or agent options"
+                        .into(),
+                );
+            }
+            let pos: Vec<&str> = pos_args.iter().map(String::as_str).collect();
+            let action = match pos.as_slice() {
+                [] | ["list"] => {
+                    if has_provider_flags {
+                        return Err("provider flags apply only to `provider add NAME`".into());
+                    }
+                    ProviderAction::List
+                }
+                ["show", name] if !name.trim().is_empty() => {
+                    if has_provider_flags {
+                        return Err("provider flags apply only to `provider add NAME`".into());
+                    }
+                    ProviderAction::Show((*name).to_owned())
+                }
+                ["remove" | "rm", name] if !name.trim().is_empty() => {
+                    if has_provider_flags {
+                        return Err("provider flags apply only to `provider add NAME`".into());
+                    }
+                    ProviderAction::Remove((*name).to_owned())
+                }
+                ["default"] => {
+                    if has_provider_flags {
+                        return Err("provider flags apply only to `provider add NAME`".into());
+                    }
+                    ProviderAction::DefaultGet
+                }
+                ["default", target] if !target.trim().is_empty() => {
+                    if has_provider_flags {
+                        return Err("provider flags apply only to `provider add NAME`".into());
+                    }
+                    ProviderAction::DefaultSet((*target != "auto").then(|| (*target).to_owned()))
+                }
+                ["add", name] if !name.trim().is_empty() => {
+                    let (Some(wire), Some(base_url)) = (wire, base_url) else {
+                        return Err("provider add requires --wire and --base-url".into());
+                    };
+                    ProviderAction::Add {
+                        name: (*name).to_owned(),
+                        spec: CustomProviderSpec {
+                            wire,
+                            base_url,
+                            api_key_env,
+                            default_model: model_opt,
+                            context_window,
+                            tool_choice,
+                            max_tokens,
+                            replay_reasoning: replay_reasoning.then_some(true),
+                        },
+                        set_default: make_default,
+                    }
+                }
+                _ => {
+                    return Err(
+                        "use teamagents provider [list|show NAME|add NAME --wire ... --base-url ...|remove NAME|default [NAME|auto]]"
+                            .into(),
+                    )
+                }
+            };
+            Command::Provider(action)
+        }
+        "exec" => Command::Exec(ExecOptions { agent, review, sandbox, check, detach, timeout, jsonl, args: pos_args }),
         "continue" => {
             if pos_args.len() < 2 || pos_args[0].trim().is_empty() {
                 return Err("continue requires TASK_ID and a prompt (or - for stdin)".into());
@@ -232,7 +470,105 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
             let mut iter = pos_args.into_iter();
             let id = iter.next().unwrap();
             let args = iter.collect();
-            Command::Continue { id, opt: ExecOptions { agent, review, staged, check, detach, timeout, args } }
+            Command::Continue { id, opt: ExecOptions { agent, review, sandbox, check, detach, timeout, jsonl, args } }
+        }
+        "review" => {
+            let target = if let Some(b) = base_ref {
+                ReviewTarget::Base(b)
+            } else if let Some(c) = commit_ref {
+                ReviewTarget::Commit(c)
+            } else {
+                ReviewTarget::Uncommitted
+            };
+            Command::Review {
+                target,
+                opt: ExecOptions { agent, review, sandbox, check, detach, timeout, jsonl, args: pos_args },
+            }
+        }
+        "resume" => {
+            let mut iter = pos_args.into_iter();
+            let id = iter.next().filter(|s| !s.trim().is_empty());
+            let args: Vec<String> = iter.collect();
+            Command::Resume { id, opt: ExecOptions { agent, review, sandbox, check, detach, timeout, jsonl, args } }
+        }
+        "steer" => {
+            if pos_args.len() < 2 || pos_args[0].trim().is_empty() || pos_args[1..].iter().all(|s| s.trim().is_empty())
+            {
+                return Err("steer requires TASK_ID and nonempty TEXT".into());
+            }
+            Command::Steer { id: pos_args[0].clone(), text: pos_args[1..].join(" ") }
+        }
+        "compact" => {
+            if pos_args.len() != 1 || pos_args[0].trim().is_empty() {
+                return Err("compact requires exactly one TASK_ID".into());
+            }
+            Command::Compact { id: pos_args.into_iter().next().unwrap() }
+        }
+        "diff" => {
+            if !pos_args.is_empty() {
+                return Err("diff takes --base REF or --commit SHA without positional arguments".into());
+            }
+            Command::Diff { base: base_ref, commit: commit_ref }
+        }
+        "skills" => {
+            if !pos_args.is_empty() {
+                return Err("skills does not take positional arguments".into());
+            }
+            Command::Skills
+        }
+        "mcp" => {
+            let pos: Vec<&str> = pos_args.iter().map(String::as_str).collect();
+            let action = match pos.as_slice() {
+                [] | ["list"] => {
+                    if has_mcp_flags {
+                        return Err("MCP server flags apply only to `mcp add NAME`".into());
+                    }
+                    McpAction::List
+                }
+                ["remove" | "rm", name] if !name.trim().is_empty() => {
+                    if has_mcp_flags {
+                        return Err("MCP server flags apply only to `mcp add NAME`".into());
+                    }
+                    McpAction::Remove((*name).to_owned())
+                }
+                ["tools"] => {
+                    if has_mcp_flags {
+                        return Err("MCP server flags apply only to `mcp add NAME`".into());
+                    }
+                    McpAction::Tools(None)
+                }
+                ["tools", name] if !name.trim().is_empty() => {
+                    if has_mcp_flags {
+                        return Err("MCP server flags apply only to `mcp add NAME`".into());
+                    }
+                    McpAction::Tools(Some((*name).to_owned()))
+                }
+                ["add", name] if !name.trim().is_empty() => {
+                    let spec = match (mcp_command, mcp_url) {
+                        (Some(_), Some(_)) => return Err("mcp add accepts either --command or --url, not both".into()),
+                        (Some(command), None) => {
+                            if mcp_bearer_env.is_some() {
+                                return Err("--bearer-token-env applies only with --url".into());
+                            }
+                            McpServerSpec::Stdio { command, args: mcp_args, env_vars: mcp_env }
+                        }
+                        (None, Some(url)) => {
+                            if !mcp_args.is_empty() || !mcp_env.is_empty() {
+                                return Err("--arg and --env apply only with --command".into());
+                            }
+                            McpServerSpec::Http { url, bearer_token_env: mcp_bearer_env }
+                        }
+                        (None, None) => return Err("mcp add requires either --command CMD or --url URL".into()),
+                    };
+                    McpAction::Add { name: (*name).to_owned(), spec }
+                }
+                _ => {
+                    return Err(
+                        "use teamagents mcp [list|add NAME --command CMD|--url URL|remove NAME|tools [NAME]]".into()
+                    )
+                }
+            };
+            Command::Mcp(action)
         }
         "whiteboard" | "wb" => {
             let Some(id) = pos_args.first().filter(|s| !s.trim().is_empty()).cloned() else {
@@ -281,8 +617,8 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed> {
                 return Err(format!("{cmd_name} does not take arguments"));
             }
             match cmd_name.as_str() {
-                "chat" => Command::Chat { agent, review, staged, plain },
-                "tui" => Command::Tui { agent, review, staged },
+                "chat" => Command::Chat { agent, review, sandbox, plain },
+                "tui" => Command::Tui { agent, review, sandbox },
                 "daemon" => Command::Daemon,
                 "members" => Command::Members,
                 "tasks" => Command::Tasks,
@@ -387,9 +723,40 @@ fn task_text(task: &Value) -> String {
     if let Some(error) = task["stage_error"].as_str() {
         out.push_str(&format!("\n  Worker error: {}", preview(error, 160)));
     }
-    for key in ["policy", "verification", "check", "tool_state"] {
+    for key in ["policy", "sandbox", "verification", "check", "tool_state"] {
         if let Some(value) = task[key].as_str() {
             out.push_str(&format!("\n  {key}: {value}"));
+        }
+    }
+    if let Some(n) = task["pending_steerings"].as_u64().filter(|&n| n > 0) {
+        out.push_str(&format!("\n  pending_steerings: {n}"));
+    }
+    if let Some(plan) = task["plan"].as_array().filter(|rows| !rows.is_empty()) {
+        let done = plan.iter().filter(|s| s["status"] == "completed").count();
+        out.push_str(&format!("\n  Plan ({done}/{} completed):", plan.len()));
+        for step in plan {
+            let mark = match step["status"].as_str() {
+                Some("completed") => "x",
+                Some("in_progress") => ">",
+                _ => " ",
+            };
+            out.push_str(&format!("\n    [{mark}] {}", step["step"].as_str().unwrap_or("")));
+        }
+    }
+    if let Some(live) = task["live"].as_object() {
+        let phase = live.get("phase").and_then(Value::as_str).unwrap_or("active");
+        out.push_str(&format!("\n  Live ({phase}):"));
+        if let Some(tools) = live.get("active_tools").and_then(Value::as_array).filter(|t| !t.is_empty()) {
+            let names: Vec<_> = tools.iter().filter_map(Value::as_str).collect();
+            if !names.is_empty() {
+                out.push_str(&format!(" tools=[{}]", names.join(", ")));
+            }
+        }
+        if let Some(c) = live.get("commentary").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            out.push_str(&format!("\n    {}", preview(c, 160)));
+        }
+        if let Some(tail) = live.get("shell_tail").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            out.push_str(&format!("\n    $ {}", preview(tail, 160)));
         }
     }
     if let Some(approval) = task["approval_id"].as_str() {
@@ -475,6 +842,54 @@ fn render(op: &str, value: &Value, machine: bool) -> String {
         ),
         "submit" => format!("Submitted {}", display_value(&value["id"])),
         "continue" => format!("Continued {} via node {}", display_value(&value["id"]), display_value(&value["node"])),
+        "steer" => format!("Queued steering note for {}", display_value(&value["root"])),
+        "compact" => format!(
+            "Compacted {} middle messages on node {}",
+            value["messages"].as_u64().unwrap_or(0),
+            display_value(&value["task"])
+        ),
+        "diff" => display_value(&value["diff"]),
+        "skills" => {
+            let Some(rows) = value["skills"].as_array() else {
+                return value.to_string();
+            };
+            if rows.is_empty() {
+                return "No local SKILL.md skills discovered.".into();
+            }
+            rows.iter()
+                .map(|s| {
+                    format!(
+                        "{} ({}) — {} [{}]",
+                        s["name"].as_str().unwrap_or("?"),
+                        s["scope"].as_str().unwrap_or("?"),
+                        s["description"].as_str().unwrap_or(""),
+                        s["path"].as_str().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        "mcp" => {
+            let mut lines = Vec::new();
+            if let Some(path) = value["config_path"].as_str() {
+                lines.push(format!("MCP config: {path}"));
+            }
+            match value["servers"].as_array() {
+                Some(rows) if !rows.is_empty() => {
+                    for s in rows {
+                        lines.push(format!(
+                            "  {} ({}) -> {} [{}]",
+                            s["name"].as_str().unwrap_or("?"),
+                            s["transport"].as_str().unwrap_or("?"),
+                            s["target"].as_str().unwrap_or("?"),
+                            if s["ready"] == true { "ready" } else { s["status"].as_str().unwrap_or("not ready") }
+                        ));
+                    }
+                }
+                _ => lines.push("  No MCP servers configured.".into()),
+            }
+            lines.join("\n")
+        }
         _ if value["ok"] == true => "OK".into(),
         _ => display_value(value),
     }
@@ -508,15 +923,52 @@ fn prompt(args: &[String]) -> Result<String> {
 }
 
 fn exec(client: Client, opt: ExecOptions, machine: bool) -> Result<()> {
-    let receipt =
-        client.submit_with_options(&opt.agent, &prompt(&opt.args)?, opt.review, opt.check.as_deref(), opt.staged)?;
+    let receipt = client.submit_full(&opt.agent, &prompt(&opt.args)?, opt.review, opt.check.as_deref(), opt.sandbox)?;
     wait_for_root(client, receipt, "submit", &opt, machine)
 }
 
 fn continue_cmd(client: Client, id: &str, opt: ExecOptions, machine: bool) -> Result<()> {
-    let receipt =
-        client.continue_with_options(id, &prompt(&opt.args)?, opt.review, opt.check.as_deref(), opt.staged)?;
+    let receipt = client.continue_full(id, &prompt(&opt.args)?, opt.review, opt.check.as_deref(), opt.sandbox)?;
     wait_for_root(client, receipt, "continue", &opt, machine)
+}
+
+pub(crate) fn build_review_prompt(target_desc: &str, custom: Option<&str>, diff: &str) -> String {
+    let mut prompt = format!(
+        "Perform a thorough, read-only code review of {target_desc}.\nFocus on correctness bugs, security/safety risks, missing edge cases, concurrency/durability issues, and regressions. Cite exact file paths, line numbers, severity (P0-P3), and concrete fixes."
+    );
+    if let Some(extra) = custom {
+        if !extra.trim().is_empty() {
+            prompt.push_str(&format!("\n\nAdditional reviewer focus:\n{extra}"));
+        }
+    }
+    prompt.push_str(&format!("\n\nObserved git diff/status snapshot:\n```diff\n{diff}\n```"));
+    prompt
+}
+
+fn review_cmd(client: Client, target: ReviewTarget, opt: ExecOptions, machine: bool) -> Result<()> {
+    let (base, commit, target_desc) = match &target {
+        ReviewTarget::Uncommitted => (None, None, "uncommitted workspace changes".to_owned()),
+        ReviewTarget::Base(r) => (Some(r.as_str()), None, format!("changes against base {r}")),
+        ReviewTarget::Commit(c) => (None, Some(c.as_str()), format!("commit {c}")),
+    };
+    let diff = client.diff(base, commit)?;
+    let custom = if opt.args.is_empty() { None } else { Some(opt.args.join(" ")) };
+    let prompt = build_review_prompt(&target_desc, custom.as_deref(), &diff);
+    let receipt = client.submit_full(&opt.agent, &prompt, opt.review, opt.check.as_deref(), opt.sandbox)?;
+    wait_for_root(client, receipt, "submit", &opt, machine)
+}
+
+fn emit_jsonl_event(kind: &str, payload: Value) -> Result<()> {
+    let mut obj = match payload {
+        Value::Object(m) => m,
+        other => {
+            let mut m = serde_json::Map::new();
+            m.insert("data".into(), other);
+            m
+        }
+    };
+    obj.insert("type".into(), json!(kind));
+    output(&Value::Object(obj).to_string())
 }
 
 fn wait_for_root(client: Client, receipt: Value, op: &str, opt: &ExecOptions, machine: bool) -> Result<()> {
@@ -524,7 +976,9 @@ fn wait_for_root(client: Client, receipt: Value, op: &str, opt: &ExecOptions, ma
         return output(&render(op, &receipt, machine));
     }
     let id = field(&receipt, "id")?.to_owned();
-    if !machine {
+    if opt.jsonl {
+        emit_jsonl_event("submitted", receipt.clone())?;
+    } else if !machine {
         let banner = if op == "continue" {
             let node = receipt["node"].as_str().unwrap_or(id.as_str());
             format!("Continued {id} via node {node}. Reconnect with status {id}.")
@@ -552,6 +1006,8 @@ fn wait_for_root(client: Client, receipt: Value, op: &str, opt: &ExecOptions, ma
         thread::sleep(POLL);
     });
     let mut last = receipt;
+    let mut last_live = Value::Null;
+    let mut last_plan = Value::Null;
     loop {
         let disconnected = || format!("lost status reader for {id}");
         let task = if let Some(timeout) = opt.timeout {
@@ -567,17 +1023,42 @@ fn wait_for_root(client: Client, receipt: Value, op: &str, opt: &ExecOptions, ma
         } else {
             rx.recv().map_err(|_| disconnected())??
         };
-        let status = field(&task, "status")?;
+        let status = field(&task, "status")?.to_owned();
+        if opt.jsonl {
+            if !task["live"].is_null() && task["live"] != last_live {
+                last_live = task["live"].clone();
+                emit_jsonl_event("live", json!({"id": id, "live": last_live}))?;
+            }
+            if !task["plan"].is_null() && task["plan"] != last_plan {
+                last_plan = task["plan"].clone();
+                emit_jsonl_event("plan", json!({"id": id, "plan": last_plan}))?;
+            }
+        }
         if status == "input" {
-            output(&render("status", &task, machine))?;
+            if opt.jsonl {
+                emit_jsonl_event("input", task)?;
+            } else {
+                output(&render("status", &task, machine))?;
+            }
             return Err(format!("input required; resume with teamagents answer {id} TEXT"));
         }
-        if is_terminal_str(status) {
-            output(&render("status", &task, machine))?;
+        if is_terminal_str(&status) {
+            if opt.jsonl {
+                emit_jsonl_event("completed", task)?;
+            } else {
+                output(&render("status", &task, machine))?;
+            }
             return if status == "done" { Ok(()) } else { Err(format!("task {id} {status}")) };
         }
-        if !machine && status == "approval" && last != task {
-            eprintln!("{}", sanitize_terminal(&task_text(&task)));
+        if status == "approval" && last != task {
+            if opt.jsonl {
+                emit_jsonl_event(
+                    "approval",
+                    json!({"id": id, "approval_id": task["approval_id"], "action": task["action"]}),
+                )?;
+            } else if !machine {
+                eprintln!("{}", sanitize_terminal(&task_text(&task)));
+            }
         }
         last = task;
     }
@@ -585,72 +1066,509 @@ fn wait_for_root(client: Client, receipt: Value, op: &str, opt: &ExecOptions, ma
     Err(format!("timed out waiting for {id}; reconnect with status {id}"))
 }
 
-fn model_command(client: &Client, args: &str, machine: bool) -> Result<()> {
-    let words: Vec<_> = args.split_whitespace().collect();
-    let usage = "use /model, /model list, /model MODEL [EFFORT], /model effort EFFORT or /model default";
-    let mut body = json!({"op":"model"});
-    let effort_value = |s: &str| if s == "default" { Value::Null } else { json!(s) };
-    match words.as_slice() {
-        [] | ["list"] => (),
-        ["default"] => {
-            body["model"] = Value::Null;
-            body["effort"] = Value::Null;
+fn env_var_status(name: &str) -> &'static str {
+    if env::var_os(name).filter(|v| !v.is_empty()).is_some() {
+        "set"
+    } else {
+        "not set in current shell"
+    }
+}
+
+pub(crate) fn format_provider_list_lines(
+    active: &str,
+    overridden: bool,
+    config_path: Option<&str>,
+    providers: &[ProviderSummary],
+) -> String {
+    let mut lines = Vec::new();
+    let mut header = format!("Active provider: {active}");
+    if overridden {
+        header.push_str(" (TEAMAGENTS_PROVIDER env override)");
+    }
+    lines.push(header);
+    if let Some(path) = config_path {
+        lines.push(format!("Config file: {path}"));
+    }
+    for p in providers {
+        let marker = if p.name == active { "*" } else { " " };
+        let origin = if p.builtin { "built-in" } else { "custom" };
+        let readiness = if p.ready { "ready".to_owned() } else { format!("not ready: {}", p.status) };
+        let mut line = format!("{marker} {} ({}, {origin}) [{readiness}]", p.name, p.wire);
+        if let Some(m) = p.default_model.as_deref() {
+            line.push_str(&format!(" model={m}"));
         }
-        ["effort", effort] => body["effort"] = effort_value(effort),
-        ["effort" | "list" | "default", ..] => return Err(usage.into()),
-        args => {
-            let args = args.strip_prefix(&["set"]).unwrap_or(args);
-            let (name, effort) = match args {
-                [name] => (name, Value::Null),
-                [name, effort] => (name, effort_value(effort)),
-                _ => return Err(usage.into()),
-            };
-            body["model"] = json!(name);
-            body["effort"] = effort;
+        if let Some(env_name) = p.api_key_env.as_deref() {
+            line.push_str(&format!(" key_env={env_name}"));
+        }
+        if let Some(url) = p.base_url.as_deref() {
+            line.push_str(&format!(" url={url}"));
+        }
+        lines.push(line);
+    }
+    lines.push("Switch live with `/model provider NAME [MODEL [EFFORT]]`.".into());
+    lines.join("\n")
+}
+
+fn provider_summary_from_info(p: &ProviderInfo) -> ProviderSummary {
+    ProviderSummary {
+        name: p.name.clone(),
+        wire: p.wire.clone(),
+        builtin: p.builtin,
+        base_url: p.base_url.clone(),
+        api_key_env: p.api_key_env.clone(),
+        default_model: p.default_model.clone(),
+        context_window: p.context_window,
+        tool_choice: p.tool_choice.clone(),
+        ready: p.ready,
+        status: p.status.clone(),
+    }
+}
+
+fn format_provider_detail(p: &ProviderSummary) -> String {
+    let mut lines = vec![
+        format!("Provider: {} ({}, {})", p.name, p.wire, if p.builtin { "built-in" } else { "custom" }),
+        format!("Status: {}", p.status),
+        format!("Tool choice: {}", p.tool_choice),
+    ];
+    if let Some(url) = p.base_url.as_deref() {
+        lines.push(format!("Base URL: {url}"));
+    }
+    if let Some(env_name) = p.api_key_env.as_deref() {
+        lines.push(format!("API key env var: {env_name} ({})", env_var_status(env_name)));
+    }
+    if let Some(model) = p.default_model.as_deref() {
+        lines.push(format!("Default model: {model}"));
+    }
+    if let Some(ctx) = p.context_window {
+        lines.push(format!("Context window: {ctx}"));
+    }
+    lines.join("\n")
+}
+
+/// Parse `/provider add NAME ...` from either `--flag` options or positional shorthand.
+pub(crate) fn parse_provider_add_tokens(tokens: &[&str]) -> Result<(String, CustomProviderSpec, bool)> {
+    let usage = "use /provider add NAME --wire WIRE --base-url URL [--api-key-env VAR] [--model ID] [--context-window N] [--tool-choice required|auto] [--max-tokens N] [--replay-reasoning] [--default] OR /provider add NAME WIRE BASE_URL [API_KEY_ENV [MODEL]]";
+    let Some((&name, rest)) = tokens.split_first() else {
+        return Err(usage.into());
+    };
+    if name.trim().is_empty() || name.starts_with('-') {
+        return Err(usage.into());
+    }
+    if rest.is_empty() {
+        return Err(usage.into());
+    }
+    if !rest[0].starts_with('-') {
+        if rest.len() < 2 || rest.len() > 4 {
+            return Err(usage.into());
+        }
+        let wire = WireProtocol::parse_custom(rest[0])?.as_str().to_owned();
+        let base_url = rest[1].to_owned();
+        let api_key_env = rest.get(2).filter(|s| **s != "-").map(|s| (*s).to_owned());
+        let default_model = rest.get(3).map(|s| (*s).to_owned());
+        return Ok((
+            name.to_owned(),
+            CustomProviderSpec {
+                wire,
+                base_url,
+                api_key_env,
+                default_model,
+                context_window: None,
+                tool_choice: None,
+                max_tokens: None,
+                replay_reasoning: None,
+            },
+            false,
+        ));
+    }
+    let mut wire = None;
+    let mut base_url = None;
+    let mut api_key_env = None;
+    let mut default_model = None;
+    let mut context_window = None;
+    let mut tool_choice = None;
+    let mut max_tokens = None;
+    let mut replay_reasoning = false;
+    let mut set_default = false;
+    let mut i = 0;
+    while i < rest.len() {
+        let flag = rest[i];
+        let next = |idx: usize| rest.get(idx + 1).copied().ok_or_else(|| format!("{flag} requires a value"));
+        match flag {
+            "--wire" => {
+                wire = Some(WireProtocol::parse_custom(next(i)?)?.as_str().to_owned());
+                i += 2;
+            }
+            "--base-url" => {
+                base_url = Some(next(i)?.to_owned());
+                i += 2;
+            }
+            "--api-key-env" => {
+                api_key_env = Some(next(i)?.to_owned());
+                i += 2;
+            }
+            "--model" => {
+                default_model = Some(next(i)?.to_owned());
+                i += 2;
+            }
+            "--context-window" => {
+                let n: u64 = next(i)?.parse().map_err(|_| "--context-window requires a positive integer")?;
+                if n == 0 {
+                    return Err("--context-window requires a positive integer".into());
+                }
+                context_window = Some(n);
+                i += 2;
+            }
+            "--tool-choice" => {
+                tool_choice = Some(ToolChoiceMode::parse(next(i)?)?);
+                i += 2;
+            }
+            "--max-tokens" => {
+                let n: u32 = next(i)?.parse().map_err(|_| "--max-tokens requires a positive integer")?;
+                if n == 0 {
+                    return Err("--max-tokens requires a positive integer".into());
+                }
+                max_tokens = Some(n);
+                i += 2;
+            }
+            "--replay-reasoning" => {
+                replay_reasoning = true;
+                i += 1;
+            }
+            "--default" => {
+                set_default = true;
+                i += 1;
+            }
+            _ => return Err(format!("unknown option for /provider add: {flag}")),
         }
     }
-    let mut value = client.call(body)?;
-    let provider = field(&value, "provider")?;
-    if words == ["list"] {
-        if provider != "chatgpt" {
-            return Err("/model list uses the ChatGPT account catalog. For this API provider, enter /model MODEL [EFFORT] with its model ID.".into());
+    let (Some(wire), Some(base_url)) = (wire, base_url) else {
+        return Err("provider add requires --wire and --base-url".into());
+    };
+    Ok((
+        name.to_owned(),
+        CustomProviderSpec {
+            wire,
+            base_url,
+            api_key_env,
+            default_model,
+            context_window,
+            tool_choice,
+            max_tokens,
+            replay_reasoning: replay_reasoning.then_some(true),
+        },
+        set_default,
+    ))
+}
+
+fn provider_cli_command(action: ProviderAction, machine: bool) -> Result<()> {
+    match action {
+        ProviderAction::List => {
+            let list = model::list_providers()?;
+            let default_name = model::default_provider_name()?;
+            let env_override = model::explicit_env_provider()?;
+            let active = env_override.clone().unwrap_or_else(|| default_name.clone());
+            let config_path = model::providers_config_path_display();
+            if machine {
+                return output(
+                    &json!({
+                        "active": active,
+                        "default": default_name,
+                        "overridden": env_override.is_some(),
+                        "config_path": config_path,
+                        "providers": list,
+                    })
+                    .to_string(),
+                );
+            }
+            let summaries: Vec<_> = list.iter().map(provider_summary_from_info).collect();
+            output(&format_provider_list_lines(&active, env_override.is_some(), config_path.as_deref(), &summaries))
         }
-        let models = crate::model::plan_models()?;
+        ProviderAction::Show(name) => {
+            let list = model::list_providers()?;
+            let Some(info) = list.iter().find(|p| p.name == name) else {
+                return Err(format!("unknown provider {name:?}"));
+            };
+            if machine {
+                return output(&serde_json::to_string(info).map_err(|e| e.to_string())?);
+            }
+            output(&format_provider_detail(&provider_summary_from_info(info)))
+        }
+        ProviderAction::Add { name, spec, set_default } => {
+            let api_key_env = spec.api_key_env.clone();
+            let wire = spec.wire.clone();
+            let base_url = spec.base_url.clone();
+            let path = model::upsert_provider(&name, spec, set_default)?;
+            if machine {
+                return output(
+                    &json!({
+                        "saved": name,
+                        "wire": wire,
+                        "base_url": base_url,
+                        "api_key_env": api_key_env,
+                        "default": set_default,
+                        "path": path.display().to_string(),
+                    })
+                    .to_string(),
+                );
+            }
+            let mut msg = format!("Saved provider '{name}' ({wire} @ {base_url}) to {}.", path.display());
+            if let Some(env_name) = api_key_env.as_deref() {
+                msg.push_str(&format!("\nAPI key env {env_name}: {}.", env_var_status(env_name)));
+            }
+            if set_default {
+                msg.push_str("\nSet as default provider.");
+            }
+            output(&msg)
+        }
+        ProviderAction::Remove(name) => {
+            let path = model::remove_provider(&name)?;
+            if machine {
+                return output(&json!({"removed": name, "path": path.display().to_string()}).to_string());
+            }
+            output(&format!("Removed provider '{name}' from {}.", path.display()))
+        }
+        ProviderAction::DefaultGet => {
+            let default_name = model::default_provider_name()?;
+            let env_override = model::explicit_env_provider()?;
+            let config_path = model::providers_config_path_display();
+            if machine {
+                return output(
+                    &json!({
+                        "default": default_name,
+                        "overridden": env_override.is_some(),
+                        "env_provider": env_override,
+                        "config_path": config_path,
+                    })
+                    .to_string(),
+                );
+            }
+            if let Some(env_name) = env_override {
+                output(&format!(
+                    "Configured default provider: {default_name} (current shell overridden by TEAMAGENTS_PROVIDER={env_name})"
+                ))
+            } else {
+                output(&format!("Default provider: {default_name}"))
+            }
+        }
+        ProviderAction::DefaultSet(target) => {
+            let path = model::set_default_provider(target.as_deref())?;
+            let resolved = model::default_provider_name()?;
+            if machine {
+                return output(
+                    &json!({
+                        "configured_default": target,
+                        "effective_default": resolved,
+                        "path": path.display().to_string(),
+                    })
+                    .to_string(),
+                );
+            }
+            match target {
+                Some(name) => output(&format!("Default provider set to '{name}' in {}.", path.display())),
+                None => output(&format!(
+                    "Cleared configured default provider in {} (effective auto default: {resolved}).",
+                    path.display()
+                )),
+            }
+        }
+    }
+}
+
+fn provider_chat_command(client: &Client, args: &str, machine: bool) -> Result<()> {
+    let words: Vec<_> = args.split_whitespace().collect();
+    match words.as_slice() {
+        [] | ["list"] => {
+            let (active, overridden, config_path, providers) = client.providers()?;
+            if machine {
+                return output(
+                    &json!({
+                        "active": active,
+                        "overridden": overridden,
+                        "config_path": config_path,
+                        "providers": providers,
+                    })
+                    .to_string(),
+                );
+            }
+            output(&format_provider_list_lines(&active, overridden, config_path.as_deref(), &providers))
+        }
+        ["show", name] => {
+            let (_, _, _, providers) = client.providers()?;
+            let Some(found) = providers.iter().find(|p| p.name == *name) else {
+                return Err(format!("unknown provider {name:?}"));
+            };
+            if machine {
+                return output(&serde_json::to_string(found).map_err(|e| e.to_string())?);
+            }
+            output(&format_provider_detail(found))
+        }
+        ["use", rest @ ..] if !rest.is_empty() => {
+            let joined = format!("provider {}", rest.join(" "));
+            model_command(client, &joined, machine)
+        }
+        ["default"] => provider_cli_command(ProviderAction::DefaultGet, machine),
+        ["default", target] => {
+            provider_cli_command(ProviderAction::DefaultSet((*target != "auto").then(|| (*target).to_owned())), machine)
+        }
+        ["remove" | "rm", name] => provider_cli_command(ProviderAction::Remove((*name).to_owned()), machine),
+        ["add", rest @ ..] => {
+            let (name, spec, set_default) = parse_provider_add_tokens(rest)?;
+            let switch_hint = name.clone();
+            provider_cli_command(ProviderAction::Add { name, spec, set_default }, machine)?;
+            if !machine {
+                output(&format!("Use `/model provider {switch_hint}` to switch to it now."))?;
+            }
+            Ok(())
+        }
+        _ => Err("use /provider [list|show NAME|use NAME|add NAME ...|remove NAME|default [NAME|auto]]".into()),
+    }
+}
+
+fn model_command(client: &Client, args: &str, machine: bool) -> Result<()> {
+    let words: Vec<_> = args.split_whitespace().collect();
+    let usage = "use /model, /model list, /model providers, /model provider NAME [MODEL [EFFORT]], /model MODEL [EFFORT], /model effort EFFORT or /model default";
+    if words == ["providers"] {
+        let (active, overridden, config_path, providers) = client.providers()?;
+        if machine {
+            return output(
+                &json!({
+                    "active": active,
+                    "overridden": overridden,
+                    "config_path": config_path,
+                    "providers": providers,
+                })
+                .to_string(),
+            );
+        }
+        return output(&format_provider_list_lines(&active, overridden, config_path.as_deref(), &providers));
+    }
+    if words == ["list"] {
+        let cfg = client.model_get()?;
+        let models = client.model_list(None)?;
         if !machine {
             return if models.is_empty() {
-                output("No visible models for this ChatGPT account.")
+                output(&format!("No visible models for provider {}.", cfg.provider))
             } else {
                 output(&models.join("\n"))
             };
         }
-        value["models"] = json!(models);
-        return output(&value.to_string());
+        return output(
+            &json!({
+                "provider": cfg.provider,
+                "model": cfg.model,
+                "effort": cfg.effort,
+                "models": models,
+            })
+            .to_string(),
+        );
     }
+    let cfg = match words.as_slice() {
+        [] => client.model_get()?,
+        ["default"] => client.model_set(None, Some(None), Some(None))?,
+        ["effort", effort] => {
+            let e = (*effort != "default").then_some(*effort);
+            client.model_set(None, None, Some(e))?
+        }
+        ["provider", target] => {
+            let p = (*target != "default").then_some(*target);
+            client.model_set(Some(p), None, None)?
+        }
+        ["provider", target, name] => {
+            let p = (*target != "default").then_some(*target);
+            let m = (*name != "default").then_some(*name);
+            client.model_set(Some(p), Some(m), Some(None))?
+        }
+        ["provider", target, name, effort] => {
+            let p = (*target != "default").then_some(*target);
+            let m = (*name != "default").then_some(*name);
+            let e = (*effort != "default").then_some(*effort);
+            client.model_set(Some(p), Some(m), Some(e))?
+        }
+        ["provider" | "providers" | "effort" | "list" | "default", ..] => return Err(usage.into()),
+        args => {
+            let args = args.strip_prefix(&["set"]).unwrap_or(args);
+            let (name, effort) = match args {
+                [name] => (*name, Some(None)),
+                [name, effort] => (*name, Some((*effort != "default").then_some(*effort))),
+                _ => return Err(usage.into()),
+            };
+            let m = (name != "default").then_some(name);
+            client.model_set(None, Some(m), effort)?
+        }
+    };
     if machine {
-        return output(&value.to_string());
+        return output(
+            &json!({
+                "provider": cfg.provider,
+                "model": cfg.model,
+                "effort": cfg.effort,
+            })
+            .to_string(),
+        );
     }
-    let fallback = if provider == "chatgpt" { "automatic (first visible plan model)" } else { "unset" };
-    let model = value["model"].as_str().unwrap_or(fallback);
-    let effort = value["effort"].as_str().unwrap_or("provider default");
-    let mut text = format!("New tasks use {provider} | model: {model} | reasoning effort: {effort}");
+    let fallback = if cfg.provider == "chatgpt" { "automatic (first visible plan model)" } else { "unset" };
+    let model = cfg.model.as_deref().unwrap_or(fallback);
+    let effort = cfg.effort.as_deref().unwrap_or("provider default");
+    let mut text = format!("New tasks use {} | model: {model} | reasoning effort: {effort}", cfg.provider);
     if words.is_empty() {
         text.push_str("\n/model MODEL [EFFORT]   /model effort EFFORT   /model default");
+        text.push_str("\n/model providers   /model provider NAME [MODEL [EFFORT]]");
         text.push_str(&format!("\nEffort: default, {} (support varies by model).", daemon::EFFORTS.join(", ")));
-        if provider == "chatgpt" {
-            text.push_str("\nUse /model list to see model IDs for your ChatGPT account.");
-        }
+        text.push_str("\nUse /model list to query available models for the active provider.");
     }
     output(&text)
 }
 
-fn chat_plain(client: &Client, initial_agent: &str, review: bool, initial_staged: bool, machine: bool) -> Result<()> {
+fn mcp_cli_command(action: McpAction, machine: bool) -> Result<()> {
+    match action {
+        McpAction::List => {
+            let config_path = mcp::mcp_config_path_display();
+            let servers = mcp::list_servers()?;
+            let val = json!({"config_path": config_path, "servers": servers});
+            output(&render("mcp", &val, machine))
+        }
+        McpAction::Add { name, spec } => {
+            let path = mcp::upsert_server(&name, spec)?;
+            if machine {
+                output(&json!({"saved": name, "path": path.display().to_string()}).to_string())
+            } else {
+                output(&format!("Saved MCP server '{name}' to {}.", path.display()))
+            }
+        }
+        McpAction::Remove(name) => {
+            let path = mcp::remove_server(&name)?;
+            if machine {
+                output(&json!({"removed": name, "path": path.display().to_string()}).to_string())
+            } else {
+                output(&format!("Removed MCP server '{name}' from {}.", path.display()))
+            }
+        }
+        McpAction::Tools(server) => {
+            let tools = mcp::list_tools(server.as_deref())?;
+            if machine {
+                return output(&json!({"server": server, "tools": tools}).to_string());
+            }
+            output(&mcp::list_tools_text(server.as_deref())?)
+        }
+    }
+}
+
+fn chat_plain(
+    client: &Client,
+    initial_agent: &str,
+    review: bool,
+    initial_sandbox: SandboxMode,
+    machine: bool,
+) -> Result<()> {
     let mut agent = initial_agent.to_owned();
-    let mut staged = initial_staged;
+    let mut sandbox = initial_sandbox;
     let mut active_root: Option<String> = None;
     if !machine && io::stdin().is_terminal() {
         let mode = if review { "individual action review" } else { "unattended" };
-        let sb = if staged { "staged" } else { "direct" };
-        output(&format!("New session with {agent} ({mode}, {sb}). Enter a task, or /help for commands."))?;
+        output(&format!(
+            "New session with {agent} ({mode}, {}). Enter a task, or /help for commands.",
+            sandbox.as_str()
+        ))?;
     }
     let tracker = Mutex::new(QuestionTracker::default());
     let show = |task: &Value| {
@@ -668,8 +1586,8 @@ fn chat_plain(client: &Client, initial_agent: &str, review: bool, initial_staged
         tracker.lock().unwrap().clear_answered(id);
         Ok(())
     };
-    let submit = |agent: &str, text: &str, staged: bool| -> Result<String> {
-        let receipt = client.submit_with_options(agent, text, review, None, staged)?;
+    let submit = |agent: &str, text: &str, sandbox: SandboxMode| -> Result<String> {
+        let receipt = client.submit_full(agent, text, review, None, sandbox)?;
         let id = field(&receipt, "id")?.to_owned();
         if machine || review {
             output(&render("submit", &receipt, machine))?;
@@ -708,6 +1626,7 @@ fn chat_plain(client: &Client, initial_agent: &str, review: bool, initial_staged
                     ("quit", None, None) => break,
                     ("help", None, None) => output(&render("help", &json!(CHAT_HELP), machine)),
                     ("model", _, _) => model_command(client, args, machine),
+                    ("provider", _, _) => provider_chat_command(client, args, machine),
                     ("to", Some(name), None) => {
                         agent = name.into();
                         output(&if machine {
@@ -728,21 +1647,97 @@ fn chat_plain(client: &Client, initial_agent: &str, review: bool, initial_staged
                             "Started a new session. Enter a task, or /help for commands.".into()
                         })
                     }
-                    ("staged", None, None) => {
-                        staged = !staged;
+                    ("sandbox", None, None) => output(&if machine {
+                        json!({"sandbox": sandbox.as_str()}).to_string()
+                    } else {
+                        format!("Sandbox mode: {}.", sandbox.as_str())
+                    }),
+                    ("sandbox", Some(mode_str), None) => {
+                        sandbox = SandboxMode::parse(mode_str)?;
                         output(&if machine {
-                            json!({"staged": staged}).to_string()
+                            json!({"sandbox": sandbox.as_str()}).to_string()
                         } else {
-                            format!("Sandbox mode: {}.", if staged { "staged" } else { "direct" })
+                            format!("Sandbox mode set to {}.", sandbox.as_str())
+                        })
+                    }
+                    ("staged", None, None) => {
+                        sandbox = if sandbox.is_staged() { SandboxMode::Direct } else { SandboxMode::Staged };
+                        output(&if machine {
+                            json!({"staged": sandbox.is_staged(), "sandbox": sandbox.as_str()}).to_string()
+                        } else {
+                            format!("Sandbox mode: {}.", sandbox.as_str())
                         })
                     }
                     ("staged", Some(mode @ ("on" | "off")), None) => {
-                        staged = mode == "on";
+                        sandbox = if mode == "on" { SandboxMode::Staged } else { SandboxMode::Direct };
                         output(&if machine {
-                            json!({"staged": staged}).to_string()
+                            json!({"staged": sandbox.is_staged(), "sandbox": sandbox.as_str()}).to_string()
                         } else {
-                            format!("Sandbox mode set to {}.", if staged { "staged" } else { "direct" })
+                            format!("Sandbox mode set to {}.", sandbox.as_str())
                         })
+                    }
+                    ("plan", Some(_), _) => {
+                        let plan_prompt = format!(
+                            "Create a concise, verified implementation plan (read-only analysis; do not modify files). Use update_plan to publish concrete steps.\n\nRequest:\n{args}"
+                        );
+                        match submit(&agent, &plan_prompt, SandboxMode::ReadOnly) {
+                            Ok(id) => {
+                                active_root = Some(id);
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    ("review", _, _) => {
+                        let mut rparts = args.split_whitespace();
+                        let base_ref = match (rparts.next(), rparts.next()) {
+                            (Some("code"), b) => b,
+                            (Some(b), _) => Some(b),
+                            (None, _) => None,
+                        };
+                        let diff = client.diff(base_ref, None)?;
+                        let prompt = format!(
+                            "Perform a read-only code review focusing on bugs, security risks, missing checks, and regressions.\n\n```diff\n{diff}\n```"
+                        );
+                        match submit(&agent, &prompt, SandboxMode::ReadOnly) {
+                            Ok(id) => {
+                                active_root = Some(id);
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    ("steer", Some(_), _) => {
+                        let (target_id, steer_text) = if let Some(root_id) = active_root.as_deref() {
+                            (root_id.to_owned(), args.to_owned())
+                        } else if let Some((id_part, rest)) = args.split_once(char::is_whitespace) {
+                            (id_part.to_owned(), rest.trim().to_owned())
+                        } else {
+                            return Err("use /steer TEXT (after starting a session) or /steer TASK_ID TEXT".into());
+                        };
+                        let val = client.steer(&target_id, &steer_text)?;
+                        output(&render("steer", &val, machine))
+                    }
+                    ("compact", maybe_id, None) => {
+                        let target_id = maybe_id
+                            .map(str::to_owned)
+                            .or_else(|| active_root.clone())
+                            .ok_or("start or select a session first, or pass /compact TASK_ID")?;
+                        let val = client.compact(&target_id)?;
+                        output(&render("compact", &val, machine))
+                    }
+                    ("diff", base_ref, None) => {
+                        let text = client.diff(base_ref, None)?;
+                        let val = json!({"diff": text});
+                        output(&render("diff", &val, machine))
+                    }
+                    ("skills", None, None) => {
+                        let skills = client.skills()?;
+                        output(&render("skills", &json!({"skills": skills}), machine))
+                    }
+                    ("mcp", None, None) => {
+                        let (config_path, servers) = client.mcp_status()?;
+                        output(&render("mcp", &json!({"config_path": config_path, "servers": servers}), machine))
                     }
                     ("wb", _, _) => {
                         let Some(root_id) = active_root.as_deref() else {
@@ -800,7 +1795,7 @@ fn chat_plain(client: &Client, initial_agent: &str, review: bool, initial_staged
                             output(&render("wb_write", &value, machine))
                         }
                     }
-                    ("new", Some(_), _) => match submit(&agent, args, staged) {
+                    ("new", Some(_), _) => match submit(&agent, args, sandbox) {
                         Ok(id) => {
                             active_root = Some(id);
                             Ok(())
@@ -818,7 +1813,7 @@ fn chat_plain(client: &Client, initial_agent: &str, review: bool, initial_staged
                     Ok(Some(id)) => answer(&id, line),
                     Ok(None) => {
                         if let Some(root_id) = active_root.as_deref() {
-                            match client.continue_with_options(root_id, line, review, None, staged) {
+                            match client.continue_full(root_id, line, review, None, sandbox) {
                                 Ok(receipt) => {
                                     if machine || review {
                                         output(&render("continue", &receipt, machine))
@@ -829,7 +1824,7 @@ fn chat_plain(client: &Client, initial_agent: &str, review: bool, initial_staged
                                 Err(e) => Err(e),
                             }
                         } else {
-                            match submit(&agent, line, staged) {
+                            match submit(&agent, line, sandbox) {
                                 Ok(id) => {
                                     active_root = Some(id);
                                     Ok(())
@@ -865,6 +1860,8 @@ fn run_cli() -> Result<()> {
                 AuthAction::Logout => crate::oauth::logout(),
             };
         }
+        Command::Provider(action) => return provider_cli_command(action, global.json),
+        Command::Mcp(action) => return mcp_cli_command(action, global.json),
         _ => {}
     }
 
@@ -872,23 +1869,61 @@ fn run_cli() -> Result<()> {
     let interactive_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     match cmd {
         Command::Daemon => daemon::serve(&client.session, &client.workspace),
-        Command::Tui { agent, review, staged } => {
+        Command::Tui { agent, review, sandbox } => {
             if !interactive_tty {
                 return Err(
                     "tui requires an interactive terminal; use `teamagents chat --plain` or `teamagents exec`".into()
                 );
             }
-            crate::tui::run(client, agent, review, staged)
+            crate::tui::run(client, agent, review, sandbox, None)
         }
-        Command::Chat { agent, review, staged, plain } => {
+        Command::Chat { agent, review, sandbox, plain } => {
             if !global.json && !plain && interactive_tty {
-                crate::tui::run(client, agent, review, staged)
+                crate::tui::run(client, agent, review, sandbox, None)
             } else {
-                chat_plain(&client, &agent, review, staged, global.json)
+                chat_plain(&client, &agent, review, sandbox, global.json)
             }
         }
         Command::Exec(opt) => exec(client, opt, global.json),
         Command::Continue { id, opt } => continue_cmd(client, &id, opt, global.json),
+        Command::Review { target, opt } => review_cmd(client, target, opt, global.json),
+        Command::Resume { id, opt } => {
+            let target_id = if let Some(explicit) = id {
+                explicit
+            } else {
+                let tasks = client.tasks()?;
+                tasks
+                    .iter()
+                    .rev()
+                    .find(|t| t.is_root() && t.continuation_node.is_some())
+                    .or_else(|| tasks.iter().rev().find(|t| t.is_root()))
+                    .map(|t| t.id.clone())
+                    .ok_or("no existing sessions in this workspace to resume")?
+            };
+            if !opt.args.is_empty() {
+                continue_cmd(client, &target_id, opt, global.json)
+            } else if !global.json && interactive_tty {
+                crate::tui::run(client, opt.agent, opt.review, opt.sandbox, Some(target_id))
+            } else {
+                command(&client, "status", Some(&target_id), global.json)
+            }
+        }
+        Command::Steer { id, text } => {
+            let value = client.steer(&id, &text)?;
+            output(&render("steer", &value, global.json))
+        }
+        Command::Compact { id } => {
+            let value = client.compact(&id)?;
+            output(&render("compact", &value, global.json))
+        }
+        Command::Diff { base, commit } => {
+            let text = client.diff(base.as_deref(), commit.as_deref())?;
+            output(&render("diff", &json!({"diff": text}), global.json))
+        }
+        Command::Skills => {
+            let skills = client.skills()?;
+            output(&render("skills", &json!({"skills": skills}), global.json))
+        }
         Command::Whiteboard { id, write: None } => command(&client, "whiteboard", Some(&id), global.json),
         Command::Whiteboard { id, write: Some((key, mode, kind, content)) } => {
             let value = client.wb_write(&id, &key, &mode, kind.as_deref(), content.as_deref())?;
@@ -906,7 +1941,9 @@ fn run_cli() -> Result<()> {
         Command::Approve { id } => command(&client, "approve", Some(&id), global.json),
         Command::Deny { id } => command(&client, "deny", Some(&id), global.json),
         Command::Stop => command(&client, "stop", None, global.json),
-        Command::Help | Command::Version | Command::Auth(_) => unreachable!(),
+        Command::Help | Command::Version | Command::Auth(_) | Command::Provider(_) | Command::Mcp(_) => {
+            unreachable!()
+        }
     }
 }
 
@@ -960,12 +1997,44 @@ mod tests {
         ));
         assert!(matches!(
             options(&["--review", "--staged", "tui", "--agent", "builder"]).unwrap().command,
-            Command::Tui { ref agent, review: true, staged: true } if agent == "builder"
+            Command::Tui { ref agent, review: true, sandbox: SandboxMode::Staged } if agent == "builder"
         ));
         assert!(matches!(
-            options(&["exec", "--staged", "run"]).unwrap().command,
-            Command::Exec(ref opt) if opt.staged
+            options(&["exec", "--staged", "--jsonl", "run"]).unwrap().command,
+            Command::Exec(ref opt) if opt.sandbox == SandboxMode::Staged && opt.jsonl
         ));
+        assert!(matches!(
+            options(&["exec", "--sandbox", "read-only", "inspect"]).unwrap().command,
+            Command::Exec(ref opt) if opt.sandbox == SandboxMode::ReadOnly
+        ));
+        assert!(matches!(
+            options(&["review", "--base", "main", "check security"]).unwrap().command,
+            Command::Review { target: ReviewTarget::Base(ref b), ref opt }
+                if b == "main" && opt.sandbox == SandboxMode::ReadOnly && opt.args == vec!["check security"]
+        ));
+        assert!(matches!(
+            options(&["resume", "r1", "next step"]).unwrap().command,
+            Command::Resume { id: Some(ref i), ref opt } if i == "r1" && opt.args == vec!["next step"]
+        ));
+        assert!(matches!(
+            options(&["steer", "r1", "focus", "on", "tests"]).unwrap().command,
+            Command::Steer { ref id, ref text } if id == "r1" && text == "focus on tests"
+        ));
+        assert!(matches!(
+            options(&["compact", "r1"]).unwrap().command,
+            Command::Compact { ref id } if id == "r1"
+        ));
+        assert!(matches!(
+            options(&["diff", "--commit", "HEAD"]).unwrap().command,
+            Command::Diff { base: None, commit: Some(ref c) } if c == "HEAD"
+        ));
+        assert!(matches!(options(&["skills"]).unwrap().command, Command::Skills));
+        assert!(matches!(
+            options(&["mcp", "add", "srv", "--url", "https://mcp.example.com", "--bearer-token-env", "MCP_TOKEN"]).unwrap().command,
+            Command::Mcp(McpAction::Add { ref name, spec: McpServerSpec::Http { ref url, bearer_token_env: Some(ref env) } })
+                if name == "srv" && url == "https://mcp.example.com" && env == "MCP_TOKEN"
+        ));
+        assert!(options(&["exec", "--staged", "--sandbox", "read-only", "bad"]).is_err());
         assert!(matches!(
             options(&["whiteboard", "r1", "set", "contract:api", "v1 schema"]).unwrap().command,
             Command::Whiteboard { ref id, write: Some((ref key, ref mode, Some(ref kind), Some(ref text))) }
@@ -1003,9 +2072,106 @@ mod tests {
             &["tui", "--json"],
             &["tui", "--plain"],
             &["tui", "extra"],
+            &["tasks", "--wire", "responses"],
+            &["provider", "list", "--wire", "responses"],
+            &["provider", "--session", "s", "list"],
+            &["provider", "add", "myprov"],
+            &["provider", "add", "myprov", "--wire", "chatgpt", "--base-url", "https://x.test"],
+            &[
+                "provider",
+                "add",
+                "myprov",
+                "--wire",
+                "responses",
+                "--base-url",
+                "https://x.test",
+                "--context-window",
+                "0",
+            ],
         ] {
             assert!(options(args).is_err(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn provider_cli_and_chat_add_parsers_validate_flags_and_shorthand() {
+        assert!(matches!(options(&["provider"]).unwrap().command, Command::Provider(ProviderAction::List)));
+        assert!(matches!(
+            options(&["provider", "--json", "show", "deepseek"]).unwrap(),
+            Parsed { global: GlobalOptions { json: true, .. }, command: Command::Provider(ProviderAction::Show(ref n)) }
+                if n == "deepseek"
+        ));
+        assert!(matches!(
+            options(&[
+                "provider",
+                "add",
+                "byteseek",
+                "--wire",
+                "responses",
+                "--base-url",
+                "https://api.byteseek.test/v1/responses",
+                "--api-key-env",
+                "BYTESEEK_KEY",
+                "--model",
+                "bs-coder",
+                "--context-window",
+                "200000",
+                "--tool-choice",
+                "auto",
+                "--max-tokens",
+                "8192",
+                "--replay-reasoning",
+                "--default",
+            ])
+            .unwrap()
+            .command,
+            Command::Provider(ProviderAction::Add { ref name, ref spec, set_default: true })
+                if name == "byteseek"
+                    && spec.wire == "responses"
+                    && spec.api_key_env.as_deref() == Some("BYTESEEK_KEY")
+                    && spec.default_model.as_deref() == Some("bs-coder")
+                    && spec.context_window == Some(200_000)
+                    && spec.tool_choice == Some(ToolChoiceMode::Auto)
+                    && spec.max_tokens == Some(8192)
+                    && spec.replay_reasoning == Some(true)
+        ));
+        assert!(matches!(
+            options(&["provider", "default", "auto"]).unwrap().command,
+            Command::Provider(ProviderAction::DefaultSet(None))
+        ));
+        assert!(matches!(
+            options(&["provider", "rm", "byteseek"]).unwrap().command,
+            Command::Provider(ProviderAction::Remove(ref n)) if n == "byteseek"
+        ));
+
+        let (name, spec, set_def) = parse_provider_add_tokens(&[
+            "local-vllm",
+            "chat_completions",
+            "http://127.0.0.1:8000/v1/chat/completions",
+            "-",
+            "qwen-coder",
+        ])
+        .unwrap();
+        assert_eq!(name, "local-vllm");
+        assert_eq!(spec.wire, "chat_completions");
+        assert_eq!(spec.api_key_env, None);
+        assert_eq!(spec.default_model.as_deref(), Some("qwen-coder"));
+        assert!(!set_def);
+
+        let (name2, spec2, set_def2) = parse_provider_add_tokens(&[
+            "claude-proxy",
+            "--wire",
+            "anthropic",
+            "--base-url",
+            "https://claude.proxy.test",
+            "--api-key-env",
+            "PROXY_KEY",
+            "--default",
+        ])
+        .unwrap();
+        assert_eq!(name2, "claude-proxy");
+        assert_eq!(spec2.wire, "anthropic");
+        assert!(set_def2);
     }
 
     #[test]

@@ -1,9 +1,15 @@
 //! Deterministic TUI state machine, complementary key/slash bindings, and exact `HitMap` dispatch.
 use crate::{
+    cli::{format_provider_list_lines, parse_provider_add_tokens},
     daemon,
-    protocol::{preview, sanitize_inline, Member, ModelConfig, QuestionTracker, TaskRecord, TaskStatus, TrackerNotice},
+    model::CustomProviderSpec,
+    protocol::{
+        preview, sanitize_inline, Member, ModelConfig, ProviderSummary, QuestionTracker, StageKind, TaskRecord,
+        TaskStatus, TrackerNotice,
+    },
+    sandbox::SandboxMode,
     tui::{
-        input::{matching_commands, TextInput},
+        input::{active_at_mention, matching_commands, matching_files, TextInput},
         theme::Palette,
     },
 };
@@ -77,6 +83,7 @@ impl InspectorTab {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModelField {
+    ProviderBar,
     ModelInput,
     CatalogList,
     EffortBar,
@@ -97,6 +104,9 @@ pub(crate) enum Overlay {
         selected: usize,
     },
     Model {
+        providers: Vec<ProviderSummary>,
+        provider_idx: usize,
+        initial_provider: String,
         model_input: TextInput,
         effort_idx: usize,
         catalog: CatalogState,
@@ -108,6 +118,12 @@ pub(crate) enum Overlay {
     },
     Agents {
         selected: usize,
+    },
+    TextView {
+        title: String,
+        lines: Vec<String>,
+        scroll: u16,
+        is_diff: bool,
     },
     Help,
 }
@@ -133,15 +149,24 @@ pub(crate) struct ArmedDelete {
 pub(crate) enum UiCommand {
     RefreshAll,
     FetchDetail(String),
-    Submit { agent: String, text: String, review: bool, staged: bool, check: Option<String> },
-    Continue { id: String, text: String, review: bool, staged: bool, check: Option<String> },
+    Submit { agent: String, text: String, review: bool, sandbox: SandboxMode, check: Option<String> },
+    Continue { id: String, text: String, review: bool, sandbox: SandboxMode, check: Option<String> },
+    Review { agent: String, review: bool, base: Option<String>, check: Option<String> },
+    Steer { id: String, text: String },
+    Compact(String),
+    LoadDiff { base: Option<String> },
+    LoadSkills,
+    LoadMcp,
     WbWrite { root_id: String, key: String, mode: String, kind: Option<String>, content: Option<String> },
     Answer { root_id: String, text: String },
     Approve { approval_id: String, allow: bool },
     Cancel(String),
     Delete(String),
-    SetModel { model: Option<Option<String>>, effort: Option<Option<String>> },
-    LoadPlanModels,
+    SetModel { provider: Option<Option<String>>, model: Option<Option<String>>, effort: Option<Option<String>> },
+    LoadModels(Option<String>),
+    AddProvider { name: String, spec: CustomProviderSpec, set_default: bool },
+    RemoveProvider(String),
+    SetDefaultProvider(Option<String>),
     StopDaemon,
     Quit,
 }
@@ -152,9 +177,19 @@ pub(crate) enum BackendEvent {
         tasks: std::result::Result<Vec<TaskRecord>, String>,
         members: std::result::Result<Vec<Member>, String>,
         model: std::result::Result<ModelConfig, String>,
+        providers: Option<(String, bool, Option<String>, Vec<ProviderSummary>)>,
     },
     TaskDetail(std::result::Result<Box<TaskRecord>, String>),
-    PlanModels(std::result::Result<Vec<String>, String>),
+    ModelsCatalog {
+        provider: Option<String>,
+        result: std::result::Result<Vec<String>, String>,
+    },
+    FilesLoaded(Vec<String>),
+    TextOverlay {
+        title: String,
+        lines: Vec<String>,
+        is_diff: bool,
+    },
     CommandOutcome {
         message: Option<String>,
         error: Option<String>,
@@ -211,6 +246,7 @@ pub(crate) enum HitTarget {
     InlineReply(String),
     OpenHelp,
     SlashItem(usize),
+    MentionItem(usize),
     ModalBackdrop,
     ModalSurface,
     ModalClose,
@@ -218,6 +254,7 @@ pub(crate) enum HitTarget {
     ModalApprove(String),
     ModalDeny(String),
     ModalModelField(ModelField),
+    ModalProviderOption(usize),
     ModalEffortOption(usize),
     ModalCatalogRow(usize),
     ModalModelSave,
@@ -260,14 +297,18 @@ pub(crate) struct AppState {
     pub workspace_name: String,
     pub agent: String,
     pub review_mode: bool,
-    pub staged_mode: bool,
+    pub sandbox_mode: SandboxMode,
     pub armed_check: Option<String>,
     pub model: Option<ModelConfig>,
+    pub providers: Vec<ProviderSummary>,
+    pub providers_overridden: bool,
+    pub providers_config_path: Option<String>,
     pub palette: Palette,
     pub connected: bool,
     pub last_error: Option<String>,
     pub tasks: Vec<TaskRecord>,
     pub members: Vec<Member>,
+    pub workspace_files: Vec<String>,
     pub collapsed_roots: HashSet<String>,
     pub tree_rows: Vec<TreeRow>,
     pub selected_task_id: Option<String>,
@@ -287,6 +328,7 @@ pub(crate) struct AppState {
     pub overlay: Overlay,
     pub input: TextInput,
     pub slash_idx: usize,
+    pub mention_idx: usize,
     pub answering_root: Option<String>,
     pub armed_delete: Option<ArmedDelete>,
     pub questions: QuestionTracker,
@@ -297,19 +339,23 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    pub fn new(workspace_name: String, agent: String, review_mode: bool, staged_mode: bool) -> Self {
+    pub fn new(workspace_name: String, agent: String, review_mode: bool, sandbox_mode: SandboxMode) -> Self {
         let mut state = Self {
             workspace_name,
             agent: agent.clone(),
             review_mode,
-            staged_mode,
+            sandbox_mode,
             armed_check: None,
             model: None,
+            providers: Vec::new(),
+            providers_overridden: false,
+            providers_config_path: None,
             palette: Palette::default_for_env(),
             connected: false,
             last_error: None,
             tasks: Vec::new(),
             members: Vec::new(),
+            workspace_files: Vec::new(),
             collapsed_roots: HashSet::new(),
             tree_rows: Vec::new(),
             selected_task_id: None,
@@ -329,6 +375,7 @@ impl AppState {
             overlay: Overlay::None,
             input: TextInput::default(),
             slash_idx: 0,
+            mention_idx: 0,
             answering_root: None,
             armed_delete: None,
             questions: QuestionTracker::default(),
@@ -338,8 +385,32 @@ impl AppState {
             should_quit: false,
         };
         let mode = if review_mode { "review" } else { "unattended" };
-        state.push_event(EventLevel::Info, format!("Session ready with @{agent} ({mode})."));
+        state.push_event(EventLevel::Info, format!("Session ready with @{agent} ({mode}, {}).", sandbox_mode.as_str()));
         state
+    }
+
+    pub fn active_mention(&self) -> Option<(usize, usize, &str, Vec<&str>)> {
+        if self.workspace_files.is_empty() {
+            return None;
+        }
+        let (start, end, query) = active_at_mention(self.input.as_str(), self.input.cursor())?;
+        let matches = matching_files(query, &self.workspace_files, 9);
+        if matches.is_empty() {
+            return None;
+        }
+        Some((start, end, query, matches))
+    }
+
+    fn accept_mention_at(&mut self, idx: usize) -> bool {
+        let Some((start, end, _, matches)) = self.active_mention() else {
+            return false;
+        };
+        let Some(picked) = matches.get(idx % matches.len()).copied().map(str::to_owned) else {
+            return false;
+        };
+        self.input.replace_range(start, end, &format!("@{picked} "));
+        self.mention_idx = 0;
+        true
     }
 
     pub fn has_animations(&self) -> bool {
@@ -436,7 +507,7 @@ impl AppState {
     pub fn apply_backend_event(&mut self, event: BackendEvent) -> Vec<UiCommand> {
         let mut cmds = Vec::new();
         match event {
-            BackendEvent::Snapshot { tasks, members, model } => {
+            BackendEvent::Snapshot { tasks, members, model, providers } => {
                 match tasks {
                     Ok(rows) => {
                         self.connected = true;
@@ -519,6 +590,11 @@ impl AppState {
                 if let Ok(model) = model {
                     self.model = Some(model);
                 }
+                if let Some((_active, overridden, config_path, list)) = providers {
+                    self.providers = list;
+                    self.providers_overridden = overridden;
+                    self.providers_config_path = config_path;
+                }
             }
             BackendEvent::TaskDetail(Ok(detail)) => {
                 if self.selected_task_id.as_deref() == Some(detail.id.as_str()) {
@@ -526,8 +602,12 @@ impl AppState {
                 }
             }
             BackendEvent::TaskDetail(Err(_)) => {}
-            BackendEvent::PlanModels(result) => {
-                if let Overlay::Model { catalog, selected_catalog, .. } = &mut self.overlay {
+            BackendEvent::ModelsCatalog { provider, result } => {
+                if let Overlay::Model { providers, provider_idx, catalog, selected_catalog, .. } = &mut self.overlay {
+                    let current = providers.get(*provider_idx).map(|p| p.name.as_str());
+                    if provider.as_deref().is_some_and(|p| current != Some(p)) {
+                        return cmds;
+                    }
                     match result {
                         Ok(list) => {
                             *selected_catalog = (!list.is_empty()).then_some(0);
@@ -539,6 +619,13 @@ impl AppState {
                         }
                     }
                 }
+            }
+            BackendEvent::FilesLoaded(files) => {
+                self.workspace_files = files;
+                self.mention_idx = 0;
+            }
+            BackendEvent::TextOverlay { title, lines, is_diff } => {
+                self.overlay = Overlay::TextView { title, lines, scroll: 0, is_diff };
             }
             BackendEvent::CommandOutcome { message, error, select_task, refresh } => {
                 if let Some(id) = select_task {
@@ -695,6 +782,9 @@ impl AppState {
                             *field = target_field;
                         }
                     }
+                    HitTarget::ModalProviderOption(idx) => {
+                        cmds.extend(self.select_modal_provider(idx, true));
+                    }
                     HitTarget::ModalEffortOption(idx) => {
                         if let Overlay::Model { effort_idx, field, .. } = &mut self.overlay {
                             *effort_idx = idx.min(EFFORT_OPTIONS.len() - 1);
@@ -735,6 +825,10 @@ impl AppState {
                             self.slash_idx = 0;
                             self.focus = Focus::Composer;
                         }
+                    }
+                    HitTarget::MentionItem(idx) => {
+                        self.accept_mention_at(idx);
+                        self.focus = Focus::Composer;
                     }
                     HitTarget::NewSession => self.start_new_session(),
                     HitTarget::SidebarToggle => self.toggle_sidebar(),
@@ -800,6 +894,11 @@ impl AppState {
                     self.sidebar_follow_selection = false;
                     self.sidebar_scroll = self.sidebar_scroll.saturating_sub(2);
                 }
+                Some(HitTarget::ModalSurface) => {
+                    if let Overlay::TextView { scroll, .. } = &mut self.overlay {
+                        *scroll = scroll.saturating_sub(3);
+                    }
+                }
                 _ => {}
             },
             MouseEventKind::ScrollDown => match hits.scroll_target(col, row) {
@@ -809,6 +908,11 @@ impl AppState {
                 Some(HitTarget::SidebarPane) => {
                     self.sidebar_follow_selection = false;
                     self.sidebar_scroll = self.sidebar_scroll.saturating_add(2).min(self.sidebar_max_scroll);
+                }
+                Some(HitTarget::ModalSurface) => {
+                    if let Overlay::TextView { scroll, lines, .. } = &mut self.overlay {
+                        *scroll = scroll.saturating_add(3).min(lines.len().saturating_sub(1) as u16);
+                    }
                 }
                 _ => {}
             },
@@ -908,7 +1012,7 @@ impl AppState {
         Vec::new()
     }
 
-    fn open_model_modal(&mut self) -> Vec<UiCommand> {
+    fn open_model_modal(&mut self, focus_provider: bool) -> Vec<UiCommand> {
         let mut model_input = TextInput::default();
         if let Some(m) = self.model.as_ref().and_then(|c| c.model.as_deref()) {
             model_input.set_text(m);
@@ -919,31 +1023,100 @@ impl AppState {
             .and_then(|c| c.effort.as_deref())
             .and_then(|e| EFFORT_OPTIONS.iter().position(|&o| o == e))
             .unwrap_or(0);
-        let is_chatgpt = self.model.as_ref().is_some_and(|c| c.provider == "chatgpt");
+        let providers = if !self.providers.is_empty() {
+            self.providers.clone()
+        } else if let Some(cfg) = &self.model {
+            vec![ProviderSummary {
+                name: cfg.provider.clone(),
+                wire: if cfg.provider == "chatgpt" { "chatgpt" } else { "unknown" }.into(),
+                builtin: true,
+                base_url: None,
+                api_key_env: None,
+                default_model: cfg.model.clone(),
+                context_window: None,
+                tool_choice: "required".into(),
+                ready: true,
+                status: "active".into(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let initial_provider = self
+            .model
+            .as_ref()
+            .map_or_else(|| providers.first().map_or_else(String::new, |p| p.name.clone()), |c| c.provider.clone());
+        let provider_idx = providers.iter().position(|p| p.name == initial_provider).unwrap_or(0);
+        let wire = providers.get(provider_idx).map_or("", |p| p.wire.as_str());
+        let should_load = !initial_provider.is_empty()
+            && wire != "anthropic"
+            && (!self.providers.is_empty() || initial_provider == "chatgpt");
         self.overlay = Overlay::Model {
+            providers,
+            provider_idx,
+            initial_provider: initial_provider.clone(),
             model_input,
             effort_idx,
-            catalog: if is_chatgpt { CatalogState::Loading } else { CatalogState::Idle },
+            catalog: if should_load { CatalogState::Loading } else { CatalogState::Idle },
             selected_catalog: None,
-            field: ModelField::ModelInput,
+            field: if focus_provider { ModelField::ProviderBar } else { ModelField::ModelInput },
         };
-        if is_chatgpt {
-            vec![UiCommand::LoadPlanModels]
+        if should_load {
+            vec![UiCommand::LoadModels(Some(initial_provider))]
         } else {
             Vec::new()
         }
     }
 
-    fn commit_model_modal(&mut self) -> Vec<UiCommand> {
-        let Overlay::Model { model_input, effort_idx, .. } = &self.overlay else {
+    fn select_modal_provider(&mut self, new_idx: usize, focus_bar: bool) -> Vec<UiCommand> {
+        let Overlay::Model {
+            providers,
+            provider_idx,
+            initial_provider,
+            model_input,
+            catalog,
+            selected_catalog,
+            field,
+            ..
+        } = &mut self.overlay
+        else {
             return Vec::new();
         };
+        if focus_bar {
+            *field = ModelField::ProviderBar;
+        }
+        if new_idx >= providers.len() || new_idx == *provider_idx {
+            return Vec::new();
+        }
+        *provider_idx = new_idx;
+        let chosen = &providers[new_idx];
+        if chosen.name == *initial_provider {
+            model_input.set_text(self.model.as_ref().and_then(|c| c.model.as_deref()).unwrap_or(""));
+        } else {
+            model_input.set_text(chosen.default_model.as_deref().unwrap_or(""));
+        }
+        *selected_catalog = None;
+        if chosen.wire == "anthropic" {
+            *catalog = CatalogState::Idle;
+            Vec::new()
+        } else {
+            *catalog = CatalogState::Loading;
+            vec![UiCommand::LoadModels(Some(chosen.name.clone()))]
+        }
+    }
+
+    fn commit_model_modal(&mut self) -> Vec<UiCommand> {
+        let Overlay::Model { providers, provider_idx, initial_provider, model_input, effort_idx, .. } = &self.overlay
+        else {
+            return Vec::new();
+        };
+        let selected_provider = providers.get(*provider_idx).map(|p| p.name.as_str()).unwrap_or(initial_provider);
+        let provider_arg = (selected_provider != *initial_provider).then(|| Some(selected_provider.to_owned()));
         let m = model_input.as_str().trim();
         let model_arg = if m.is_empty() { None } else { Some(m.to_owned()) };
         let e = EFFORT_OPTIONS[*effort_idx];
         let effort_arg = if e == "default" { None } else { Some(e.to_owned()) };
         self.overlay = Overlay::None;
-        vec![UiCommand::SetModel { model: Some(model_arg), effort: Some(effort_arg) }]
+        vec![UiCommand::SetModel { provider: provider_arg, model: Some(model_arg), effort: Some(effort_arg) }]
     }
 
     fn open_agents_modal(&mut self) {
@@ -972,6 +1145,53 @@ impl AppState {
         self.overlay = Overlay::None;
         self.push_event(EventLevel::Info, &notice);
         self.set_toast(notice, false);
+    }
+
+    fn open_status_overlay(&mut self) {
+        let model_lbl = self
+            .model
+            .as_ref()
+            .map(|m| {
+                let id = m.model.as_deref().unwrap_or("auto");
+                let eff = m.effort.as_deref().unwrap_or("default");
+                format!("{}/{id} (effort: {eff})", m.provider)
+            })
+            .unwrap_or_else(|| "connecting…".into());
+        let mut lines = vec![
+            format!("Workspace:   {}", self.workspace_name),
+            format!("Target:      @{}", self.agent),
+            format!("Model:       {model_lbl}"),
+            format!("Policy:      {}", if self.review_mode { "review" } else { "auto" }),
+            format!("Sandbox:     {}", self.sandbox_mode.as_str()),
+            format!("Check:       {}", self.armed_check.as_deref().unwrap_or("none")),
+            format!("Files:       {} indexed workspace path(s)", self.workspace_files.len()),
+        ];
+        if let Some(root) = self.selected_root_task() {
+            lines.push(String::new());
+            lines.push(format!("Selected root: {}  [{}]", root.id, root.status.as_str()));
+            lines.push(format!(
+                "Root agent:    @{}  ·  round {}  ·  turns {}",
+                root.agent,
+                root.round.unwrap_or(1),
+                root.turns_used.unwrap_or(0)
+            ));
+            if let Some(sb) = &root.sandbox {
+                lines.push(format!("Root sandbox:  {sb}"));
+            }
+            if root.pending_steerings > 0 {
+                lines.push(format!("Steerings:     {} queued", root.pending_steerings));
+            }
+            if let Some(u) = &root.usage {
+                lines.push(format!(
+                    "Token usage:   {} in ({} cached, {}% hit) · {} out · last {} in",
+                    u.input_tokens, u.cached_tokens, u.cache_hit_rate_pct, u.output_tokens, u.last_input_tokens
+                ));
+            }
+            if !root.plan.is_empty() {
+                lines.push(format!("Plan steps:    {}", root.plan.len()));
+            }
+        }
+        self.overlay = Overlay::TextView { title: "Session Status".into(), lines, scroll: 0, is_diff: false };
     }
 
     fn handle_overlay_key(&mut self, key: KeyEvent) -> Vec<UiCommand> {
@@ -1022,7 +1242,16 @@ impl AppState {
                     _ => Vec::new(),
                 }
             }
-            Overlay::Model { model_input, effort_idx, catalog, selected_catalog, field } => match key.code {
+            Overlay::Model {
+                providers,
+                provider_idx,
+                model_input,
+                effort_idx,
+                catalog,
+                selected_catalog,
+                field,
+                ..
+            } => match key.code {
                 KeyCode::Esc => {
                     self.overlay = Overlay::None;
                     Vec::new()
@@ -1030,16 +1259,18 @@ impl AppState {
                 KeyCode::Tab => {
                     let has_catalog = matches!(catalog, CatalogState::Loaded(list) if !list.is_empty());
                     *field = match *field {
+                        ModelField::ProviderBar => ModelField::ModelInput,
                         ModelField::ModelInput if has_catalog => ModelField::CatalogList,
                         ModelField::ModelInput | ModelField::CatalogList => ModelField::EffortBar,
-                        ModelField::EffortBar => ModelField::ModelInput,
+                        ModelField::EffortBar => ModelField::ProviderBar,
                     };
                     Vec::new()
                 }
                 KeyCode::BackTab => {
                     let has_catalog = matches!(catalog, CatalogState::Loaded(list) if !list.is_empty());
                     *field = match *field {
-                        ModelField::ModelInput => ModelField::EffortBar,
+                        ModelField::ProviderBar => ModelField::EffortBar,
+                        ModelField::ModelInput => ModelField::ProviderBar,
                         ModelField::CatalogList => ModelField::ModelInput,
                         ModelField::EffortBar if has_catalog => ModelField::CatalogList,
                         ModelField::EffortBar => ModelField::ModelInput,
@@ -1060,6 +1291,14 @@ impl AppState {
                         }
                     }
                     Vec::new()
+                }
+                KeyCode::Left | KeyCode::Char('h') if *field == ModelField::ProviderBar => {
+                    let next = provider_idx.saturating_sub(1);
+                    self.select_modal_provider(next, false)
+                }
+                KeyCode::Right | KeyCode::Char('l') if *field == ModelField::ProviderBar => {
+                    let next = (*provider_idx + 1).min(providers.len().saturating_sub(1));
+                    self.select_modal_provider(next, false)
                 }
                 KeyCode::Left if *field == ModelField::EffortBar => {
                     *effort_idx = effort_idx.saturating_sub(1);
@@ -1097,6 +1336,22 @@ impl AppState {
                     Vec::new()
                 }
             },
+            Overlay::TextView { scroll, lines, .. } => {
+                let max_scroll = lines.len().saturating_sub(1) as u16;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => self.overlay = Overlay::None,
+                    KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1).min(max_scroll),
+                    KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                    KeyCode::PageDown => *scroll = scroll.saturating_add(10).min(max_scroll),
+                    KeyCode::Char('u') if ctrl => *scroll = scroll.saturating_sub(10),
+                    KeyCode::Char('d') if ctrl => *scroll = scroll.saturating_add(10).min(max_scroll),
+                    KeyCode::Home | KeyCode::Char('g') => *scroll = 0,
+                    KeyCode::End | KeyCode::Char('G') => *scroll = max_scroll,
+                    _ => {}
+                }
+                Vec::new()
+            }
             Overlay::Agents { selected } => {
                 if key.code == KeyCode::Esc || self.members.is_empty() {
                     self.overlay = Overlay::None;
@@ -1145,6 +1400,7 @@ impl AppState {
             if let Some(spec) = matches.get(self.slash_idx % matches.len().max(1)).copied() {
                 self.input.set_text(&spec.completion());
                 self.slash_idx = 0;
+            } else if self.accept_mention_at(self.mention_idx) {
             } else if self.sidebar_accessible() {
                 self.focus = Focus::Sidebar;
             } else {
@@ -1158,6 +1414,12 @@ impl AppState {
             return Vec::new();
         }
         if key.code == KeyCode::Enter {
+            if let Some((_, _, query, m_list)) = self.active_mention() {
+                let exact = m_list.len() == 1 && m_list[0] == query;
+                if !exact && self.accept_mention_at(self.mention_idx) {
+                    return Vec::new();
+                }
+            }
             return self.submit_composer();
         }
 
@@ -1171,12 +1433,24 @@ impl AppState {
             return Vec::new();
         }
 
+        if let Some((_, _, _, m_list)) = self.active_mention() {
+            if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                if key.code == KeyCode::Up {
+                    self.mention_idx = self.mention_idx.saturating_sub(1);
+                } else {
+                    self.mention_idx = (self.mention_idx + 1) % m_list.len();
+                }
+                return Vec::new();
+            }
+        }
+
         match key.code {
             KeyCode::Up if !self.input.as_str().contains('\n') => self.input.history_prev(),
             KeyCode::Down if !self.input.as_str().contains('\n') => self.input.history_next(),
             _ => {
                 edit_text_input(&mut self.input, key, ctrl);
                 self.slash_idx = 0;
+                self.mention_idx = 0;
             }
         }
         Vec::new()
@@ -1452,6 +1726,12 @@ impl AppState {
                 self.set_toast(msg, true);
                 return Vec::new();
             }
+            if !root.status.is_terminal() && root.kind != StageKind::Legacy {
+                let text = self.input.take_and_push_history();
+                let trimmed = text.trim().to_owned();
+                self.set_toast("Queued steering note for active session.", false);
+                return vec![UiCommand::Steer { id: root.id, text: trimmed }];
+            }
             if let Some(target) = self.continuation_target() {
                 let text = self.input.take_and_push_history();
                 let trimmed = text.trim().to_owned();
@@ -1460,7 +1740,7 @@ impl AppState {
                     id: target.node_id,
                     text: trimmed,
                     review: self.review_mode,
-                    staged: self.staged_mode,
+                    sandbox: self.sandbox_mode,
                     check,
                 }];
             }
@@ -1484,7 +1764,7 @@ impl AppState {
             agent: self.agent.clone(),
             text: trimmed,
             review: self.review_mode,
-            staged: self.staged_mode,
+            sandbox: self.sandbox_mode,
             check,
         }]
     }
@@ -1539,9 +1819,62 @@ impl AppState {
                     agent: self.agent.clone(),
                     text,
                     review: self.review_mode,
-                    staged: self.staged_mode,
+                    sandbox: self.sandbox_mode,
                     check,
                 }]
+            }
+            ("plan", Some(_), _) => {
+                let text = args.to_owned();
+                self.input.take_and_push_history();
+                let prompt = format!(
+                    "Create a concise, verified implementation plan (read-only analysis; do not modify files). Use update_plan to publish concrete steps.\n\nRequest:\n{text}"
+                );
+                vec![UiCommand::Submit {
+                    agent: self.agent.clone(),
+                    text: prompt,
+                    review: self.review_mode,
+                    sandbox: SandboxMode::ReadOnly,
+                    check: None,
+                }]
+            }
+            ("diff", None, None) => {
+                self.input.take_and_push_history();
+                vec![UiCommand::LoadDiff { base: None }]
+            }
+            ("diff", Some(r), None) => {
+                self.input.take_and_push_history();
+                vec![UiCommand::LoadDiff { base: Some(r.to_owned()) }]
+            }
+            ("compact", None, None) => {
+                let Some(root_id) = self.selected_root_task().map(|r| r.id.clone()) else {
+                    self.set_toast("Select a session first before compacting.", true);
+                    return Vec::new();
+                };
+                self.input.take_and_push_history();
+                vec![UiCommand::Compact(root_id)]
+            }
+            ("steer", Some(_), _) => {
+                let Some(root) = self.selected_root_task().filter(|r| !r.status.is_terminal()) else {
+                    self.set_toast("Select an active running session first to steer.", true);
+                    return Vec::new();
+                };
+                let root_id = root.id.clone();
+                let text = args.to_owned();
+                self.input.take_and_push_history();
+                vec![UiCommand::Steer { id: root_id, text }]
+            }
+            ("skills", None, None) => {
+                self.input.take_and_push_history();
+                vec![UiCommand::LoadSkills]
+            }
+            ("mcp", None, None) => {
+                self.input.take_and_push_history();
+                vec![UiCommand::LoadMcp]
+            }
+            ("status", None, None) => {
+                self.input.take_and_push_history();
+                self.open_status_overlay();
+                Vec::new()
             }
             ("check", None, None) => {
                 self.input.take_and_push_history();
@@ -1579,18 +1912,43 @@ impl AppState {
                 self.set_toast(format!("Policy: {label}"), false);
                 Vec::new()
             }
+            ("review", Some("code"), base_opt) => {
+                self.input.take_and_push_history();
+                let base = base_opt.map(str::to_owned);
+                vec![UiCommand::Review { agent: self.agent.clone(), review: self.review_mode, base, check: None }]
+            }
+            ("sandbox", None, None) => {
+                self.input.take_and_push_history();
+                let label = self.sandbox_mode.as_str();
+                self.set_toast(format!("Sandbox: {label}"), false);
+                Vec::new()
+            }
+            ("sandbox", Some(mode_str), None) => {
+                self.input.take_and_push_history();
+                match SandboxMode::parse(mode_str) {
+                    Ok(mode) => {
+                        self.sandbox_mode = mode;
+                        let label = mode.as_str();
+                        self.push_event(EventLevel::Info, format!("Sandbox set to {label}."));
+                        self.set_toast(format!("Sandbox: {label}"), false);
+                    }
+                    Err(e) => self.set_toast(e, true),
+                }
+                Vec::new()
+            }
             ("staged", None, None) => {
                 self.input.take_and_push_history();
-                self.staged_mode = !self.staged_mode;
-                let label = if self.staged_mode { "staged" } else { "direct" };
+                self.sandbox_mode =
+                    if self.sandbox_mode.is_staged() { SandboxMode::Direct } else { SandboxMode::Staged };
+                let label = self.sandbox_mode.as_str();
                 self.push_event(EventLevel::Info, format!("Sandbox switched to {label}."));
                 self.set_toast(format!("Sandbox: {label}"), false);
                 Vec::new()
             }
             ("staged", Some(mode @ ("on" | "off")), None) => {
                 self.input.take_and_push_history();
-                self.staged_mode = mode == "on";
-                let label = if self.staged_mode { "staged" } else { "direct" };
+                self.sandbox_mode = if mode == "on" { SandboxMode::Staged } else { SandboxMode::Direct };
+                let label = self.sandbox_mode.as_str();
                 self.push_event(EventLevel::Info, format!("Sandbox set to {label}."));
                 self.set_toast(format!("Sandbox: {label}"), false);
                 Vec::new()
@@ -1607,11 +1965,11 @@ impl AppState {
                 vec![UiCommand::StopDaemon]
             }
             ("model", _, _) => self.execute_model_slash(args),
+            ("provider", _, _) => self.execute_provider_slash(args),
             ("quit" | "exit", _, _) => self.redirect_hint("Press Ctrl+Q to leave the TUI (daemon keeps running)."),
             ("help", _, _) => self.redirect_hint("Press F1 (or ? outside composer) for the shortcuts reference."),
             ("tasks", _, _) => self.redirect_hint("Press [ or Ctrl+B to browse Sessions in the sidebar."),
             ("members", _, _) => self.redirect_hint("Press ] in Sidebar or use /to to pick an agent."),
-            ("status", _, _) => self.redirect_hint("Select a session in the sidebar to inspect its details."),
             ("approve" | "deny", _, _) => {
                 self.redirect_hint("Press Ctrl+P for approvals queue, or a/d on a selected task.")
             }
@@ -1723,32 +2081,70 @@ impl AppState {
         vec![cmd]
     }
 
+    fn parse_checked_effort(&mut self, effort: &str) -> Option<Option<String>> {
+        if effort != "default" && !daemon::EFFORTS.contains(&effort) {
+            let msg = format!("Effort must be default or one of {}", daemon::EFFORTS.join(", "));
+            self.set_toast(msg, true);
+            return None;
+        }
+        Some((effort != "default").then(|| effort.to_owned()))
+    }
+
     fn execute_model_slash(&mut self, args: &str) -> Vec<UiCommand> {
         let words: Vec<_> = args.split_whitespace().collect();
+        let usage = "Use /model, /model list, /model providers, /model provider NAME [MODEL [EFFORT]], /model MODEL [EFFORT], /model effort EFFORT, or /model default";
         match words.as_slice() {
             [] | ["list"] => {
                 self.input.take_and_push_history();
-                self.open_model_modal()
+                self.open_model_modal(false)
+            }
+            ["providers"] => {
+                self.input.take_and_push_history();
+                let active = self.model.as_ref().map_or("unknown", |m| m.provider.as_str());
+                let summary = format_provider_list_lines(
+                    active,
+                    self.providers_overridden,
+                    self.providers_config_path.as_deref(),
+                    &self.providers,
+                );
+                for line in summary.lines() {
+                    self.push_event(EventLevel::Info, line);
+                }
+                self.open_model_modal(true)
             }
             ["default"] => {
                 self.input.take_and_push_history();
-                vec![UiCommand::SetModel { model: Some(None), effort: Some(None) }]
+                vec![UiCommand::SetModel { provider: None, model: Some(None), effort: Some(None) }]
             }
             ["effort", effort] => {
-                if *effort != "default" && !daemon::EFFORTS.contains(effort) {
-                    let msg = format!("Effort must be default or one of {}", daemon::EFFORTS.join(", "));
-                    self.set_toast(msg, true);
+                let Some(eff) = self.parse_checked_effort(effort) else {
                     return Vec::new();
-                }
+                };
                 self.input.take_and_push_history();
-                let eff = if *effort == "default" { None } else { Some((*effort).to_owned()) };
-                vec![UiCommand::SetModel { model: None, effort: Some(eff) }]
+                vec![UiCommand::SetModel { provider: None, model: None, effort: Some(eff) }]
             }
-            ["effort" | "list" | "default", ..] => {
-                self.set_toast(
-                    "Use /model, /model list, /model MODEL [EFFORT], /model effort EFFORT, or /model default",
-                    true,
-                );
+            ["provider", target] => {
+                self.input.take_and_push_history();
+                let p = (*target != "default").then(|| (*target).to_owned());
+                vec![UiCommand::SetModel { provider: Some(p), model: None, effort: None }]
+            }
+            ["provider", target, name] => {
+                self.input.take_and_push_history();
+                let p = (*target != "default").then(|| (*target).to_owned());
+                let m = (*name != "default").then(|| (*name).to_owned());
+                vec![UiCommand::SetModel { provider: Some(p), model: Some(m), effort: Some(None) }]
+            }
+            ["provider", target, name, effort] => {
+                let Some(eff) = self.parse_checked_effort(effort) else {
+                    return Vec::new();
+                };
+                self.input.take_and_push_history();
+                let p = (*target != "default").then(|| (*target).to_owned());
+                let m = (*name != "default").then(|| (*name).to_owned());
+                vec![UiCommand::SetModel { provider: Some(p), model: Some(m), effort: Some(eff) }]
+            }
+            ["provider" | "providers" | "effort" | "list" | "default", ..] => {
+                self.set_toast(usage, true);
                 Vec::new()
             }
             rest => {
@@ -1756,24 +2152,55 @@ impl AppState {
                 let (name, effort) = match rest {
                     [name] => (*name, None),
                     [name, effort] => {
-                        if *effort != "default" && !daemon::EFFORTS.contains(effort) {
-                            let msg = format!("Effort must be default or one of {}", daemon::EFFORTS.join(", "));
-                            self.set_toast(msg, true);
+                        let Some(eff) = self.parse_checked_effort(effort) else {
                             return Vec::new();
-                        }
-                        let eff = if *effort == "default" { None } else { Some((*effort).to_owned()) };
+                        };
                         (*name, Some(eff))
                     }
                     _ => {
-                        self.set_toast(
-                            "Use /model, /model list, /model MODEL [EFFORT], /model effort EFFORT, or /model default",
-                            true,
-                        );
+                        self.set_toast(usage, true);
                         return Vec::new();
                     }
                 };
                 self.input.take_and_push_history();
-                vec![UiCommand::SetModel { model: Some(Some(name.to_owned())), effort: Some(effort.flatten()) }]
+                let m = (name != "default").then(|| name.to_owned());
+                vec![UiCommand::SetModel { provider: None, model: Some(m), effort: Some(effort.flatten()) }]
+            }
+        }
+    }
+
+    fn execute_provider_slash(&mut self, args: &str) -> Vec<UiCommand> {
+        let words: Vec<_> = args.split_whitespace().collect();
+        match words.as_slice() {
+            [] | ["list"] => self.execute_model_slash("providers"),
+            ["use", rest @ ..] if !rest.is_empty() => {
+                let joined = format!("provider {}", rest.join(" "));
+                self.execute_model_slash(&joined)
+            }
+            ["add", rest @ ..] => match parse_provider_add_tokens(rest) {
+                Ok((name, spec, set_default)) => {
+                    self.input.take_and_push_history();
+                    vec![UiCommand::AddProvider { name, spec, set_default }]
+                }
+                Err(e) => {
+                    self.set_toast(e, true);
+                    Vec::new()
+                }
+            },
+            ["remove" | "rm", name] if !name.trim().is_empty() => {
+                self.input.take_and_push_history();
+                vec![UiCommand::RemoveProvider((*name).to_owned())]
+            }
+            ["default", target] if !target.trim().is_empty() => {
+                self.input.take_and_push_history();
+                vec![UiCommand::SetDefaultProvider((*target != "auto").then(|| (*target).to_owned()))]
+            }
+            _ => {
+                self.set_toast(
+                    "Use /provider [list|use NAME [MODEL [EFFORT]]|add NAME ...|remove NAME|default NAME|auto]",
+                    true,
+                );
+                Vec::new()
             }
         }
     }
@@ -1844,7 +2271,7 @@ mod tests {
 
     #[test]
     fn rebuild_tree_orders_newest_root_first_stays_blank_on_open_and_supports_collapse() {
-        let mut state = AppState::new("repo".into(), "default".into(), false, false);
+        let mut state = AppState::new("repo".into(), "default".into(), false, SandboxMode::Direct);
         let r1 = TaskRecord::from_value(&json!({"id":"r1","agent":"default","status":"done","prompt":"old"})).unwrap();
         let c1 =
             TaskRecord::from_value(&json!({"id":"c1","root":"r1","parent":"r1","agent":"a","status":"done"})).unwrap();
@@ -1854,6 +2281,7 @@ mod tests {
             tasks: Ok(vec![r1, c1, r2]),
             members: Ok(vec![Member { name: "default".into() }]),
             model: Ok(ModelConfig { provider: "api".into(), model: Some("m".into()), effort: None }),
+            providers: None,
         });
         assert_eq!(state.tree_rows.iter().map(|r| r.task_id.as_str()).collect::<Vec<_>>(), vec!["r2", "r1", "c1"]);
         // Opening with historical sessions must stay in the fresh New Session view.
@@ -1869,7 +2297,7 @@ mod tests {
                 agent: "default".into(),
                 text: "fresh prompt".into(),
                 review: false,
-                staged: false,
+                sandbox: SandboxMode::Direct,
                 check: None
             }]
         );
@@ -1887,7 +2315,7 @@ mod tests {
 
     #[test]
     fn two_step_delete_arms_disarms_expires_and_confirms() {
-        let mut state = AppState::new("repo".into(), "default".into(), false, false);
+        let mut state = AppState::new("repo".into(), "default".into(), false, SandboxMode::Direct);
         let r1 =
             TaskRecord::from_value(&json!({"id":"r1","agent":"default","status":"done","prompt":"First"})).unwrap();
         let r2 =
@@ -1896,6 +2324,7 @@ mod tests {
             tasks: Ok(vec![r1, r2]),
             members: Ok(vec![Member { name: "default".into() }]),
             model: Ok(ModelConfig { provider: "api".into(), model: None, effort: None }),
+            providers: None,
         });
 
         // Composer Del edits text, never arms session delete.
@@ -1935,7 +2364,7 @@ mod tests {
 
     #[test]
     fn shortcuts_and_slash_commands_are_complementary_and_hitmap_dispatches_clicks() {
-        let mut state = AppState::new("repo".into(), "default".into(), false, false);
+        let mut state = AppState::new("repo".into(), "default".into(), false, SandboxMode::Direct);
         let child = TaskRecord::from_value(&json!({
             "id": "c1", "root": "r1", "parent": "r1", "agent": "worker",
             "status": "approval", "approval_id": "appr-42",
@@ -1946,6 +2375,7 @@ mod tests {
             tasks: Ok(vec![child]),
             members: Ok(vec![]),
             model: Ok(ModelConfig { provider: "api".into(), model: None, effort: None }),
+            providers: None,
         });
         state.selected_task_id = Some("c1".into());
 
@@ -1966,10 +2396,10 @@ mod tests {
         assert!(!state.review_mode);
         state.input.set_text("/staged on");
         state.handle_key(key(KeyCode::Enter));
-        assert!(state.staged_mode);
+        assert_eq!(state.sandbox_mode, SandboxMode::Staged);
         state.input.set_text("/staged off");
         state.handle_key(key(KeyCode::Enter));
-        assert!(!state.staged_mode);
+        assert_eq!(state.sandbox_mode, SandboxMode::Direct);
 
         // /wb without args switches to Board tab.
         state.input.set_text("/wb");
@@ -1997,7 +2427,7 @@ mod tests {
 
     #[test]
     fn stale_clarification_refuses_submission_without_clearing_composer() {
-        let mut state = AppState::new("repo".into(), "default".into(), false, false);
+        let mut state = AppState::new("repo".into(), "default".into(), false, SandboxMode::Direct);
         let q1 =
             TaskRecord::from_value(&json!({"id":"r1","agent":"default","status":"input","question":"Which?"})).unwrap();
         state.selected_task_id = Some("r1".into());
@@ -2005,12 +2435,14 @@ mod tests {
             tasks: Ok(vec![q1]),
             members: Ok(vec![]),
             model: Ok(ModelConfig { provider: "api".into(), model: None, effort: None }),
+            providers: None,
         });
         let closed = TaskRecord::from_value(&json!({"id":"r1","agent":"default","status":"queued"})).unwrap();
         state.apply_backend_event(BackendEvent::Snapshot {
             tasks: Ok(vec![closed]),
             members: Ok(vec![]),
             model: Ok(ModelConfig { provider: "api".into(), model: None, effort: None }),
+            providers: None,
         });
 
         state.input.set_text("Linux");
@@ -2029,7 +2461,7 @@ mod tests {
                 agent: "default".into(),
                 text: "Linux".into(),
                 review: false,
-                staged: false,
+                sandbox: SandboxMode::Direct,
                 check: None
             }]
         );
@@ -2037,7 +2469,7 @@ mod tests {
 
     #[test]
     fn composer_continues_sole_leaf_or_summarizer_and_ctrl_n_resets_to_new_session() {
-        let mut state = AppState::new("repo".into(), "default".into(), false, false);
+        let mut state = AppState::new("repo".into(), "default".into(), false, SandboxMode::Direct);
         let r1 = TaskRecord::from_value(&json!({
             "id": "r1", "root": "r1", "agent": "default", "status": "done", "kind": "root",
             "prompt": "Round 1", "result": "Summarized",
@@ -2053,6 +2485,7 @@ mod tests {
             tasks: Ok(vec![r1, sum]),
             members: Ok(vec![Member { name: "default".into() }]),
             model: Ok(ModelConfig { provider: "api".into(), model: None, effort: None }),
+            providers: None,
         });
         assert_eq!(state.selected_task_id, None);
 
@@ -2066,7 +2499,7 @@ mod tests {
                 id: "sum-1".into(),
                 text: "follow up".into(),
                 review: false,
-                staged: false,
+                sandbox: SandboxMode::Direct,
                 check: None
             }]
         );
@@ -2089,5 +2522,179 @@ mod tests {
         state.input.set_text("/new");
         assert!(state.handle_key(key(KeyCode::Enter)).is_empty());
         assert_eq!(state.selected_task_id, None);
+    }
+
+    #[test]
+    fn model_modal_and_slash_commands_switch_providers_and_manage_custom_providers() {
+        let mut state = AppState::new("proj".into(), "default".into(), false, SandboxMode::Direct);
+        let providers = vec![
+            ProviderSummary {
+                name: "chatgpt".into(),
+                wire: "chatgpt".into(),
+                builtin: true,
+                base_url: None,
+                api_key_env: None,
+                default_model: None,
+                context_window: None,
+                tool_choice: "required".into(),
+                ready: true,
+                status: "signed in".into(),
+            },
+            ProviderSummary {
+                name: "deepseek".into(),
+                wire: "responses".into(),
+                builtin: true,
+                base_url: Some("https://api.deepseek.com/v1".into()),
+                api_key_env: Some("DEEPSEEK_API_KEY".into()),
+                default_model: Some("deepseek-flash".into()),
+                context_window: Some(131_072),
+                tool_choice: "auto".into(),
+                ready: true,
+                status: "env set".into(),
+            },
+        ];
+        state.apply_backend_event(BackendEvent::Snapshot {
+            tasks: Ok(vec![]),
+            members: Ok(vec![]),
+            model: Ok(ModelConfig {
+                provider: "chatgpt".into(),
+                model: Some("gpt-5".into()),
+                effort: Some("high".into()),
+            }),
+            providers: Some(("chatgpt".into(), false, None, providers)),
+        });
+
+        // Opening modal without changing provider emits LoadModels("chatgpt") and saves with provider: None.
+        state.input.set_text("/model");
+        let open_cmds = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(open_cmds, vec![UiCommand::LoadModels(Some("chatgpt".into()))]);
+        let save_same = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            save_same,
+            vec![UiCommand::SetModel {
+                provider: None,
+                model: Some(Some("gpt-5".into())),
+                effort: Some(Some("high".into()))
+            }]
+        );
+
+        // /model providers focuses ProviderBar; moving Right switches to deepseek, pre-fills default_model,
+        // triggers LoadModels("deepseek"), and Enter commits SetModel with provider: Some(Some("deepseek")).
+        state.input.set_text("/model providers");
+        let cmds = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(cmds, vec![UiCommand::LoadModels(Some("chatgpt".into()))]);
+        let switch_cmds = state.handle_key(key(KeyCode::Right));
+        assert_eq!(switch_cmds, vec![UiCommand::LoadModels(Some("deepseek".into()))]);
+        let save_switched = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            save_switched,
+            vec![UiCommand::SetModel {
+                provider: Some(Some("deepseek".into())),
+                model: Some(Some("deepseek-flash".into())),
+                effort: Some(Some("high".into())),
+            }]
+        );
+
+        // Slash /model provider & /provider add / use / remove / default dispatch expected commands.
+        state.input.set_text("/model provider deepseek deepseek-chat medium");
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            vec![UiCommand::SetModel {
+                provider: Some(Some("deepseek".into())),
+                model: Some(Some("deepseek-chat".into())),
+                effort: Some(Some("medium".into())),
+            }]
+        );
+        state.input.set_text("/provider use chatgpt");
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            vec![UiCommand::SetModel { provider: Some(Some("chatgpt".into())), model: None, effort: None }]
+        );
+        state.input.set_text("/provider add local-vllm chat_completions http://127.0.0.1:8000/v1 - qwen-coder");
+        let add_cmds = state.handle_key(key(KeyCode::Enter));
+        assert_eq!(add_cmds.len(), 1);
+        assert!(matches!(
+            &add_cmds[0],
+            UiCommand::AddProvider { name, spec, set_default: false }
+                if name == "local-vllm"
+                    && spec.wire == "chat_completions"
+                    && spec.api_key_env.is_none()
+                    && spec.default_model.as_deref() == Some("qwen-coder")
+        ));
+        state.input.set_text("/provider remove local-vllm");
+        assert_eq!(state.handle_key(key(KeyCode::Enter)), vec![UiCommand::RemoveProvider("local-vllm".into())]);
+        state.input.set_text("/provider default auto");
+        assert_eq!(state.handle_key(key(KeyCode::Enter)), vec![UiCommand::SetDefaultProvider(None)]);
+    }
+
+    #[test]
+    fn codex_slash_commands_steering_and_at_mentions_work() {
+        let mut state = AppState::new("repo".into(), "default".into(), false, SandboxMode::Direct);
+
+        // /sandbox switches modes including read-only.
+        state.input.set_text("/sandbox read-only");
+        assert!(state.handle_key(key(KeyCode::Enter)).is_empty());
+        assert_eq!(state.sandbox_mode, SandboxMode::ReadOnly);
+
+        // /plan forces SandboxMode::ReadOnly even if toggled back to Direct.
+        state.input.set_text("/sandbox direct");
+        state.handle_key(key(KeyCode::Enter));
+        assert_eq!(state.sandbox_mode, SandboxMode::Direct);
+        state.input.set_text("/plan inspect architecture");
+        let plan_cmds = state.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            plan_cmds.as_slice(),
+            [UiCommand::Submit { sandbox: SandboxMode::ReadOnly, text, .. }]
+                if text.contains("inspect architecture") && text.contains("update_plan")
+        ));
+
+        // /review code, /diff, /skills, /mcp, /status work via slash commands.
+        state.input.set_text("/review code main");
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            vec![UiCommand::Review { agent: "default".into(), review: false, base: Some("main".into()), check: None }]
+        );
+        state.input.set_text("/diff HEAD~1");
+        assert_eq!(state.handle_key(key(KeyCode::Enter)), vec![UiCommand::LoadDiff { base: Some("HEAD~1".into()) }]);
+        state.input.set_text("/skills");
+        assert_eq!(state.handle_key(key(KeyCode::Enter)), vec![UiCommand::LoadSkills]);
+        state.input.set_text("/mcp");
+        assert_eq!(state.handle_key(key(KeyCode::Enter)), vec![UiCommand::LoadMcp]);
+        state.input.set_text("/status");
+        assert!(state.handle_key(key(KeyCode::Enter)).is_empty());
+        assert!(matches!(&state.overlay, Overlay::TextView { title, is_diff: false, .. } if title == "Session Status"));
+        state.handle_key(key(KeyCode::Esc));
+        assert_eq!(state.overlay, Overlay::None);
+
+        // Selecting an active non-legacy root switches composer to mid-turn steering and /compact works.
+        let active = TaskRecord::from_value(&json!({
+            "id": "r1", "root": "r1", "agent": "default", "status": "running", "kind": "root"
+        }))
+        .unwrap();
+        state.apply_backend_event(BackendEvent::Snapshot {
+            tasks: Ok(vec![active]),
+            members: Ok(vec![]),
+            model: Ok(ModelConfig { provider: "api".into(), model: None, effort: None }),
+            providers: None,
+        });
+        state.selected_task_id = Some("r1".into());
+        state.input.set_text("focus on unit tests");
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            vec![UiCommand::Steer { id: "r1".into(), text: "focus on unit tests".into() }]
+        );
+        state.input.set_text("/compact");
+        assert_eq!(state.handle_key(key(KeyCode::Enter)), vec![UiCommand::Compact("r1".into())]);
+
+        // @file fuzzy completion accepts matching workspace file on Tab.
+        state.apply_backend_event(BackendEvent::FilesLoaded(vec![
+            "Cargo.toml".into(),
+            "src/tui/state.rs".into(),
+            "src/main.rs".into(),
+        ]));
+        state.input.set_text("check @tstate");
+        assert!(state.active_mention().is_some());
+        assert!(state.handle_key(key(KeyCode::Tab)).is_empty());
+        assert_eq!(state.input.as_str(), "check @src/tui/state.rs ");
     }
 }

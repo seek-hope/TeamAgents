@@ -23,8 +23,14 @@ impl SlashSpec {
 pub(crate) const SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec {
         name: "/model",
-        usage: "/model [MODEL [EFFORT]|effort E|default]",
-        summary: "Pick or set model and reasoning effort",
+        usage: "/model [provider P|MODEL [EFFORT]|effort E|list|default]",
+        summary: "Pick/set provider, model, and reasoning effort",
+        add_space: false,
+    },
+    SlashSpec {
+        name: "/provider",
+        usage: "/provider [list|use P|add NAME ...|remove NAME|default P]",
+        summary: "List, switch, or configure custom providers",
         add_space: false,
     },
     SlashSpec { name: "/to", usage: "/to [NAME]", summary: "Pick or set target recipient agent", add_space: false },
@@ -36,8 +42,14 @@ pub(crate) const SLASH_COMMANDS: &[SlashSpec] = &[
     },
     SlashSpec {
         name: "/review",
-        usage: "/review [on|off]",
-        summary: "Toggle or set per-operation --review policy",
+        usage: "/review [on|off|code [REF]]",
+        summary: "Toggle --review policy or launch read-only code review",
+        add_space: false,
+    },
+    SlashSpec {
+        name: "/sandbox",
+        usage: "/sandbox [direct|staged|read-only]",
+        summary: "Inspect or set workspace sandbox mode",
         add_space: false,
     },
     SlashSpec {
@@ -46,6 +58,38 @@ pub(crate) const SLASH_COMMANDS: &[SlashSpec] = &[
         summary: "Toggle copy-on-exit staged shell isolation (default: direct)",
         add_space: false,
     },
+    SlashSpec {
+        name: "/plan",
+        usage: "/plan TEXT",
+        summary: "Run a read-only planning pass using update_plan",
+        add_space: true,
+    },
+    SlashSpec {
+        name: "/diff",
+        usage: "/diff [REF]",
+        summary: "Inspect workspace git status and diff in a modal",
+        add_space: false,
+    },
+    SlashSpec {
+        name: "/compact",
+        usage: "/compact",
+        summary: "Compact selected session history to free context window",
+        add_space: false,
+    },
+    SlashSpec {
+        name: "/steer",
+        usage: "/steer TEXT",
+        summary: "Send mid-turn guidance to an active session tree",
+        add_space: true,
+    },
+    SlashSpec {
+        name: "/status",
+        usage: "/status",
+        summary: "Show provider, tokens, cache hit rate & MCP status",
+        add_space: false,
+    },
+    SlashSpec { name: "/skills", usage: "/skills", summary: "List discovered local SKILL.md skills", add_space: false },
+    SlashSpec { name: "/mcp", usage: "/mcp", summary: "Inspect configured MCP servers", add_space: false },
     SlashSpec {
         name: "/wb",
         usage: "/wb [KEY TEXT|append KEY TEXT|resolve KEY|delete KEY]",
@@ -75,6 +119,65 @@ pub(crate) fn matching_commands(input: &str) -> Vec<&'static SlashSpec> {
     SLASH_COMMANDS.iter().filter(|spec| spec.name.starts_with(input)).collect()
 }
 
+pub(crate) fn active_at_mention(input: &str, cursor: usize) -> Option<(usize, usize, &str)> {
+    let cursor = cursor.min(input.len());
+    let before = input.get(..cursor)?;
+    let at_rel = before.rfind('@')?;
+    if at_rel > 0 {
+        let prev = before[..at_rel].chars().next_back()?;
+        if !prev.is_whitespace() {
+            return None;
+        }
+    }
+    let query = &before[at_rel + 1..];
+    if query.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let after_end = input[cursor..].find(char::is_whitespace).map_or(input.len(), |off| cursor + off);
+    Some((at_rel, after_end, query))
+}
+
+pub(crate) fn matching_files<'a>(query: &str, files: &'a [String], limit: usize) -> Vec<&'a str> {
+    let q = query.trim().to_ascii_lowercase();
+    let mut scored: Vec<(u8, usize, &str)> = Vec::new();
+    for path in files {
+        let low = path.to_ascii_lowercase();
+        let file_name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+        let rank = if q.is_empty() || file_name.starts_with(&q) {
+            Some(0u8)
+        } else if low.starts_with(&q) {
+            Some(1)
+        } else if low.contains(&q) {
+            Some(2)
+        } else if fuzzy_subseq(&q, &low) {
+            Some(3)
+        } else {
+            None
+        };
+        if let Some(r) = rank {
+            scored.push((r, path.len(), path.as_str()));
+        }
+    }
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(b.2)));
+    scored.into_iter().take(limit).map(|(_, _, p)| p).collect()
+}
+
+fn fuzzy_subseq(needle: &str, haystack: &str) -> bool {
+    let mut n = needle.chars();
+    let Some(mut target) = n.next() else {
+        return true;
+    };
+    for ch in haystack.chars() {
+        if ch == target {
+            match n.next() {
+                Some(next) => target = next,
+                None => return true,
+            }
+        }
+    }
+    false
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TextInput {
     buf: String,
@@ -87,6 +190,18 @@ pub(crate) struct TextInput {
 impl TextInput {
     pub fn as_str(&self) -> &str {
         &self.buf
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn replace_range(&mut self, start: usize, end: usize, replacement: &str) {
+        let s = start.min(self.buf.len());
+        let e = end.max(s).min(self.buf.len());
+        self.buf.replace_range(s..e, replacement);
+        self.cursor = s + replacement.len();
+        self.history_idx = None;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -425,5 +540,16 @@ mod tests {
         assert_eq!(matching_commands("/").len(), SLASH_COMMANDS.len());
         // Removed overlapping commands and /theme are not in the slash palette.
         assert!(!SLASH_COMMANDS.iter().any(|s| matches!(s.name, "/quit" | "/help" | "/tasks" | "/members" | "/theme")));
+
+        let files = vec!["src/main.rs".into(), "src/model/responses.rs".into(), "README.md".into()];
+        let text = "check @resp please";
+        let (s, e, q) = active_at_mention(text, 11).unwrap();
+        assert_eq!((s, e, q), (6, 11, "resp"));
+        let picked = matching_files(q, &files, 5);
+        assert_eq!(picked, vec!["src/model/responses.rs"]);
+        let mut ti = TextInput::default();
+        ti.insert_str(text);
+        ti.replace_range(s, e, &format!("@{} ", picked[0]));
+        assert!(ti.as_str().starts_with("check @src/model/responses.rs "));
     }
 }

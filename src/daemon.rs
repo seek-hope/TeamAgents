@@ -1,5 +1,12 @@
-use crate::{model, store::Store, tools, Result};
+use crate::{
+    context, mcp,
+    model::{self, StreamEvent},
+    sandbox::SandboxMode,
+    store::Store,
+    tools, Result,
+};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
@@ -8,8 +15,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -90,7 +98,14 @@ fn timeouts(stream: &UnixStream, seconds: u64) -> Result<()> {
     stream.set_write_timeout(timeout).map_err(err)
 }
 
-pub fn request(session: &Path, workspace: &Path, body: &Value) -> Result<Value> {
+pub fn request_with_caps(
+    session: &Path,
+    workspace: &Path,
+    body: &Value,
+    acknowledged_provider: Option<&str>,
+    provider_switching: Option<&AtomicBool>,
+    codex_v1: Option<&AtomicBool>,
+) -> Result<Value> {
     let loc = Location::new(session, workspace)?;
     let socket = loc.socket();
     let stream = match UnixStream::connect(&socket) {
@@ -145,12 +160,26 @@ pub fn request(session: &Path, workspace: &Path, body: &Value) -> Result<Value> 
     // An old daemon ignores unrecognized fields. Negotiate using a read-only request
     // on the same connection before ever sending a mutating body.
     let mut hello = frame(&json!({"op":"hello"}));
-    let desired = if matches!(body["op"].as_str(), Some("submit" | "continue" | "model")) {
+    let op = body["op"].as_str();
+    let needs_provider = matches!(
+        op,
+        Some(
+            "submit"
+                | "continue"
+                | "model"
+                | "providers"
+                | "model_list"
+                | "steer"
+                | "compact"
+                | "diff"
+                | "skills"
+                | "mcp"
+                | "files"
+        )
+    );
+    if needs_provider {
         hello["query_provider"] = json!(true);
-        Some(model::provider_name()?)
-    } else {
-        None
-    };
+    }
     write_frame(&stream, &hello)?;
     let greeting = read_frame(&stream)?;
     if let Some(error) = greeting["error"].as_str() {
@@ -159,22 +188,55 @@ pub fn request(session: &Path, workspace: &Path, body: &Value) -> Result<Value> 
     if greeting["value"]["protocol"] != PROTOCOL {
         return Err(INCOMPATIBLE.into());
     }
-    if body["op"] == "model" && greeting["value"]["model_settings"] != true {
+    if needs_provider {
+        if let Some(flag) = provider_switching {
+            flag.store(greeting["value"]["provider_switching"] == true, Ordering::Relaxed);
+        }
+        if let Some(flag) = codex_v1 {
+            flag.store(greeting["value"]["codex_v1"] == true, Ordering::Relaxed);
+        }
+    }
+    if op == Some("model") && greeting["value"]["model_settings"] != true {
         return Err(
             "this session daemon predates /model; let active work finish, then run teamagents stop and reopen chat"
                 .into(),
         );
     }
-    if let Some(desired) = desired {
+    if (matches!(op, Some("providers" | "model_list")) || (op == Some("model") && body.get("provider").is_some()))
+        && greeting["value"]["provider_switching"] != true
+    {
+        return Err(
+            "this session daemon predates live /model provider switching; let active work finish, then run teamagents stop and reopen chat"
+                .into(),
+        );
+    }
+    let needs_codex = matches!(op, Some("steer" | "compact" | "diff" | "skills" | "mcp" | "files"))
+        || (matches!(op, Some("submit" | "continue")) && body["sandbox"].as_str() == Some("read_only"));
+    if needs_codex && greeting["value"]["codex_v1"] != true {
+        return Err(
+            "this session daemon predates Codex parity features; let active work finish, then run teamagents stop and restart"
+                .into(),
+        );
+    }
+    if matches!(op, Some("submit" | "continue")) {
         // Protocol 3 daemons predating subscription support always use API billing.
         let actual = greeting["value"]["provider"].as_str().unwrap_or("api");
-        if actual != desired {
-            let detail = if matches!(body["op"].as_str(), Some("submit" | "continue")) {
-                "No task was submitted."
-            } else {
-                "Model settings were not accessed."
-            };
-            return Err(format!("Session uses {actual}, but this client selected {desired}. {detail} Run teamagents stop in this workspace and restart with the intended provider."));
+        let overridden = greeting["value"]["provider_overridden"] == true;
+        if acknowledged_provider != Some(actual) {
+            if let Some(explicit) = model::explicit_env_provider()? {
+                if actual != explicit {
+                    return Err(format!(
+                        "Session uses {actual}, but this client selected {explicit}. No task was submitted. Switch with /model provider {explicit}, or run teamagents stop in this workspace and restart with the intended provider."
+                    ));
+                }
+            } else if !overridden {
+                let desired = model::default_provider_name()?;
+                if actual != desired {
+                    return Err(format!(
+                        "Session uses {actual}, but this client selected {desired}. No task was submitted. Switch with /model provider {desired}, or run teamagents stop in this workspace and restart with the intended provider."
+                    ));
+                }
+            }
         }
     }
     write_frame(&stream, &frame(body))?;
@@ -194,10 +256,45 @@ impl Drop for SocketGuard {
     }
 }
 
+#[derive(Clone, Default)]
+struct LiveState {
+    phase: String,
+    reasoning: String,
+    commentary: String,
+    active_tools: Vec<String>,
+    shell_tail: String,
+}
+
+impl LiveState {
+    fn to_json(&self) -> Value {
+        json!({
+            "phase": self.phase,
+            "reasoning": self.reasoning,
+            "commentary": self.commentary,
+            "active_tools": self.active_tools,
+            "shell_tail": self.shell_tail,
+        })
+    }
+}
+
+type LiveMap = Arc<Mutex<HashMap<String, LiveState>>>;
+
+fn append_bounded_tail(buf: &mut String, delta: &str, max_bytes: usize) {
+    buf.push_str(delta);
+    if buf.len() > max_bytes {
+        let mut drop_from = buf.len() - max_bytes;
+        while drop_from < buf.len() && !buf.is_char_boundary(drop_from) {
+            drop_from += 1;
+        }
+        buf.drain(..drop_from);
+    }
+}
+
 enum Completion {
     Model(String, usize, std::result::Result<model::ModelOutput, model::ModelError>),
-    Tool(String, Result<String>),
+    ToolOp { op_id: String, task: String, op: String, result: Result<String> },
     Compacted { task: String, head_keep: usize, tail_keep: usize, summary: String },
+    ManualCompacted { task: String, head_keep: usize, tail_keep: usize, summary: String },
 }
 
 #[derive(Clone)]
@@ -249,6 +346,7 @@ fn launch(
     store: &mut Store,
     workspace: &Path,
     notifier: &Notifier,
+    live: &LiveMap,
     tool_first: bool,
     quota_pause: &mut Option<(Instant, String)>,
 ) -> Result<bool> {
@@ -261,13 +359,35 @@ fn launch(
                 }
                 let workspace = workspace.to_path_buf();
                 let notifier = notifier.clone();
-                let id = job.task;
+                let op_id = job.op_id;
+                let task = job.task;
                 let action = job.action;
-                let staged = job.staged;
+                let sandbox = job.sandbox;
+                let op_name = action["op"].as_str().unwrap_or("tool").to_owned();
+                if let Ok(mut guard) = live.lock() {
+                    let st = guard.entry(task.clone()).or_default();
+                    st.phase = "tool".into();
+                    st.active_tools.push(op_name.clone());
+                    if op_name == "shell" {
+                        st.shell_tail.clear();
+                    }
+                }
+                let live_cb = Arc::clone(live);
+                let task_cb = task.clone();
                 thread::spawn(move || {
-                    let result = std::panic::catch_unwind(|| tools::execute_with_mode(&workspace, &action, staged))
-                        .unwrap_or_else(|_| Err("tool worker panicked".into()));
-                    notifier.send(Completion::Tool(id, result));
+                    let chunk_fn = |chunk: &[u8]| {
+                        let s = String::from_utf8_lossy(chunk);
+                        if let Ok(mut guard) = live_cb.lock() {
+                            if let Some(st) = guard.get_mut(&task_cb) {
+                                append_bounded_tail(&mut st.shell_tail, &s, 4096);
+                            }
+                        }
+                    };
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        tools::execute_with_options(&workspace, &action, sandbox, Some(&chunk_fn))
+                    }))
+                    .unwrap_or_else(|_| Err("tool worker panicked".into()));
+                    notifier.send(Completion::ToolOp { op_id, task, op: op_name, result });
                 });
                 return Ok(true);
             }
@@ -283,11 +403,40 @@ fn launch(
                 }
                 *quota_pause = None;
             }
+            if let Ok(mut guard) = live.lock() {
+                guard.insert(
+                    turn.task.clone(),
+                    LiveState {
+                        phase: "thinking".into(),
+                        reasoning: String::new(),
+                        commentary: String::new(),
+                        active_tools: Vec::new(),
+                        shell_tail: String::new(),
+                    },
+                );
+            }
             let notifier = notifier.clone();
+            let live_cb = Arc::clone(live);
             thread::spawn(move || {
                 let history_bytes = model::history_bytes(&turn.messages);
-                let result = std::panic::catch_unwind(|| {
-                    model::complete(
+                let task_cb = turn.task.clone();
+                let stream_fn = move |ev: StreamEvent| {
+                    if let Ok(mut guard) = live_cb.lock() {
+                        let st = guard.entry(task_cb.clone()).or_default();
+                        match ev {
+                            StreamEvent::ReasoningDelta(d) => append_bounded_tail(&mut st.reasoning, &d, 4096),
+                            StreamEvent::CommentaryDelta(d) => append_bounded_tail(&mut st.commentary, &d, 4096),
+                            StreamEvent::ToolCallStarted(name) => {
+                                st.phase = "tool".into();
+                                if !st.active_tools.contains(&name) {
+                                    st.active_tools.push(name);
+                                }
+                            }
+                        }
+                    }
+                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    model::complete_streaming(
                         &turn.agent,
                         &turn.task,
                         &turn.root,
@@ -296,8 +445,9 @@ fn launch(
                         turn.settings.as_ref(),
                         turn.last_input_tokens,
                         turn.last_history_bytes,
+                        Some(&stream_fn),
                     )
-                })
+                }))
                 .unwrap_or_else(|_| Err(model::ModelError::Fatal("model worker panicked".into())));
                 notifier.send(Completion::Model(turn.task, history_bytes, result));
             });
@@ -311,19 +461,45 @@ fn settle(
     store: &mut Store,
     done: Completion,
     notifier: &Notifier,
+    live: &LiveMap,
     active: &mut usize,
     quota_pause: &mut Option<(Instant, String)>,
 ) -> Result<()> {
-    let id = match &done {
-        Completion::Model(id, _, _) | Completion::Tool(id, _) => id.as_str(),
-        Completion::Compacted { task, .. } => task.as_str(),
-    };
-    // A user cancellation can win while I/O is in flight. A late model response grants no authority.
-    if store.discard_late_completion(id)? {
-        return Ok(());
+    match &done {
+        Completion::Model(id, _, _) => {
+            if let Ok(mut guard) = live.lock() {
+                guard.remove(id);
+            }
+            if store.discard_late_completion(id)? {
+                return Ok(());
+            }
+        }
+        Completion::ToolOp { op_id, task, op, .. } => {
+            if let Ok(mut guard) = live.lock() {
+                if let Some(st) = guard.get_mut(task) {
+                    if let Some(pos) = st.active_tools.iter().position(|x| x == op) {
+                        st.active_tools.remove(pos);
+                    }
+                    if st.active_tools.is_empty() {
+                        guard.remove(task);
+                    }
+                }
+            }
+            if store.discard_late_tool_op(op_id)? {
+                return Ok(());
+            }
+        }
+        Completion::Compacted { task, .. } => {
+            if store.discard_late_completion(task)? {
+                return Ok(());
+            }
+        }
+        Completion::ManualCompacted { .. } => {}
     }
     match done {
-        Completion::Tool(id, result) => store.tool_result(&id, result.as_deref().map_err(String::as_str)),
+        Completion::ToolOp { op_id, result, .. } => {
+            store.tool_result_op(&op_id, result.as_deref().map_err(String::as_str))
+        }
         Completion::Model(id, _, Err(model::ModelError::Fatal(e))) => store.fail(&id, &e),
         Completion::Model(id, _, Err(model::ModelError::QuotaExceeded(e))) => {
             *quota_pause = Some((Instant::now() + QUOTA_PAUSE, e.clone()));
@@ -354,21 +530,14 @@ fn settle(
         Completion::Compacted { task, head_keep, tail_keep, summary } => {
             store.apply_compaction(&task, head_keep, tail_keep, &summary)
         }
+        Completion::ManualCompacted { task, head_keep, tail_keep, summary } => {
+            store.apply_manual_compaction(&task, head_keep, tail_keep, &summary)
+        }
         Completion::Model(id, history_bytes, Ok(output)) => {
             if let Some(usage) = &output.usage {
                 store.record_usage(&id, usage, history_bytes)?;
             }
-            let result = match output.action["op"].as_str() {
-                Some("read_file" | "edit_file" | "shell") => {
-                    store.request_tool_with_meta(&id, &output.action, output.meta.as_ref())
-                }
-                Some(
-                    "ask" | "handoff" | "finish" | "members" | "spawn" | "delegate" | "send" | "wb_read" | "wb_write"
-                    | "wb_wait",
-                ) => store.apply_with_meta(&id, &output.action, output.meta.as_ref()),
-                _ => Err("unrecognized model action".into()),
-            };
-            if let Err(e) = result {
+            if let Err(e) = store.apply_model_output(&id, &output) {
                 store.reject_action(&id, &e)?;
             }
             Ok(())
@@ -382,9 +551,33 @@ fn field<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
 
 pub(crate) const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
+fn effective_provider_raw(store: &Store) -> Result<String> {
+    if let Some(name) = store.active_provider()? {
+        return Ok(name);
+    }
+    model::default_provider_name()
+}
+
+fn effective_provider(store: &Store) -> Result<String> {
+    if let Some(name) = store.active_provider()? {
+        model::resolve_provider(&name)?;
+        return Ok(name);
+    }
+    model::default_provider_name()
+}
+
 fn configure_model(store: &mut Store, body: &Value) -> Result<Value> {
-    let provider = model::provider_name()?;
-    let mut settings = store.model_settings(provider, None)?;
+    if let Some(value) = body.get("provider") {
+        if value.is_null() {
+            store.set_active_provider(None)?;
+        } else {
+            let name = value.as_str().filter(|s| !s.is_empty()).ok_or("invalid provider name")?;
+            model::resolve_provider(name)?;
+            store.set_active_provider(Some(name))?;
+        }
+    }
+    let provider = effective_provider(store)?;
+    let mut settings = store.model_settings(&provider, None)?;
     if let Some(value) = body.get("model") {
         settings.model = if value.is_null() {
             None
@@ -404,12 +597,26 @@ fn configure_model(store: &mut Store, body: &Value) -> Result<Value> {
         };
     }
     if body.get("model").is_some() || body.get("effort").is_some() {
-        store.set_model_settings(provider, &settings)?;
+        store.set_model_settings(&provider, &settings)?;
     }
-    Ok(json!({"provider":provider, "model":settings.model.or_else(model::default_model), "effort":settings.effort}))
+    Ok(json!({
+        "provider": provider,
+        "model": settings.model.or_else(|| model::default_model_for(&provider)),
+        "effort": settings.effort,
+        "overridden": store.active_provider()?.is_some(),
+    }))
 }
 
-fn dispatch(store: &mut Store, workspace: &Value, frame: &Value, active: usize) -> Result<(Value, bool)> {
+#[allow(clippy::too_many_arguments)]
+fn dispatch(
+    store: &mut Store,
+    workspace_path: &Path,
+    workspace: &Value,
+    frame: &Value,
+    live: &LiveMap,
+    notifier: &Notifier,
+    active: &mut usize,
+) -> Result<(Value, bool)> {
     if frame["protocol"] != PROTOCOL {
         return Err(INCOMPATIBLE.into());
     }
@@ -417,15 +624,29 @@ fn dispatch(store: &mut Store, workspace: &Value, frame: &Value, active: usize) 
         return Err("session belongs to another workspace".into());
     }
     let b = &frame["body"];
+    let parse_sandbox = |b: &Value| -> Result<SandboxMode> {
+        match b.get("sandbox").and_then(Value::as_str) {
+            Some(s) => SandboxMode::parse(s),
+            None => Ok(if b.get("staged").and_then(Value::as_bool).unwrap_or(false) {
+                SandboxMode::Staged
+            } else {
+                SandboxMode::Direct
+            }),
+        }
+    };
     let value = match field(b, "op")? {
         "submit" => {
             let agent = field(b, "agent")?;
             let prompt = field(b, "text")?;
             let check = b.get("check").filter(|v| !v.is_null()).map(|_| field(b, "check")).transpose()?;
             let review = b["review"].as_bool().ok_or("expected boolean review policy")?;
-            let staged = b.get("staged").and_then(Value::as_bool).unwrap_or(false);
-            let settings = store.model_settings(model::provider_name()?, model::default_model().as_deref())?;
-            let id = store.submit_with_options(agent, prompt, check, review, staged, &settings)?;
+            let sandbox = parse_sandbox(b)?;
+            let provider = effective_provider(store)?;
+            let settings = store.model_settings(&provider, model::default_model_for(&provider).as_deref())?;
+            let mcp_names = mcp::configured_server_names();
+            let ctx = context::build_root_context_prefix(workspace_path, sandbox, &mcp_names);
+            let id =
+                store.submit_with_full_options(agent, prompt, check, review, sandbox, &settings, ctx.as_deref())?;
             json!({"id":id})
         }
         "continue" => {
@@ -433,10 +654,45 @@ fn dispatch(store: &mut Store, workspace: &Value, frame: &Value, active: usize) 
             let prompt = field(b, "text")?;
             let check = b.get("check").filter(|v| !v.is_null()).map(|_| field(b, "check")).transpose()?;
             let review = b["review"].as_bool().ok_or("expected boolean review policy")?;
-            let staged = b.get("staged").and_then(Value::as_bool).unwrap_or(false);
-            let settings = store.model_settings(model::provider_name()?, model::default_model().as_deref())?;
-            let (root, node) = store.continue_tree_with_options(id, prompt, check, review, staged, &settings)?;
+            let sandbox = parse_sandbox(b)?;
+            let provider = effective_provider(store)?;
+            let settings = store.model_settings(&provider, model::default_model_for(&provider).as_deref())?;
+            let (root, node) =
+                store.continue_tree_with_full_options(id, prompt, check, review, sandbox, &settings, None)?;
             json!({"id":root, "node":node})
+        }
+        "steer" => store.steer(field(b, "id")?, field(b, "text")?)?,
+        "compact" => {
+            let job = store.prepare_manual_compaction(field(b, "id")?)?;
+            let task_id = job.task.clone();
+            let count = job.middle.len();
+            let notifier = notifier.clone();
+            *active += 1;
+            thread::spawn(move || {
+                let summary = std::panic::catch_unwind(|| {
+                    model::compact_history(&job.agent, &job.task, &job.middle, job.settings.as_ref())
+                })
+                .unwrap_or_else(|_| model::fallback_compact(&job.middle));
+                notifier.send(Completion::ManualCompacted {
+                    task: job.task,
+                    head_keep: job.head_keep,
+                    tail_keep: job.tail_keep,
+                    summary,
+                });
+            });
+            json!({"ok": true, "task": task_id, "messages": count})
+        }
+        "diff" => {
+            let base = b.get("base").and_then(Value::as_str);
+            let commit = b.get("commit").and_then(Value::as_str);
+            let text = context::git_diff_summary(workspace_path, base, commit)?;
+            json!({"diff": text})
+        }
+        "skills" => json!({"skills": context::discover_skills(workspace_path)}),
+        "mcp" => json!({"config_path": mcp::mcp_config_path_display(), "servers": mcp::list_servers()?}),
+        "files" => {
+            let limit = b.get("limit").and_then(Value::as_u64).unwrap_or(1000).min(2000) as usize;
+            json!({"files": context::workspace_file_index(workspace_path, limit)})
         }
         "whiteboard" => store.whiteboard(field(b, "id")?)?,
         "wb_write" => {
@@ -448,9 +704,52 @@ fn dispatch(store: &mut Store, workspace: &Value, frame: &Value, active: usize) 
             store.user_wb_write(id, key, mode, kind, content)?
         }
         "model" => configure_model(store, b)?,
+        "providers" => {
+            let active = effective_provider_raw(store)?;
+            let providers = model::list_providers()?;
+            json!({
+                "active": active,
+                "overridden": store.active_provider()?.is_some(),
+                "config_path": model::providers_config_path_display(),
+                "providers": providers,
+            })
+        }
+        "model_list" => {
+            let provider = match b.get("provider").filter(|v| !v.is_null()) {
+                Some(v) => v.as_str().filter(|s| !s.is_empty()).ok_or("invalid provider name")?.to_owned(),
+                None => effective_provider(store)?,
+            };
+            let models = model::list_provider_models(&provider)?;
+            json!({"provider": provider, "models": models})
+        }
         "members" => store.agents()?,
         "tasks" => store.tasks()?,
-        "status" => store.task(field(b, "id")?)?,
+        "status" => {
+            let id = field(b, "id")?;
+            let mut task = store.task(id)?;
+            if let Ok(guard) = live.lock() {
+                let target_id = task["active_root"].as_str().unwrap_or(id);
+                if let Some(st) = guard.get(target_id).or_else(|| guard.get(id)) {
+                    task["live"] = st.to_json();
+                }
+                if let Some(nodes) = task["tree_nodes"].as_array() {
+                    let mut children = serde_json::Map::new();
+                    for node in nodes {
+                        if let Some(tid) = node["task"].as_str() {
+                            if tid != id {
+                                if let Some(st) = guard.get(tid) {
+                                    children.insert(tid.to_owned(), st.to_json());
+                                }
+                            }
+                        }
+                    }
+                    if !children.is_empty() {
+                        task["live_children"] = Value::Object(children);
+                    }
+                }
+            }
+            task
+        }
         "answer" => {
             store.answer(field(b, "id")?, field(b, "text")?)?;
             json!({"ok":true})
@@ -467,7 +766,7 @@ fn dispatch(store: &mut Store, workspace: &Value, frame: &Value, active: usize) 
             store.approve(field(b, "id")?, b["op"] == "approve")?;
             json!({"ok":true})
         }
-        "stop" if active == 0 => return Ok((json!({"ok":true}), true)),
+        "stop" if *active == 0 => return Ok((json!({"ok":true}), true)),
         "stop" => return Err("work is in flight; retry stop after the current operation".into()),
         _ => return Err("unknown user operation".into()),
     };
@@ -527,6 +826,7 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
     let workspace_identity = json!(loc.workspace.as_os_str().as_encoded_bytes());
     let (tx, rx) = mpsc::channel();
     let notifier = Notifier { tx, wake: Arc::new(wake_tx) };
+    let live: LiveMap = Arc::new(Mutex::new(HashMap::new()));
     let mut active = 0;
     let mut tool_first = true;
     let mut wake = true; // Also check persisted queues immediately after recovery.
@@ -535,7 +835,7 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
         drain_wake(&mut wake_rx);
         for done in rx.try_iter() {
             active -= 1;
-            settle(&mut store, done, &notifier, &mut active, &mut quota_pause)?;
+            settle(&mut store, done, &notifier, &live, &mut active, &mut quota_pause)?;
             wake = true;
         }
         // Bound each batch so a busy client cannot starve the agents.
@@ -558,18 +858,22 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
                 }
                 let mut welcome = json!({"protocol":PROTOCOL});
                 if hello["query_provider"] == true {
-                    welcome["provider"] = json!(model::provider_name()?);
+                    welcome["provider"] = json!(effective_provider_raw(&store)?);
                     welcome["model_settings"] = json!(true);
+                    welcome["provider_switching"] = json!(true);
+                    welcome["codex_v1"] = json!(true);
+                    welcome["provider_overridden"] = json!(store.active_provider()?.is_some());
                 }
                 write_frame(&stream, &json!({"value":welcome}))?;
                 let frame = read_frame(&stream)?;
-                let result = dispatch(&mut store, &workspace_identity, &frame, active)?;
+                let result =
+                    dispatch(&mut store, &loc.workspace, &workspace_identity, &frame, &live, &notifier, &mut active)?;
                 if matches!(frame["body"]["op"].as_str(), Some("submit" | "continue")) {
                     quota_pause = None;
                 }
                 wake |= matches!(
                     frame["body"]["op"].as_str(),
-                    Some("submit" | "continue" | "answer" | "approve" | "deny" | "cancel" | "wb_write")
+                    Some("submit" | "continue" | "steer" | "answer" | "approve" | "deny" | "cancel" | "wb_write")
                 );
                 Ok(result)
             })();
@@ -592,7 +896,7 @@ pub fn serve(session: &Path, workspace: &Path) -> Result<()> {
             }
         }
         while wake {
-            if !launch(&mut store, &loc.workspace, &notifier, tool_first, &mut quota_pause)? {
+            if !launch(&mut store, &loc.workspace, &notifier, &live, tool_first, &mut quota_pause)? {
                 wake = false;
                 break;
             }
@@ -623,13 +927,21 @@ mod tests {
         let notifier = Notifier { tx, wake: Arc::new(wake_tx) };
         let worker = thread::spawn(move || {
             thread::sleep(Duration::from_millis(5));
-            notifier.send(Completion::Tool("t1".into(), Ok("done".into())));
+            notifier.send(Completion::ToolOp {
+                op_id: "op1".into(),
+                task: "t1".into(),
+                op: "shell".into(),
+                result: Ok("done".into()),
+            });
         });
         let start = Instant::now();
         wait_for_activity(&listener, &wake_rx, 1000).unwrap();
         let elapsed = start.elapsed();
         drain_wake(&mut wake_rx);
-        assert!(matches!(rx.try_recv().unwrap(), Completion::Tool(id, Ok(msg)) if id == "t1" && msg == "done"));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Completion::ToolOp { task, result: Ok(msg), .. } if task == "t1" && msg == "done"
+        ));
         assert!(elapsed < Duration::from_millis(100), "poll took {elapsed:?}");
         worker.join().unwrap();
         let _ = fs::remove_dir_all(&dir);

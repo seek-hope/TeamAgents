@@ -6,6 +6,7 @@ mod ui;
 
 use crate::{
     protocol::{preview, Client},
+    sandbox::SandboxMode,
     Result,
 };
 use crossterm::{
@@ -80,7 +81,8 @@ fn fetch_snapshot(client: &Client) -> (BackendEvent, bool) {
     let active = tasks.as_ref().is_ok_and(|rows| rows.iter().any(|t| !t.status.is_terminal()));
     let members = client.members();
     let model = client.model_get();
-    (BackendEvent::Snapshot { tasks, members, model }, active)
+    let providers = if client.supports_provider_switching() { client.providers().ok() } else { None };
+    (BackendEvent::Snapshot { tasks, members, model, providers }, active)
 }
 
 fn handle_command(client: &Client, cmd: UiCommand, tx: &Sender<BackendEvent>) -> bool {
@@ -94,11 +96,12 @@ fn handle_command(client: &Client, cmd: UiCommand, tx: &Sender<BackendEvent>) ->
             let detail = client.status(&id).map(Box::new);
             let _ = tx.send(BackendEvent::TaskDetail(detail));
         }
-        UiCommand::LoadPlanModels => {
-            let _ = tx.send(BackendEvent::PlanModels(crate::model::plan_models()));
+        UiCommand::LoadModels(provider) => {
+            let result = client.model_list(provider.as_deref());
+            let _ = tx.send(BackendEvent::ModelsCatalog { provider, result });
         }
-        UiCommand::Submit { agent, text, review, staged, check } => {
-            let outcome = match client.submit_with_options(&agent, &text, review, check.as_deref(), staged) {
+        UiCommand::Submit { agent, text, review, sandbox, check } => {
+            let outcome = match client.submit_full(&agent, &text, review, check.as_deref(), sandbox) {
                 Ok(receipt) => {
                     let id = receipt["id"].as_str().map(str::to_owned);
                     let msg = format!("Submitted {} to @{agent}", id.as_deref().unwrap_or("task"));
@@ -110,8 +113,8 @@ fn handle_command(client: &Client, cmd: UiCommand, tx: &Sender<BackendEvent>) ->
             };
             let _ = tx.send(outcome);
         }
-        UiCommand::Continue { id, text, review, staged, check } => {
-            let outcome = match client.continue_with_options(&id, &text, review, check.as_deref(), staged) {
+        UiCommand::Continue { id, text, review, sandbox, check } => {
+            let outcome = match client.continue_full(&id, &text, review, check.as_deref(), sandbox) {
                 Ok(receipt) => {
                     let root = receipt["id"].as_str().map(str::to_owned);
                     let node = receipt["node"].as_str().unwrap_or(&id);
@@ -123,6 +126,134 @@ fn handle_command(client: &Client, cmd: UiCommand, tx: &Sender<BackendEvent>) ->
                 }
             };
             let _ = tx.send(outcome);
+        }
+        UiCommand::Review { agent, review, base, check } => {
+            let target_desc = match &base {
+                Some(b) => format!("changes against base {b}"),
+                None => "uncommitted workspace changes".to_owned(),
+            };
+            let outcome = match client
+                .diff(base.as_deref(), None)
+                .map(|diff| crate::cli::build_review_prompt(&target_desc, None, &diff))
+                .and_then(|prompt| client.submit_full(&agent, &prompt, review, check.as_deref(), SandboxMode::ReadOnly))
+            {
+                Ok(receipt) => {
+                    let id = receipt["id"].as_str().map(str::to_owned);
+                    let msg = format!("Started read-only review {} with @{agent}", id.as_deref().unwrap_or("task"));
+                    BackendEvent::CommandOutcome { message: Some(msg), error: None, select_task: id, refresh: true }
+                }
+                Err(e) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(e), select_task: None, refresh: false }
+                }
+            };
+            let _ = tx.send(outcome);
+        }
+        UiCommand::Steer { id, text } => {
+            let outcome = match client.steer(&id, &text) {
+                Ok(_) => BackendEvent::CommandOutcome {
+                    message: Some(format!("Steered {}", preview(&id, 14))),
+                    error: None,
+                    select_task: None,
+                    refresh: true,
+                },
+                Err(e) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(e), select_task: None, refresh: true }
+                }
+            };
+            let _ = tx.send(outcome);
+        }
+        UiCommand::Compact(id) => {
+            let outcome = match client.compact(&id) {
+                Ok(_) => BackendEvent::CommandOutcome {
+                    message: Some(format!("Requested manual compaction for {}", preview(&id, 14))),
+                    error: None,
+                    select_task: None,
+                    refresh: true,
+                },
+                Err(e) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(e), select_task: None, refresh: true }
+                }
+            };
+            let _ = tx.send(outcome);
+        }
+        UiCommand::LoadDiff { base } => {
+            let title = match &base {
+                Some(b) => format!("Git Diff vs {b}"),
+                None => "Workspace Diff".into(),
+            };
+            let evt = match client.diff(base.as_deref(), None) {
+                Ok(diff) => {
+                    let lines = if diff.trim().is_empty() {
+                        vec!["(no uncommitted workspace changes)".into()]
+                    } else {
+                        diff.lines().map(str::to_owned).collect()
+                    };
+                    BackendEvent::TextOverlay { title, lines, is_diff: true }
+                }
+                Err(e) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(e), select_task: None, refresh: false }
+                }
+            };
+            let _ = tx.send(evt);
+        }
+        UiCommand::LoadSkills => {
+            let evt = match client.skills() {
+                Ok(skills) => {
+                    let mut lines = Vec::new();
+                    if skills.is_empty() {
+                        lines.push("No local SKILL.md skills discovered for this workspace.".into());
+                    } else {
+                        for s in skills {
+                            lines.push(format!("[{}] {}", s.name, s.description));
+                            lines.push(format!("    path: {}", s.path));
+                        }
+                    }
+                    BackendEvent::TextOverlay { title: "Local Skills".into(), lines, is_diff: false }
+                }
+                Err(e) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(e), select_task: None, refresh: false }
+                }
+            };
+            let _ = tx.send(evt);
+        }
+        UiCommand::LoadMcp => {
+            let evt = match client.mcp_status() {
+                Ok((config_path, servers)) => {
+                    let mut lines = Vec::new();
+                    if let Some(p) = config_path {
+                        lines.push(format!("Config: {p}"));
+                        lines.push(String::new());
+                    }
+                    if let Some(arr) = servers.as_array() {
+                        if arr.is_empty() {
+                            lines.push("No MCP servers configured.".into());
+                        } else {
+                            for s in arr {
+                                let name = s["name"].as_str().unwrap_or("?");
+                                let kind = s["transport"].as_str().unwrap_or("?");
+                                let ready = s["ready"].as_bool().unwrap_or(false);
+                                let status = s["status"].as_str().unwrap_or("?");
+                                let target = s["target"].as_str().unwrap_or("");
+                                let mark = if ready { "ready" } else { "pending" };
+                                lines.push(format!("{name}  [{kind}]  {mark} ({status})  {target}"));
+                                if let Some(refs) = s["env_refs"].as_array().filter(|r| !r.is_empty()) {
+                                    let joined: Vec<_> = refs.iter().filter_map(|v| v.as_str()).collect();
+                                    if !joined.is_empty() {
+                                        lines.push(format!("  env_refs: {}", joined.join(", ")));
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        lines.push(servers.to_string());
+                    }
+                    BackendEvent::TextOverlay { title: "MCP Servers".into(), lines, is_diff: false }
+                }
+                Err(e) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(e), select_task: None, refresh: false }
+                }
+            };
+            let _ = tx.send(evt);
         }
         UiCommand::WbWrite { root_id, key, mode, kind, content } => {
             let outcome = match client.wb_write(&root_id, &key, &mode, kind.as_deref(), content.as_deref()) {
@@ -198,10 +329,11 @@ fn handle_command(client: &Client, cmd: UiCommand, tx: &Sender<BackendEvent>) ->
             };
             let _ = tx.send(outcome);
         }
-        UiCommand::SetModel { model, effort } => {
+        UiCommand::SetModel { provider, model, effort } => {
+            let p = provider.as_ref().map(|opt| opt.as_deref());
             let m = model.as_ref().map(|opt| opt.as_deref());
             let e = effort.as_ref().map(|opt| opt.as_deref());
-            let outcome = match client.model_set(m, e) {
+            let outcome = match client.model_set(p, m, e) {
                 Ok(cfg) => {
                     let model_name = cfg.model.as_deref().unwrap_or("default");
                     let eff_name = cfg.effort.as_deref().unwrap_or("default");
@@ -211,6 +343,49 @@ fn handle_command(client: &Client, cmd: UiCommand, tx: &Sender<BackendEvent>) ->
                         select_task: None,
                         refresh: true,
                     }
+                }
+                Err(err) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(err), select_task: None, refresh: false }
+                }
+            };
+            let _ = tx.send(outcome);
+        }
+        UiCommand::AddProvider { name, spec, set_default } => {
+            let outcome = match crate::model::upsert_provider(&name, spec, set_default) {
+                Ok(path) => BackendEvent::CommandOutcome {
+                    message: Some(format!("Saved provider '{name}' to {}.", path.display())),
+                    error: None,
+                    select_task: None,
+                    refresh: true,
+                },
+                Err(err) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(err), select_task: None, refresh: false }
+                }
+            };
+            let _ = tx.send(outcome);
+        }
+        UiCommand::RemoveProvider(name) => {
+            let outcome = match crate::model::remove_provider(&name) {
+                Ok(path) => BackendEvent::CommandOutcome {
+                    message: Some(format!("Removed provider '{name}' from {}.", path.display())),
+                    error: None,
+                    select_task: None,
+                    refresh: true,
+                },
+                Err(err) => {
+                    BackendEvent::CommandOutcome { message: None, error: Some(err), select_task: None, refresh: false }
+                }
+            };
+            let _ = tx.send(outcome);
+        }
+        UiCommand::SetDefaultProvider(target) => {
+            let outcome = match crate::model::set_default_provider(target.as_deref()) {
+                Ok(_) => {
+                    let msg = match target {
+                        Some(name) => format!("Default provider set to '{name}'."),
+                        None => "Cleared default provider override.".into(),
+                    };
+                    BackendEvent::CommandOutcome { message: Some(msg), error: None, select_task: None, refresh: true }
                 }
                 Err(err) => {
                     BackendEvent::CommandOutcome { message: None, error: Some(err), select_task: None, refresh: false }
@@ -238,9 +413,18 @@ fn handle_command(client: &Client, cmd: UiCommand, tx: &Sender<BackendEvent>) ->
 
 fn spawn_backend(client: Client, cmd_rx: Receiver<UiCommand>, evt_tx: Sender<BackendEvent>) -> JoinHandle<()> {
     thread::spawn(move || {
+        let mut files_loaded = false;
         let (snap, mut active) = fetch_snapshot(&client);
         if evt_tx.send(snap).is_err() {
             return;
+        }
+        if client.supports_codex_v1() {
+            files_loaded = true;
+            if let Ok(files) = client.workspace_files(1000) {
+                if evt_tx.send(BackendEvent::FilesLoaded(files)).is_err() {
+                    return;
+                }
+            }
         }
         loop {
             let wait = if active { ACTIVE_POLL } else { IDLE_POLL };
@@ -261,6 +445,14 @@ fn spawn_backend(client: Client, cmd_rx: Receiver<UiCommand>, evt_tx: Sender<Bac
                     if evt_tx.send(snap).is_err() {
                         break;
                     }
+                    if !files_loaded && client.supports_codex_v1() {
+                        files_loaded = true;
+                        if let Ok(files) = client.workspace_files(1000) {
+                            if evt_tx.send(BackendEvent::FilesLoaded(files)).is_err() {
+                                break;
+                            }
+                        }
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -268,7 +460,13 @@ fn spawn_backend(client: Client, cmd_rx: Receiver<UiCommand>, evt_tx: Sender<Bac
     })
 }
 
-pub(crate) fn run(client: Client, agent: String, review: bool, staged: bool) -> Result<()> {
+pub(crate) fn run(
+    client: Client,
+    agent: String,
+    review: bool,
+    sandbox: SandboxMode,
+    initial_select: Option<String>,
+) -> Result<()> {
     let workspace_name = client
         .workspace
         .file_name()
@@ -284,7 +482,8 @@ pub(crate) fn run(client: Client, agent: String, review: bool, staged: bool) -> 
     let (evt_tx, evt_rx) = mpsc::channel();
     let worker = spawn_backend(client, cmd_rx, evt_tx);
 
-    let mut state = AppState::new(workspace_name, agent, review, staged);
+    let mut state = AppState::new(workspace_name, agent, review, sandbox);
+    state.pending_select_task = initial_select;
     let mut hits = HitMap::default();
     let mut dirty = true;
     let mut last_anim = Instant::now();

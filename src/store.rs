@@ -1,6 +1,7 @@
 use crate::{
-    model::{ModelSettings, UsageStats},
+    model::{ModelOutput, ModelSettings, UsageStats},
     protocol::TurnKind,
+    sandbox::SandboxMode,
     Result,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
@@ -72,8 +73,11 @@ fn repetition_nudge(messages: &[Value]) -> Option<&'static str> {
             continue;
         }
         let Ok(v) = serde_json::from_str::<Value>(content) else { continue };
+        if v.get("batch").is_some() {
+            continue;
+        }
         let Some((op, key)) = normalized_action_key(&v) else { continue };
-        if matches!(op.as_str(), "edit_file" | "wb_write" | "handoff" | "finish") {
+        if matches!(op.as_str(), "edit_file" | "apply_patch" | "wb_write" | "handoff" | "finish" | "update_plan") {
             break;
         }
         let cmd = (op == "shell").then(|| v["command"].as_str().unwrap_or("").to_owned());
@@ -120,9 +124,10 @@ pub struct Turn {
 
 #[derive(Debug)]
 pub struct ToolJob {
+    pub op_id: String,
     pub task: String,
     pub action: Value,
-    pub staged: bool,
+    pub sandbox: SandboxMode,
 }
 
 #[derive(Debug)]
@@ -212,12 +217,50 @@ ALTER TABLE tasks ADD COLUMN total_cached_tokens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN total_output_tokens INTEGER NOT NULL DEFAULT 0;
 ";
 
+const MIGRATE_V9: &str = "
+ALTER TABLE settings ADD COLUMN active_provider TEXT;
+ALTER TABLE root_model_settings ADD COLUMN provider TEXT;
+";
+
+const MIGRATE_V10: &str = "
+CREATE TABLE root_policies_v10 (
+    root TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id),
+    policy TEXT NOT NULL CHECK(policy IN ('auto','review')),
+    sandbox TEXT NOT NULL DEFAULT 'direct' CHECK(sandbox IN ('direct','staged','read_only'))
+);
+INSERT INTO root_policies_v10(root,policy,sandbox) SELECT root,policy,sandbox FROM root_policies;
+DROP TABLE root_policies;
+ALTER TABLE root_policies_v10 RENAME TO root_policies;
+DROP INDEX IF EXISTS one_pending;
+ALTER TABLE operations ADD COLUMN batch_id TEXT;
+ALTER TABLE operations ADD COLUMN seq_idx INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE operations ADD COLUMN call_id TEXT;
+CREATE INDEX operation_batch ON operations(task, batch_id, seq_idx);
+ALTER TABLE tree_runs ADD COLUMN plan_json TEXT;
+CREATE TABLE steerings (
+    id TEXT PRIMARY KEY NOT NULL,
+    root TEXT NOT NULL REFERENCES tree_runs(root),
+    task TEXT,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX steering_queue ON steerings(root);
+";
+
+fn unix_secs_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
 fn model_settings_row(row: &Row<'_>) -> rusqlite::Result<ModelSettings> {
-    Ok(ModelSettings { model: row.get(0)?, effort: row.get(1)? })
+    Ok(ModelSettings { provider: None, model: row.get(0)?, effort: row.get(1)? })
+}
+
+fn root_model_settings_row(row: &Row<'_>) -> rusqlite::Result<ModelSettings> {
+    Ok(ModelSettings { provider: row.get(0)?, model: row.get(1)?, effort: row.get(2)? })
 }
 
 fn root_model_settings(db: &Connection, root: &str) -> Result<Option<ModelSettings>> {
-    db.query_row("SELECT model,effort FROM root_model_settings WHERE root=?1", [root], model_settings_row)
+    db.query_row("SELECT provider,model,effort FROM root_model_settings WHERE root=?1", [root], root_model_settings_row)
         .optional()
         .db()
 }
@@ -402,21 +445,37 @@ fn stop_chain(db: &Connection, task: &str, mut status: &str, reason: &str) -> Re
     Ok(())
 }
 
-fn operation(db: &Connection, task: &str, action: &Value, state: &str, round: i64) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn operation_with_meta(
+    db: &Connection,
+    task: &str,
+    action: &Value,
+    state: &str,
+    round: i64,
+    batch_id: Option<&str>,
+    seq_idx: usize,
+    call_id: Option<&str>,
+) -> Result<()> {
     db.execute(
-        "INSERT INTO operations(id,task,action,state,round) VALUES (?1,?2,?3,?4,?5)",
-        params![id(), task, action.to_string(), state, round],
+        "INSERT INTO operations(id,task,action,state,round,batch_id,seq_idx,call_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![id(), task, action.to_string(), state, round, batch_id, seq_idx as i64, call_id],
     )
     .db()?;
-    let status = if state == "approval" { "approval" } else { "waiting" };
-    db.execute("UPDATE tasks SET status=?2 WHERE id=?1", params![task, status]).db()?;
+    if batch_id.is_none() {
+        let status = if state == "approval" { "approval" } else { "waiting" };
+        db.execute("UPDATE tasks SET status=?2 WHERE id=?1", params![task, status]).db()?;
+    }
     Ok(())
+}
+
+fn operation(db: &Connection, task: &str, action: &Value, state: &str, round: i64) -> Result<()> {
+    operation_with_meta(db, task, action, state, round, None, 0, None)
 }
 
 fn schema_version(db: &Connection) -> Result<i64> {
     let app: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0)).db()?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).db()?;
-    if app == APP_ID && matches!(version, 1..=8) {
+    if app == APP_ID && matches!(version, 1..=10) {
         return Ok(version);
     }
     let tables: i64 = db.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0)).db()?;
@@ -477,9 +536,18 @@ impl Store {
             tx.execute_batch(MIGRATE_V8).db()?;
             tx.pragma_update(None, "user_version", 8).db()?;
         }
+        if version < 9 {
+            tx.execute_batch(MIGRATE_V9).db()?;
+            tx.pragma_update(None, "user_version", 9).db()?;
+        }
+        if version < 10 {
+            tx.execute_batch(MIGRATE_V10).db()?;
+            tx.pragma_update(None, "user_version", 10).db()?;
+        }
         tx.query_row("SELECT 1 FROM settings,agents WHERE singleton=1 AND name='default'", [], |_| Ok(())).db()?;
         // Reject missing schema in the same transaction as the migration.
         tx.prepare(&format!("{TASK_VIEW} LIMIT 0")).db()?;
+        tx.prepare("SELECT active_provider FROM settings LIMIT 0").db()?;
         tx.prepare("SELECT role,content,meta FROM messages LIMIT 0").db()?;
         tx.prepare("SELECT role,content,meta FROM node_messages LIMIT 0").db()?;
         tx.prepare(
@@ -487,12 +555,15 @@ impl Store {
         )
         .db()?;
         tx.prepare("SELECT provider,model,effort FROM model_overrides LIMIT 0").db()?;
-        tx.prepare("SELECT root,model,effort FROM root_model_settings LIMIT 0").db()?;
+        tx.prepare("SELECT root,provider,model,effort FROM root_model_settings LIMIT 0").db()?;
         tx.prepare("SELECT root,round,subtree_root FROM tree_rounds LIMIT 0").db()?;
         tx.prepare(
             "SELECT root,key,kind,content,author_agent,round,version,seq,status,updated_at FROM whiteboard_entries LIMIT 0",
         )
         .db()?;
+        tx.prepare("SELECT batch_id,seq_idx,call_id FROM operations LIMIT 0").db()?;
+        tx.prepare("SELECT plan_json FROM tree_runs LIMIT 0").db()?;
+        tx.prepare("SELECT root,task,text FROM steerings LIMIT 0").db()?;
         tx.commit().db()?;
         Ok(Self { db })
     }
@@ -521,6 +592,17 @@ impl Store {
         })
     }
 
+    pub fn active_provider(&self) -> Result<Option<String>> {
+        self.db.query_row("SELECT active_provider FROM settings WHERE singleton=1", [], |r| r.get(0)).db()
+    }
+
+    pub fn set_active_provider(&mut self, provider: Option<&str>) -> Result<()> {
+        self.transaction(|db| {
+            db.execute("UPDATE settings SET active_provider=?1 WHERE singleton=1", [provider]).db()?;
+            Ok(())
+        })
+    }
+
     /// With no daemon default this returns the provider's raw session overrides.
     pub fn model_settings(&self, provider: &str, default_model: Option<&str>) -> Result<ModelSettings> {
         let mut settings = self
@@ -529,6 +611,7 @@ impl Store {
             .optional()
             .db()?
             .unwrap_or_default();
+        settings.provider = Some(provider.to_owned());
         if settings.model.is_none() {
             settings.model = default_model.map(str::to_owned);
         }
@@ -587,7 +670,22 @@ impl Store {
         staged: bool,
         settings: &ModelSettings,
     ) -> Result<String> {
-        self.create_root(agent, prompt, check, review, staged, Some(settings))
+        let sandbox = if staged { SandboxMode::Staged } else { SandboxMode::Direct };
+        self.submit_with_full_options(agent, prompt, check, review, sandbox, settings, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_with_full_options(
+        &mut self,
+        agent: &str,
+        prompt: &str,
+        check: Option<&str>,
+        review: bool,
+        sandbox: SandboxMode,
+        settings: &ModelSettings,
+        context_prefix: Option<&str>,
+    ) -> Result<String> {
+        self.create_root(agent, prompt, check, review, sandbox, Some(settings), context_prefix)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -610,6 +708,21 @@ impl Store {
         review: bool,
         staged: bool,
         settings: &ModelSettings,
+    ) -> Result<(String, String)> {
+        let sandbox = if staged { SandboxMode::Staged } else { SandboxMode::Direct };
+        self.continue_tree_with_full_options(target_id, prompt, check, review, sandbox, settings, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn continue_tree_with_full_options(
+        &mut self,
+        target_id: &str,
+        prompt: &str,
+        check: Option<&str>,
+        review: bool,
+        sandbox: SandboxMode,
+        settings: &ModelSettings,
+        context_prefix: Option<&str>,
     ) -> Result<(String, String)> {
         nonempty(prompt, "prompt")?;
         if let Some(c) = check {
@@ -680,13 +793,13 @@ impl Store {
             .db()?;
             db.execute(
                 "UPDATE root_policies SET policy=?2,sandbox=?3 WHERE root=?1",
-                params![root, if review { "review" } else { "auto" }, if staged { "staged" } else { "direct" }],
+                params![root, if review { "review" } else { "auto" }, sandbox.as_str()],
             )
             .db()?;
             db.execute(
-                "INSERT INTO root_model_settings(root,model,effort) VALUES (?1,?2,?3)
-                 ON CONFLICT(root) DO UPDATE SET model=excluded.model,effort=excluded.effort",
-                params![root, settings.model, settings.effort],
+                "INSERT INTO root_model_settings(root,provider,model,effort) VALUES (?1,?2,?3,?4)
+                 ON CONFLICT(root) DO UPDATE SET provider=excluded.provider,model=excluded.model,effort=excluded.effort",
+                params![root, settings.provider, settings.model, settings.effort],
             )
             .db()?;
             db.execute(
@@ -695,6 +808,14 @@ impl Store {
                 params![node_id, next_round, prompt, check],
             )
             .db()?;
+            if let Some(cp) = context_prefix {
+                let has_msgs: bool = db
+                    .query_row("SELECT EXISTS(SELECT 1 FROM node_messages WHERE task=?1)", [&node_id], |r| r.get(0))
+                    .db()?;
+                if !has_msgs {
+                    node_message(db, &node_id, "user", cp)?;
+                }
+            }
             db.execute(
                 "INSERT INTO tree_rounds(root,round,subtree_root,prompt,check_command) VALUES (?1,?2,?3,?4,?5)",
                 params![root, next_round, node_id, prompt, check],
@@ -704,14 +825,16 @@ impl Store {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_root(
         &mut self,
         agent: &str,
         prompt: &str,
         check: Option<&str>,
         review: bool,
-        staged: bool,
+        sandbox: SandboxMode,
         tree_settings: Option<&ModelSettings>,
+        context_prefix: Option<&str>,
     ) -> Result<String> {
         nonempty(prompt, "prompt")?;
         if let Some(c) = check {
@@ -721,13 +844,13 @@ impl Store {
             check_member(db, agent)?;
             let task = id();
             db.execute(
-                "INSERT INTO tasks(id,root,agent,prompt,status,check_command) VALUES (?1,?1,?2,?3,'queued',?4)",
-                params![task, agent, prompt, check],
+                "INSERT INTO tasks(id,root,agent,prompt,handoff_context,status,check_command) VALUES (?1,?1,?2,?3,?4,'queued',?5)",
+                params![task, agent, prompt, context_prefix, check],
             )
             .db()?;
             db.execute(
                 "INSERT INTO root_policies(root,policy,sandbox) VALUES (?1,?2,?3)",
-                params![task, if review { "review" } else { "auto" }, if staged { "staged" } else { "direct" }],
+                params![task, if review { "review" } else { "auto" }, sandbox.as_str()],
             )
             .db()?;
             if let Some(settings) = tree_settings {
@@ -742,8 +865,8 @@ impl Store {
                 )
                 .db()?;
                 db.execute(
-                    "INSERT INTO root_model_settings(root,model,effort) VALUES (?1,?2,?3)",
-                    params![task, settings.model, settings.effort],
+                    "INSERT INTO root_model_settings(root,provider,model,effort) VALUES (?1,?2,?3,?4)",
+                    params![task, settings.provider, settings.model, settings.effort],
                 )
                 .db()?;
             }
@@ -865,11 +988,43 @@ impl Store {
                 task["whiteboard_seq"] = json!(wb_seq);
                 task["whiteboard"] = Value::Array(wb_entries);
             }
+            if task["kind"] != "legacy" {
+                if let Some(root_id) = task["root"].as_str().map(str::to_owned) {
+                    let plan_raw: Option<String> = tx
+                        .query_row("SELECT plan_json FROM tree_runs WHERE root=?1", [&root_id], |r| r.get(0))
+                        .optional()
+                        .db()?
+                        .flatten();
+                    if let Some(raw) = plan_raw {
+                        if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+                            task["plan"] = v;
+                        }
+                    }
+                    let steer_cnt: i64 =
+                        tx.query_row("SELECT count(*) FROM steerings WHERE root=?1", [&root_id], |r| r.get(0)).db()?;
+                    if steer_cnt > 0 {
+                        task["pending_steerings"] = json!(steer_cnt);
+                    }
+                }
+            }
             // User status only. Omit tool results and edit bodies, and bound even a single-line command.
-            let mut q = tx.prepare("SELECT t.id,t.agent,json_extract(o.action,'$.op'),
-                substr(CASE json_extract(o.action,'$.op') WHEN 'shell' THEN json_extract(o.action,'$.command')
-                    WHEN 'verify' THEN json_extract(o.action,'$.command') ELSE json_extract(o.action,'$.path') END,1,120),o.ok
-                FROM tasks t JOIN operations o ON o.task=t.id WHERE t.root=?1 AND o.state='done' ORDER BY o.rowid").db()?;
+            let mut q = tx
+                .prepare(
+                    "SELECT t.id,t.agent,json_extract(o.action,'$.op'),
+                COALESCE(substr(CASE json_extract(o.action,'$.op')
+                    WHEN 'shell' THEN json_extract(o.action,'$.command')
+                    WHEN 'verify' THEN json_extract(o.action,'$.command')
+                    WHEN 'apply_patch' THEN 'patch'
+                    WHEN 'grep_files' THEN json_extract(o.action,'$.pattern')
+                    WHEN 'list_dir' THEN COALESCE(json_extract(o.action,'$.path'), '.')
+                    WHEN 'read_skill' THEN json_extract(o.action,'$.name')
+                    WHEN 'mcp_list' THEN COALESCE(json_extract(o.action,'$.server'), 'all')
+                    WHEN 'mcp_call' THEN COALESCE(json_extract(o.action,'$.server'),'') || ':' || COALESCE(json_extract(o.action,'$.tool'),'')
+                    WHEN 'update_plan' THEN 'plan'
+                    ELSE json_extract(o.action,'$.path') END, 1, 120), ''),o.ok
+                FROM tasks t JOIN operations o ON o.task=t.id WHERE t.root=?1 AND o.state='done' ORDER BY o.rowid",
+                )
+                .db()?;
             let receipts = q
                 .query_map([id], |r| {
                     Ok(json!({"task":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,
@@ -996,6 +1151,22 @@ impl Store {
                         message(db, &agent, "user", &text)?;
                     }
                     message(db, &agent, "user", &prompt)?;
+                }
+            }
+            if is_tree {
+                let queued_steers: Vec<String> = {
+                    let mut sq = db
+                        .prepare(
+                            "SELECT text FROM steerings WHERE root=?1 AND (task IS NULL OR task=?2) ORDER BY rowid",
+                        )
+                        .db()?;
+                    let rows = sq.query_map(params![root, task], |r| r.get::<_, String>(0)).db()?;
+                    rows.collect::<rusqlite::Result<_>>().db()?
+                };
+                if !queued_steers.is_empty() {
+                    db.execute("DELETE FROM steerings WHERE root=?1 AND (task IS NULL OR task=?2)", params![root, task])
+                        .db()?;
+                    node_message(db, &task, "user", &json!({"steering":true,"messages":queued_steers}).to_string())?;
                 }
             }
             let mut messages: Vec<Value> = if is_tree {
@@ -1250,23 +1421,76 @@ impl Store {
     }
 
     pub fn request_tool_with_meta(&mut self, task: &str, action: &Value, meta: Option<&Value>) -> Result<()> {
-        let op = field(action, "op")?;
-        match op {
-            "read_file" => {
-                nonempty(field(action, "path")?, "path")?;
-            }
-            "edit_file" => {
-                nonempty(field(action, "path")?, "path")?;
-                field(action, "old")?;
-                field(action, "new")?;
-            }
-            "shell" => {
-                nonempty(field(action, "command")?, "command")?;
-            }
-            _ => return Err("not a model-requestable local tool".into()),
+        let output = ModelOutput::single(action.clone(), meta.cloned(), None);
+        self.apply_model_output(task, &output)
+    }
+
+    pub fn apply_model_output(&mut self, task: &str, output: &ModelOutput) -> Result<()> {
+        if output.actions.is_empty() {
+            return Err("expected at least one model action".into());
         }
+        if output.actions.len() == 1 {
+            let ma = &output.actions[0];
+            let op = field(&ma.action, "op")?;
+            if op == "update_plan" {
+                let plan_val = validate_update_plan(&ma.action)?;
+                let plan_str = plan_val.to_string();
+                return self.transaction(|db| {
+                    let agent = take_model(db, task)?;
+                    if let Some(root) = tree::work_root(db, task)? {
+                        db.execute("UPDATE tree_runs SET plan_json=?2 WHERE root=?1", params![root, plan_str]).db()?;
+                        node_message_with_meta(db, task, "assistant", &ma.action.to_string(), output.meta.as_ref())?;
+                    } else {
+                        message_with_meta(db, &agent, "assistant", &ma.action.to_string(), output.meta.as_ref())?;
+                    }
+                    queue(db, task, json!({"task":task,"tool":"update_plan","ok":true,"result":"Plan updated"}))
+                });
+            }
+            if is_local_tool_op(op) {
+                validate_local_tool(&ma.action)?;
+                let ro = is_read_only_local_tool(op);
+                return self.transaction(|db| {
+                    let agent = take_model(db, task)?;
+                    let (auto, round): (bool, i64) = db
+                        .query_row(
+                            "SELECT p.policy='auto', t.round FROM tasks t JOIN root_policies p ON p.root=t.root WHERE t.id=?1",
+                            [task],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .db()?;
+                    if tree::work_root(db, task)?.is_some() {
+                        node_message_with_meta(db, task, "assistant", &ma.action.to_string(), output.meta.as_ref())?;
+                    } else {
+                        message_with_meta(db, &agent, "assistant", &ma.action.to_string(), output.meta.as_ref())?;
+                    }
+                    let state = if auto || ro { "ready" } else { "approval" };
+                    operation_with_meta(db, task, &ma.action, state, round, None, 0, ma.call_id.as_deref())
+                });
+            }
+            return self.apply_with_meta(task, &ma.action, output.meta.as_ref());
+        }
+
+        // Batch of multiple parallel tool calls (`TurnKind::Root | TurnKind::Node`).
+        let mut validated_plans: Vec<Option<String>> = Vec::with_capacity(output.actions.len());
+        let mut raw_actions = Vec::with_capacity(output.actions.len());
+        for ma in &output.actions {
+            let op = field(&ma.action, "op")?;
+            if op == "update_plan" {
+                validated_plans.push(Some(validate_update_plan(&ma.action)?.to_string()));
+            } else if is_local_tool_op(op) {
+                validate_local_tool(&ma.action)?;
+                validated_plans.push(None);
+            } else {
+                return Err(format!("action {op} cannot be batched with other tools"));
+            }
+            raw_actions.push(ma.action.clone());
+        }
+        let assistant_batch = json!({"batch": raw_actions}).to_string();
         self.transaction(|db| {
-            let agent = take_model(db, task)?;
+            let _agent = take_model(db, task)?;
+            let Some(root) = tree::work_root(db, task)? else {
+                return Err("legacy tasks do not support parallel tool batches".into());
+            };
             let (auto, round): (bool, i64) = db
                 .query_row(
                     "SELECT p.policy='auto', t.round FROM tasks t JOIN root_policies p ON p.root=t.root WHERE t.id=?1",
@@ -1274,30 +1498,67 @@ impl Store {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .db()?;
-            if tree::work_root(db, task)?.is_some() {
-                node_message_with_meta(db, task, "assistant", &action.to_string(), meta)?;
-            } else {
-                message_with_meta(db, &agent, "assistant", &action.to_string(), meta)?;
+            node_message_with_meta(db, task, "assistant", &assistant_batch, output.meta.as_ref())?;
+            let batch_id = id();
+            for (idx, (ma, plan_opt)) in output.actions.iter().zip(validated_plans.iter()).enumerate() {
+                if let Some(plan_str) = plan_opt {
+                    db.execute("UPDATE tree_runs SET plan_json=?2 WHERE root=?1", params![root, plan_str]).db()?;
+                    db.execute(
+                        "INSERT INTO operations(id,task,action,state,reserved,ok,result,round,batch_id,seq_idx,call_id)
+                         VALUES (?1,?2,?3,'done',0,1,'Plan updated',?4,?5,?6,?7)",
+                        params![id(), task, ma.action.to_string(), round, batch_id, idx as i64, ma.call_id.as_deref()],
+                    )
+                    .db()?;
+                } else {
+                    let op = ma.action["op"].as_str().unwrap_or("");
+                    let state = if auto || is_read_only_local_tool(op) { "ready" } else { "approval" };
+                    operation_with_meta(
+                        db,
+                        task,
+                        &ma.action,
+                        state,
+                        round,
+                        Some(&batch_id),
+                        idx,
+                        ma.call_id.as_deref(),
+                    )?;
+                }
             }
-            operation(db, task, action, if auto || op == "read_file" { "ready" } else { "approval" }, round)
+            refresh_batch_or_queue(db, task, &batch_id)
         })
     }
 
     pub fn approve(&mut self, approval_id: &str, allow: bool) -> Result<()> {
         self.transaction(|db| {
             let state = if allow { "ready" } else { "denied" };
-            let task: String = db
+            let (task, batch_id): (String, Option<String>) = db
                 .query_row(
-                    "UPDATE operations SET state=?2 WHERE id=?1 AND state='approval' RETURNING task",
+                    "UPDATE operations SET state=?2 WHERE id=?1 AND state='approval' RETURNING task,batch_id",
                     params![approval_id, state],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
                 .db()?
                 .ok_or("no such pending approval")?;
             if allow {
-                db.execute("UPDATE tasks SET status='waiting' WHERE id=?1", [task]).db()?;
+                let more: bool = db
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM operations WHERE task=?1 AND state='approval')",
+                        [&task],
+                        |r| r.get(0),
+                    )
+                    .db()?;
+                let next_status = if more { "approval" } else { "waiting" };
+                db.execute("UPDATE tasks SET status=?2 WHERE id=?1", params![task, next_status]).db()?;
                 Ok(())
+            } else if let Some(bid) = batch_id {
+                db.execute(
+                    "UPDATE operations SET state='denied', result=COALESCE(result,'tool denied by user')
+                     WHERE task=?1 AND batch_id=?2 AND state IN ('approval','ready')",
+                    params![task, bid],
+                )
+                .db()?;
+                refresh_batch_or_queue(db, &task, &bid)
             } else {
                 queue(db, &task, json!({"tool_denied":true}))
             }
@@ -1309,24 +1570,48 @@ impl Store {
             let claimed = db
                 .query_row(
                     "UPDATE operations SET state='started',reserved=1 WHERE rowid=(
-                         SELECT o.rowid FROM operations o WHERE o.state='ready' AND o.reserved=0 ORDER BY o.rowid LIMIT 1
-                     ) RETURNING task,action",
+                         SELECT o.rowid FROM operations o
+                         WHERE o.state='ready' AND o.reserved=0
+                           AND NOT EXISTS (
+                               SELECT 1 FROM operations p
+                               WHERE p.task=o.task AND o.batch_id IS NOT NULL AND p.batch_id=o.batch_id
+                                 AND p.seq_idx < o.seq_idx AND p.state='approval'
+                           )
+                           AND NOT EXISTS (
+                               SELECT 1 FROM operations s
+                               WHERE s.task=o.task AND s.state='started'
+                                 AND COALESCE(json_extract(s.action,'$.op'),'') NOT IN ('read_file','list_dir','grep_files','read_skill','mcp_list')
+                           )
+                           AND (
+                               COALESCE(json_extract(o.action,'$.op'),'') IN ('read_file','list_dir','grep_files','read_skill','mcp_list')
+                               OR (
+                                   NOT EXISTS (SELECT 1 FROM operations s WHERE s.task=o.task AND s.state='started')
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM operations p
+                                       WHERE p.task=o.task AND o.batch_id IS NOT NULL AND p.batch_id=o.batch_id
+                                         AND p.seq_idx < o.seq_idx AND p.state IN ('approval','ready','started')
+                                   )
+                               )
+                           )
+                         ORDER BY o.rowid LIMIT 1
+                     ) RETURNING id,task,action",
                     [],
-                    |r| Ok((r.get::<_, String>(0)?, action_at(r, 1)?)),
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, action_at(r, 2)?)),
                 )
                 .optional()
                 .db()?;
-            let Some((task, action)) = claimed else {
+            let Some((op_id, task, action)) = claimed else {
                 return Ok(None);
             };
-            let staged: bool = db
+            let sb_str: String = db
                 .query_row(
-                    "SELECT COALESCE((SELECT p.sandbox='staged' FROM root_policies p JOIN tasks t ON t.root=p.root WHERE t.id=?1), 0)",
+                    "SELECT COALESCE((SELECT p.sandbox FROM root_policies p JOIN tasks t ON t.root=p.root WHERE t.id=?1), 'direct')",
                     [&task],
                     |r| r.get(0),
                 )
                 .db()?;
-            Ok(Some(ToolJob { task, action, staged }))
+            let sandbox = SandboxMode::parse(&sb_str).unwrap_or(SandboxMode::Direct);
+            Ok(Some(ToolJob { op_id, task, action, sandbox }))
         })
     }
 
@@ -1335,20 +1620,66 @@ impl Store {
         Ok(self.claim_tool_job()?.map(|j| (j.task, j.action)))
     }
 
+    #[cfg(test)]
     pub fn tool_result(&mut self, task: &str, result: std::result::Result<&str, &str>) -> Result<()> {
+        let op_id: String = self
+            .db
+            .query_row(
+                "SELECT id FROM operations WHERE task=?1 AND state='started' ORDER BY rowid LIMIT 1",
+                [task],
+                |r| r.get(0),
+            )
+            .optional()
+            .db()?
+            .ok_or("task has no started tool")?;
+        self.tool_result_op(&op_id, result)
+    }
+
+    pub fn tool_result_op(&mut self, op_id: &str, result: std::result::Result<&str, &str>) -> Result<()> {
         self.transaction(|db| {
-            let (ok,text) = match result { Ok(text) => (true,text), Err(error) => (false,error) };
-            let action = db.query_row("UPDATE operations SET state='done',reserved=0,ok=?2,result=?3 WHERE task=?1 AND state='started' RETURNING action",
-                params![task,ok,text], |r| action_at(r,0)).optional().db()?.ok_or("task has no started tool")?;
+            let (ok, text) = match result {
+                Ok(text) => (true, text),
+                Err(error) => (false, error),
+            };
+            let (task, action, batch_id): (String, Value, Option<String>) = db
+                .query_row(
+                    "UPDATE operations SET state='done',reserved=0,ok=?2,result=?3 WHERE id=?1 AND state='started' RETURNING task,action,batch_id",
+                    params![op_id, ok, text],
+                    |r| Ok((r.get(0)?, action_at(r, 1)?, r.get(2)?)),
+                )
+                .optional()
+                .db()?
+                .ok_or("operation is not active")?;
             if action["op"] == "verify" {
-                if let Some(root) = tree::work_root(db, task)? {
+                if let Some(root) = tree::work_root(db, &task)? {
                     tree::finish_check(db, &root, ok, text)
                 } else {
-                    finish_check(db, task, ok, text)
+                    finish_check(db, &task, ok, text)
                 }
+            } else if let Some(bid) = batch_id {
+                refresh_batch_or_queue(db, &task, &bid)
             } else {
-                queue(db, task, json!({"task":task,"tool":action["op"],"ok":ok,"result":text}))
+                queue(db, &task, json!({"task":task,"tool":action["op"],"ok":ok,"result":text}))
             }
+        })
+    }
+
+    pub fn discard_late_tool_op(&mut self, op_id: &str) -> Result<bool> {
+        self.transaction(|db| {
+            let stale: bool = db
+                .query_row(
+                    "SELECT CASE WHEN EXISTS(SELECT 1 FROM operations WHERE id=?1) THEN
+                        EXISTS(SELECT 1 FROM operations o JOIN tasks t ON t.id=o.task
+                               WHERE o.id=?1 AND (o.state<>'started' OR t.status IN ('cancelled','failed','unknown')))
+                     ELSE 1 END",
+                    [op_id],
+                    |r| r.get(0),
+                )
+                .db()?;
+            if stale {
+                db.execute("UPDATE operations SET reserved=0 WHERE id=?1 AND state='unknown'", [op_id]).db()?;
+            }
+            Ok(stale)
         })
     }
 
@@ -1411,6 +1742,7 @@ impl Store {
                 rows.collect::<rusqlite::Result<_>>().db()?
             };
             db.execute("DELETE FROM clarifications WHERE root=?1", [&root]).db()?;
+            db.execute("DELETE FROM steerings WHERE root=?1", [&root]).db()?;
             db.execute("DELETE FROM whiteboard_entries WHERE root=?1", [&root]).db()?;
             db.execute("DELETE FROM tree_rounds WHERE root=?1", [&root]).db()?;
             db.execute("DELETE FROM root_model_settings WHERE root=?1", [&root]).db()?;
@@ -1473,6 +1805,39 @@ impl Store {
         })
     }
 
+    pub fn steer(&mut self, task_or_root: &str, text: &str) -> Result<Value> {
+        nonempty(text, "steering text")?;
+        self.transaction(|db| {
+            let root: String = db
+                .query_row("SELECT root FROM tasks WHERE id=?1", [task_or_root], |r| r.get(0))
+                .optional()
+                .db()?
+                .ok_or_else(|| format!("unknown task: {task_or_root}"))?;
+            let row: Option<(String, Option<String>)> = db
+                .query_row("SELECT phase,question FROM tree_runs WHERE root=?1", [&root], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()
+                .db()?;
+            let Some((phase, question)) = row else {
+                return Err("legacy tasks do not support mid-turn steering".into());
+            };
+            if phase == "complete" {
+                return Err("session has already settled; send follow-up input to continue instead".into());
+            }
+            if question.is_some() {
+                return Err("session is waiting for clarification; use answer instead".into());
+            }
+            let target_task = (task_or_root != root).then_some(task_or_root);
+            db.execute(
+                "INSERT INTO steerings(id,root,task,text,created_at) VALUES (?1,?2,?3,?4,?5)",
+                params![id(), root, target_task, text.trim(), unix_secs_now()],
+            )
+            .db()?;
+            Ok(json!({"ok":true,"root":root,"task":task_or_root}))
+        })
+    }
+
     pub fn prepare_compaction(&mut self, task: &str) -> Result<Option<CompactionJob>> {
         self.transaction(|db| {
             if tree::report_root(db, task)?.is_some() {
@@ -1490,40 +1855,10 @@ impl Store {
             let Some((root, agent, is_tree)) = row else {
                 return Ok(None);
             };
-            let history: Vec<Value> = if is_tree {
-                let mut q = db.prepare("SELECT role,content FROM node_messages WHERE task=?1 ORDER BY rowid").db()?;
-                let rows = q
-                    .query_map([task], |r| Ok(json!({"role":r.get::<_,String>(0)?,"content":r.get::<_,String>(1)?})))
-                    .db()?;
-                rows.collect::<rusqlite::Result<_>>().db()?
-            } else {
-                let mut q = db.prepare("SELECT role,content FROM messages WHERE agent=?1 ORDER BY rowid").db()?;
-                let rows = q
-                    .query_map([&agent], |r| Ok(json!({"role":r.get::<_,String>(0)?,"content":r.get::<_,String>(1)?})))
-                    .db()?;
-                rows.collect::<rusqlite::Result<_>>().db()?
+            let history = load_compaction_history(db, task, &agent, is_tree)?;
+            let Some((head_keep, tail_keep, mid_end)) = compute_compaction_slice(&history) else {
+                return Ok(None);
             };
-            let len = history.len();
-            if len < 4 {
-                return Ok(None);
-            }
-            let mut head_keep = 2usize.min(len.saturating_sub(2));
-            if head_keep > 1 && history[head_keep - 1]["role"] == "assistant" {
-                head_keep -= 1;
-            }
-            let mut tail_keep = if len >= 10 { 6 } else { 2.min(len.saturating_sub(head_keep + 2)) };
-            let mut mid_end = len.saturating_sub(tail_keep);
-            if tail_keep > 1
-                && mid_end > 0
-                && history[mid_end - 1]["role"] == "assistant"
-                && history[mid_end]["role"] == "user"
-            {
-                tail_keep -= 1;
-                mid_end = len.saturating_sub(tail_keep);
-            }
-            if mid_end <= head_keep + 1 {
-                return Ok(None);
-            }
             let settings = root_model_settings(db, &root)?;
             Ok(Some(CompactionJob {
                 task: task.to_owned(),
@@ -1535,70 +1870,198 @@ impl Store {
             }))
         })
     }
+}
+
+fn compute_compaction_slice(history: &[Value]) -> Option<(usize, usize, usize)> {
+    let len = history.len();
+    if len < 4 {
+        return None;
+    }
+    let mut head_keep = 2usize.min(len.saturating_sub(2));
+    if head_keep > 1 && history[head_keep - 1]["role"] == "assistant" {
+        head_keep -= 1;
+    }
+    let mut tail_keep = if len >= 10 { 6 } else { 2.min(len.saturating_sub(head_keep + 2)) };
+    let mut mid_end = len.saturating_sub(tail_keep);
+    if tail_keep > 1 && mid_end > 0 && history[mid_end - 1]["role"] == "assistant" && history[mid_end]["role"] == "user"
+    {
+        tail_keep -= 1;
+        mid_end = len.saturating_sub(tail_keep);
+    }
+    if mid_end <= head_keep + 1 {
+        return None;
+    }
+    Some((head_keep, tail_keep, mid_end))
+}
+
+fn load_compaction_history(db: &Connection, task: &str, agent: &str, is_tree: bool) -> Result<Vec<Value>> {
+    if is_tree {
+        let mut q = db.prepare("SELECT role,content FROM node_messages WHERE task=?1 ORDER BY rowid").db()?;
+        let rows =
+            q.query_map([task], |r| Ok(json!({"role":r.get::<_,String>(0)?,"content":r.get::<_,String>(1)?}))).db()?;
+        rows.collect::<rusqlite::Result<_>>().db()
+    } else {
+        let mut q = db.prepare("SELECT role,content FROM messages WHERE agent=?1 ORDER BY rowid").db()?;
+        let rows =
+            q.query_map([agent], |r| Ok(json!({"role":r.get::<_,String>(0)?,"content":r.get::<_,String>(1)?}))).db()?;
+        rows.collect::<rusqlite::Result<_>>().db()
+    }
+}
+
+fn rewrite_compacted_history(
+    db: &Connection,
+    task: &str,
+    agent: &str,
+    head_keep: usize,
+    tail_keep: usize,
+    summary: &str,
+) -> Result<()> {
+    let is_tree = tree::work_root(db, task)?.is_some();
+    let history: Vec<(String, String, Option<String>)> = if is_tree {
+        let mut q = db.prepare("SELECT role,content,meta FROM node_messages WHERE task=?1 ORDER BY rowid").db()?;
+        let rows = q.query_map([task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).db()?;
+        rows.collect::<rusqlite::Result<_>>().db()?
+    } else {
+        let mut q = db.prepare("SELECT role,content,meta FROM messages WHERE agent=?1 ORDER BY rowid").db()?;
+        let rows = q.query_map([agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).db()?;
+        rows.collect::<rusqlite::Result<_>>().db()?
+    };
+    let len = history.len();
+    let tail_start = len.saturating_sub(tail_keep).max(head_keep);
+    let dropped = tail_start.saturating_sub(head_keep);
+    let checkpoint = json!({
+        "compacted_history": true,
+        "dropped_messages": dropped,
+        "summary": summary
+    })
+    .to_string();
+    if is_tree {
+        db.execute("DELETE FROM node_messages WHERE task=?1", [task]).db()?;
+        for (role, content, meta) in &history[..head_keep.min(len)] {
+            db.execute(
+                "INSERT INTO node_messages(task,role,content,meta) VALUES (?1,?2,?3,?4)",
+                params![task, role, content, meta],
+            )
+            .db()?;
+        }
+        node_message(db, task, "user", &checkpoint)?;
+        for (role, content, meta) in &history[tail_start..] {
+            db.execute(
+                "INSERT INTO node_messages(task,role,content,meta) VALUES (?1,?2,?3,?4)",
+                params![task, role, content, meta],
+            )
+            .db()?;
+        }
+    } else {
+        db.execute("DELETE FROM messages WHERE agent=?1", [agent]).db()?;
+        for (role, content, meta) in &history[..head_keep.min(len)] {
+            db.execute(
+                "INSERT INTO messages(agent,role,content,meta) VALUES (?1,?2,?3,?4)",
+                params![agent, role, content, meta],
+            )
+            .db()?;
+        }
+        message(db, agent, "user", &checkpoint)?;
+        for (role, content, meta) in &history[tail_start..] {
+            db.execute(
+                "INSERT INTO messages(agent,role,content,meta) VALUES (?1,?2,?3,?4)",
+                params![agent, role, content, meta],
+            )
+            .db()?;
+        }
+    }
+    Ok(())
+}
+
+impl Store {
+    pub fn prepare_manual_compaction(&mut self, task_or_root: &str) -> Result<CompactionJob> {
+        self.transaction(|db| {
+            let root: String = db
+                .query_row("SELECT root FROM tasks WHERE id=?1", [task_or_root], |r| r.get(0))
+                .optional()
+                .db()?
+                .ok_or_else(|| format!("unknown task: {task_or_root}"))?;
+            let tree_info: Option<(String, Option<String>)> = db
+                .query_row("SELECT phase,continuation_node FROM tree_runs WHERE root=?1", [&root], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()
+                .db()?;
+            let target = match &tree_info {
+                Some((phase, cont)) => {
+                    if phase == "reporting" {
+                        return Err("cannot compact while reporter is running".into());
+                    }
+                    if task_or_root == root && phase == "complete" {
+                        cont.clone().unwrap_or_else(|| task_or_root.to_owned())
+                    } else {
+                        task_or_root.to_owned()
+                    }
+                }
+                None => task_or_root.to_owned(),
+            };
+            let (agent, model_busy): (String, bool) = db
+                .query_row("SELECT agent,model_reserved FROM tasks WHERE id=?1", [&target], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .db()?;
+            let op_busy: bool = db
+                .query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE task=?1 AND reserved=1)", [&target], |r| {
+                    r.get(0)
+                })
+                .db()?;
+            if model_busy || op_busy {
+                return Err("cannot compact while a turn or tool operation is in flight".into());
+            }
+            let is_tree = tree_info.is_some();
+            let history = load_compaction_history(db, &target, &agent, is_tree)?;
+            let (head_keep, tail_keep, mid_end) =
+                compute_compaction_slice(&history).ok_or("conversation history is too short to compact yet")?;
+            db.execute("UPDATE tasks SET model_reserved=1 WHERE id=?1", [&target]).db()?;
+            let settings = root_model_settings(db, &root)?;
+            Ok(CompactionJob {
+                task: target,
+                agent,
+                head_keep,
+                tail_keep,
+                middle: history[head_keep..mid_end].to_vec(),
+                settings,
+            })
+        })
+    }
 
     pub fn apply_compaction(&mut self, task: &str, head_keep: usize, tail_keep: usize, summary: &str) -> Result<()> {
         self.transaction(|db| {
             let agent = take_model(db, task)?;
-            let is_tree = tree::work_root(db, task)?.is_some();
-            let history: Vec<(String, String, Option<String>)> = if is_tree {
-                let mut q =
-                    db.prepare("SELECT role,content,meta FROM node_messages WHERE task=?1 ORDER BY rowid").db()?;
-                let rows = q.query_map([task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).db()?;
-                rows.collect::<rusqlite::Result<_>>().db()?
-            } else {
-                let mut q = db.prepare("SELECT role,content,meta FROM messages WHERE agent=?1 ORDER BY rowid").db()?;
-                let rows = q.query_map([&agent], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).db()?;
-                rows.collect::<rusqlite::Result<_>>().db()?
-            };
-            let len = history.len();
-            let tail_start = len.saturating_sub(tail_keep).max(head_keep);
-            let dropped = tail_start.saturating_sub(head_keep);
-            let checkpoint = json!({
-                "compacted_history": true,
-                "dropped_messages": dropped,
-                "summary": summary
-            })
-            .to_string();
-            if is_tree {
-                db.execute("DELETE FROM node_messages WHERE task=?1", [task]).db()?;
-                for (role, content, meta) in &history[..head_keep.min(len)] {
-                    db.execute(
-                        "INSERT INTO node_messages(task,role,content,meta) VALUES (?1,?2,?3,?4)",
-                        params![task, role, content, meta],
-                    )
-                    .db()?;
-                }
-                node_message(db, task, "user", &checkpoint)?;
-                for (role, content, meta) in &history[tail_start..] {
-                    db.execute(
-                        "INSERT INTO node_messages(task,role,content,meta) VALUES (?1,?2,?3,?4)",
-                        params![task, role, content, meta],
-                    )
-                    .db()?;
-                }
-            } else {
-                db.execute("DELETE FROM messages WHERE agent=?1", [&agent]).db()?;
-                for (role, content, meta) in &history[..head_keep.min(len)] {
-                    db.execute(
-                        "INSERT INTO messages(agent,role,content,meta) VALUES (?1,?2,?3,?4)",
-                        params![&agent, role, content, meta],
-                    )
-                    .db()?;
-                }
-                message(db, &agent, "user", &checkpoint)?;
-                for (role, content, meta) in &history[tail_start..] {
-                    db.execute(
-                        "INSERT INTO messages(agent,role,content,meta) VALUES (?1,?2,?3,?4)",
-                        params![&agent, role, content, meta],
-                    )
-                    .db()?;
-                }
-            }
+            rewrite_compacted_history(db, task, &agent, head_keep, tail_keep, summary)?;
             db.execute(
                 "UPDATE tasks SET status='queued', last_input_tokens=0, last_history_bytes=0 WHERE id=?1",
                 [task],
             )
             .db()?;
+            Ok(())
+        })
+    }
+
+    pub fn apply_manual_compaction(
+        &mut self,
+        task: &str,
+        head_keep: usize,
+        tail_keep: usize,
+        summary: &str,
+    ) -> Result<()> {
+        self.transaction(|db| {
+            let agent: String = db
+                .query_row(
+                    "UPDATE tasks SET model_reserved=0 WHERE id=?1 AND model_reserved=1 RETURNING agent",
+                    [task],
+                    |r| r.get(0),
+                )
+                .optional()
+                .db()?
+                .ok_or("manual compaction reservation was lost")?;
+            rewrite_compacted_history(db, task, &agent, head_keep, tail_keep, summary)?;
+            db.execute("UPDATE tasks SET last_input_tokens=0, last_history_bytes=0 WHERE id=?1", [task]).db()?;
             Ok(())
         })
     }
@@ -1616,7 +2079,11 @@ impl Store {
                 let rows = q.query_map([], |r| r.get::<_, String>(0)).db()?;
                 rows.collect::<rusqlite::Result<Vec<_>>>().db()?
             };
+            let mut seen_lost = HashSet::new();
             for task in lost {
+                if !seen_lost.insert(task.clone()) {
+                    continue;
+                }
                 if let Some(root) = tree::work_root(db, &task)? {
                     tree::lost_operation(db, &root, &task)?;
                 } else {
@@ -1634,6 +2101,129 @@ impl Store {
             tree::recover_reports(db)
         })
     }
+}
+
+fn is_read_only_local_tool(op: &str) -> bool {
+    matches!(op, "read_file" | "list_dir" | "grep_files" | "read_skill" | "mcp_list")
+}
+
+fn is_local_tool_op(op: &str) -> bool {
+    is_read_only_local_tool(op) || matches!(op, "edit_file" | "apply_patch" | "shell" | "mcp_call")
+}
+
+fn validate_local_tool(action: &Value) -> Result<()> {
+    match field(action, "op")? {
+        "read_file" => {
+            nonempty(field(action, "path")?, "path")?;
+        }
+        "list_dir" => {
+            if let Some(p) = action.get("path").filter(|v| !v.is_null()) {
+                nonempty(p.as_str().ok_or("expected string field path")?, "path")?;
+            }
+        }
+        "grep_files" => {
+            nonempty(field(action, "pattern")?, "pattern")?;
+        }
+        "edit_file" => {
+            nonempty(field(action, "path")?, "path")?;
+            field(action, "old")?;
+            field(action, "new")?;
+        }
+        "apply_patch" => {
+            nonempty(field(action, "patch")?, "patch")?;
+        }
+        "shell" => {
+            nonempty(field(action, "command")?, "command")?;
+        }
+        "read_skill" => {
+            nonempty(field(action, "name")?, "name")?;
+        }
+        "mcp_list" => {
+            if let Some(s) = action.get("server").filter(|v| !v.is_null()) {
+                nonempty(s.as_str().ok_or("expected string field server")?, "server")?;
+            }
+        }
+        "mcp_call" => {
+            nonempty(field(action, "server")?, "server")?;
+            nonempty(field(action, "tool")?, "tool")?;
+        }
+        _ => return Err("not a model-requestable local tool".into()),
+    }
+    Ok(())
+}
+
+fn validate_update_plan(action: &Value) -> Result<Value> {
+    let items = action.get("plan").and_then(Value::as_array).ok_or("update_plan requires plan array")?;
+    if items.is_empty() || items.len() > 32 {
+        return Err("update_plan requires 1 to 32 steps".into());
+    }
+    let mut in_progress = 0usize;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let step = nonempty(item.get("step").and_then(Value::as_str).ok_or("plan step must be string")?, "plan step")?;
+        let status = item.get("status").and_then(Value::as_str).ok_or("plan status must be string")?;
+        if !matches!(status, "pending" | "in_progress" | "completed") {
+            return Err("plan step status must be pending, in_progress, or completed".into());
+        }
+        if status == "in_progress" {
+            in_progress += 1;
+            if in_progress > 1 {
+                return Err("update_plan allows at most one in_progress step".into());
+            }
+        }
+        out.push(json!({"step": step, "status": status}));
+    }
+    Ok(Value::Array(out))
+}
+
+fn refresh_batch_or_queue(db: &Connection, task: &str, batch_id: &str) -> Result<()> {
+    let (approval_cnt, active_cnt): (i64, i64) = db
+        .query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN state='approval' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN state IN ('approval','ready','started') THEN 1 ELSE 0 END), 0)
+             FROM operations WHERE task=?1 AND batch_id=?2",
+            params![task, batch_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .db()?;
+    if approval_cnt > 0 {
+        db.execute("UPDATE tasks SET status='approval' WHERE id=?1", [task]).db()?;
+        return Ok(());
+    }
+    if active_cnt > 0 {
+        db.execute("UPDATE tasks SET status='waiting' WHERE id=?1", [task]).db()?;
+        return Ok(());
+    }
+    let mut q = db
+        .prepare("SELECT action,state,ok,result FROM operations WHERE task=?1 AND batch_id=?2 ORDER BY seq_idx,rowid")
+        .db()?;
+    let rows = q
+        .query_map(params![task, batch_id], |r| {
+            Ok((action_at(r, 0)?, r.get::<_, String>(1)?, r.get::<_, Option<bool>>(2)?, r.get::<_, Option<String>>(3)?))
+        })
+        .db()?;
+    let mut results = Vec::new();
+    for row in rows {
+        let (action, state, ok, res) = row.db()?;
+        let item = if state == "denied" {
+            json!({
+                "task": task,
+                "tool": action["op"],
+                "ok": false,
+                "result": res.unwrap_or_else(|| "tool denied by user".into())
+            })
+        } else {
+            json!({
+                "task": task,
+                "tool": action["op"],
+                "ok": ok.unwrap_or(false),
+                "result": res.unwrap_or_default()
+            })
+        };
+        results.push(item);
+    }
+    queue(db, task, json!({"batch_results": results}))
 }
 
 fn release_reservations(db: &Connection, task: &str) -> Result<()> {
@@ -1680,11 +2270,16 @@ const TASK_VIEW: &str = "SELECT t.id,t.root,t.parent,t.agent,
     LEFT JOIN tree_runs g ON g.root=t.root
     LEFT JOIN tasks at ON at.id=g.active_root
     LEFT JOIN tasks cn ON cn.id=g.continuation_node
-    LEFT JOIN operations o ON (
-        (o.task=t.id AND o.round=t.round)
-        OR (g.root IS NOT NULL AND t.id=g.root AND COALESCE(g.active_root,g.root)<>g.root
-            AND o.task=g.active_root AND o.round=g.round AND json_extract(o.action,'$.op')='verify')
-    ) AND o.state IN ('approval','ready','started','unknown')";
+    LEFT JOIN operations o ON o.id = (
+        SELECT o2.id FROM operations o2
+        WHERE (
+            (o2.task=t.id AND o2.round=t.round)
+            OR (g.root IS NOT NULL AND t.id=g.root AND COALESCE(g.active_root,g.root)<>g.root
+                AND o2.task=g.active_root AND o2.round=g.round AND json_extract(o2.action,'$.op')='verify')
+        ) AND o2.state IN ('approval','ready','started','unknown')
+        ORDER BY CASE o2.state WHEN 'approval' THEN 0 WHEN 'unknown' THEN 1 WHEN 'started' THEN 2 ELSE 3 END, o2.seq_idx, o2.rowid
+        LIMIT 1
+    )";
 
 fn action_at(row: &Row<'_>, col: usize) -> rusqlite::Result<Value> {
     let serialized: Option<String> = row.get(col)?;

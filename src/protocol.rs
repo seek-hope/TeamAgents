@@ -1,10 +1,14 @@
 //! Typed wire projections, daemon client, sanitization, and clarification safety tracker.
-use crate::{daemon, Result};
+use crate::{context::SkillEntry, daemon, patch::preview_patch, sandbox::SandboxMode, Result};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     env,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,6 +161,12 @@ impl StageKind {
 pub(crate) enum ActionPreview {
     ReadFile { path: String, offset: Option<u64>, limit: Option<u64> },
     EditFile { path: String, old: String, new: String },
+    ApplyPatch { patch: String },
+    ListDir { path: String },
+    GrepFiles { pattern: String, path: Option<String> },
+    ReadSkill { name: String },
+    McpList { server: Option<String> },
+    McpCall { server: String, tool: String },
     Shell { command: String, timeout_ms: Option<u64> },
     Verify { command: String },
     Other { op: String, summary: String },
@@ -179,6 +189,18 @@ impl ActionPreview {
                 old: value["old"].as_str().unwrap_or("").to_owned(),
                 new: value["new"].as_str().unwrap_or("").to_owned(),
             },
+            "apply_patch" => Self::ApplyPatch { patch: value["patch"].as_str().unwrap_or("").to_owned() },
+            "list_dir" => Self::ListDir { path: value.get("path").and_then(Value::as_str).unwrap_or(".").to_owned() },
+            "grep_files" => Self::GrepFiles {
+                pattern: value["pattern"].as_str().unwrap_or("").to_owned(),
+                path: value.get("path").and_then(Value::as_str).map(str::to_owned),
+            },
+            "read_skill" => Self::ReadSkill { name: value["name"].as_str().unwrap_or("?").to_owned() },
+            "mcp_list" => Self::McpList { server: value.get("server").and_then(Value::as_str).map(str::to_owned) },
+            "mcp_call" => Self::McpCall {
+                server: value["server"].as_str().unwrap_or("?").to_owned(),
+                tool: value["tool"].as_str().unwrap_or("?").to_owned(),
+            },
             "shell" => Self::Shell {
                 command: value["command"].as_str().unwrap_or("").to_owned(),
                 timeout_ms: value.get("timeout_ms").and_then(Value::as_u64),
@@ -192,17 +214,33 @@ impl ActionPreview {
         match self {
             Self::ReadFile { .. } => "read_file",
             Self::EditFile { .. } => "edit_file",
+            Self::ApplyPatch { .. } => "apply_patch",
+            Self::ListDir { .. } => "list_dir",
+            Self::GrepFiles { .. } => "grep_files",
+            Self::ReadSkill { .. } => "read_skill",
+            Self::McpList { .. } => "mcp_list",
+            Self::McpCall { .. } => "mcp_call",
             Self::Shell { .. } => "shell",
             Self::Verify { .. } => "verify",
             Self::Other { op, .. } => op.as_str(),
         }
     }
 
-    pub fn label(&self) -> &str {
+    pub fn label(&self) -> String {
         match self {
-            Self::ReadFile { path, .. } | Self::EditFile { path, .. } => path.as_str(),
-            Self::Shell { command, .. } | Self::Verify { command } => command.as_str(),
-            Self::Other { summary, .. } => summary.as_str(),
+            Self::ReadFile { path, .. } | Self::EditFile { path, .. } | Self::ListDir { path } => path.clone(),
+            Self::ApplyPatch { patch } => {
+                preview_patch(patch).into_iter().find(|(k, _)| *k == 'H').map_or_else(|| "patch".into(), |(_, t)| t)
+            }
+            Self::GrepFiles { pattern, path } => match path {
+                Some(p) => format!("{pattern} ({p})"),
+                None => pattern.clone(),
+            },
+            Self::ReadSkill { name } => name.clone(),
+            Self::McpList { server } => server.clone().unwrap_or_else(|| "all".into()),
+            Self::McpCall { server, tool } => format!("{server}:{tool}"),
+            Self::Shell { command, .. } | Self::Verify { command } => command.clone(),
+            Self::Other { summary, .. } => summary.clone(),
         }
     }
 }
@@ -271,6 +309,47 @@ pub(crate) struct WhiteboardEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlanStep {
+    pub step: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LiveActivity {
+    pub phase: String,
+    pub reasoning: String,
+    pub commentary: String,
+    pub active_tools: Vec<String>,
+    pub shell_tail: String,
+}
+
+impl LiveActivity {
+    fn from_value(v: &Value) -> Option<Self> {
+        let obj = v.as_object()?;
+        Some(Self {
+            phase: obj.get("phase").and_then(Value::as_str).unwrap_or("").to_owned(),
+            reasoning: obj.get("reasoning").and_then(Value::as_str).unwrap_or("").to_owned(),
+            commentary: obj.get("commentary").and_then(Value::as_str).unwrap_or("").to_owned(),
+            active_tools: obj
+                .get("active_tools")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default(),
+            shell_tail: obj.get("shell_tail").and_then(Value::as_str).unwrap_or("").to_owned(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TaskUsage {
+    pub input_tokens: u64,
+    pub cached_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_hit_rate_pct: u64,
+    pub last_input_tokens: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TaskRecord {
     pub id: String,
     pub root: String,
@@ -307,6 +386,11 @@ pub(crate) struct TaskRecord {
     pub subtree_receipts: Vec<SubtreeReceipt>,
     pub clarifications: Vec<Clarification>,
     pub rounds: Vec<RoundRecord>,
+    pub plan: Vec<PlanStep>,
+    pub live: Option<LiveActivity>,
+    pub live_children: HashMap<String, LiveActivity>,
+    pub pending_steerings: u64,
+    pub usage: Option<TaskUsage>,
 }
 
 impl TaskRecord {
@@ -430,6 +514,40 @@ impl TaskRecord {
             })
             .unwrap_or_default();
 
+        let plan = value["plan"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|r| {
+                        Some(PlanStep {
+                            step: r["step"].as_str()?.to_owned(),
+                            status: r["status"].as_str().unwrap_or("pending").to_owned(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let live = LiveActivity::from_value(&value["live"]);
+        let live_children = value["live_children"]
+            .as_object()
+            .map(|obj| obj.iter().filter_map(|(k, v)| LiveActivity::from_value(v).map(|a| (k.clone(), a))).collect())
+            .unwrap_or_default();
+        let pending_steerings = value["pending_steerings"].as_u64().unwrap_or(0);
+        let usage = value["usage"].as_object().and_then(|u| {
+            let input_tokens = u.get("input_tokens")?.as_u64()?;
+            let cached_tokens = u.get("cached_tokens").and_then(Value::as_u64).unwrap_or(0);
+            let output_tokens = u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0);
+            let rate = u.get("cache_hit_rate").and_then(Value::as_f64).unwrap_or(0.0);
+            let last_input_tokens = u.get("last_input_tokens").and_then(Value::as_u64).unwrap_or(0);
+            Some(TaskUsage {
+                input_tokens,
+                cached_tokens,
+                output_tokens,
+                cache_hit_rate_pct: (rate * 100.0).round() as u64,
+                last_input_tokens,
+            })
+        });
+
         Ok(Self {
             id,
             root,
@@ -466,6 +584,11 @@ impl TaskRecord {
             subtree_receipts,
             clarifications,
             rounds,
+            plan,
+            live,
+            live_children,
+            pending_steerings,
+            usage,
         })
     }
 
@@ -496,6 +619,37 @@ impl ModelConfig {
             provider: field(value, "provider")?.to_owned(),
             model: opt_str(value, "model"),
             effort: opt_str(value, "effort"),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ProviderSummary {
+    pub name: String,
+    pub wire: String,
+    pub builtin: bool,
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    pub default_model: Option<String>,
+    pub context_window: Option<u64>,
+    pub tool_choice: String,
+    pub ready: bool,
+    pub status: String,
+}
+
+impl ProviderSummary {
+    pub fn from_value(value: &Value) -> Result<Self> {
+        Ok(Self {
+            name: field(value, "name")?.to_owned(),
+            wire: field(value, "wire")?.to_owned(),
+            builtin: value["builtin"].as_bool().unwrap_or(false),
+            base_url: opt_str(value, "base_url"),
+            api_key_env: opt_str(value, "api_key_env"),
+            default_model: opt_str(value, "default_model"),
+            context_window: value["context_window"].as_u64(),
+            tool_choice: opt_str(value, "tool_choice").unwrap_or_else(|| "required".into()),
+            ready: value["ready"].as_bool().unwrap_or(false),
+            status: opt_str(value, "status").unwrap_or_default(),
         })
     }
 }
@@ -597,6 +751,9 @@ fn workspace_key(path: &Path) -> String {
 pub(crate) struct Client {
     pub session: PathBuf,
     pub workspace: PathBuf,
+    acknowledged_provider: Arc<Mutex<Option<String>>>,
+    provider_switching: Arc<AtomicBool>,
+    codex_v1: Arc<AtomicBool>,
 }
 
 impl Client {
@@ -614,11 +771,39 @@ impl Client {
                 .ok_or("set XDG_STATE_HOME, HOME, or --session")?;
             state.join("teamagents-swarm/sessions").join(workspace_key(&workspace))
         };
-        Ok(Self { session, workspace })
+        Ok(Self {
+            session,
+            workspace,
+            acknowledged_provider: Arc::new(Mutex::new(None)),
+            provider_switching: Arc::new(AtomicBool::new(false)),
+            codex_v1: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    pub fn supports_provider_switching(&self) -> bool {
+        self.provider_switching.load(Ordering::Relaxed)
+    }
+
+    pub fn supports_codex_v1(&self) -> bool {
+        self.codex_v1.load(Ordering::Relaxed)
+    }
+
+    pub fn acknowledge_provider(&self, provider: &str) {
+        if let Ok(mut guard) = self.acknowledged_provider.lock() {
+            *guard = Some(provider.to_owned());
+        }
     }
 
     pub fn call(&self, body: Value) -> Result<Value> {
-        daemon::request(&self.session, &self.workspace, &body)
+        let ack = self.acknowledged_provider.lock().ok().and_then(|g| g.clone());
+        daemon::request_with_caps(
+            &self.session,
+            &self.workspace,
+            &body,
+            ack.as_deref(),
+            Some(&self.provider_switching),
+            Some(&self.codex_v1),
+        )
     }
 
     pub fn tasks_raw(&self) -> Result<Vec<Value>> {
@@ -644,11 +829,24 @@ impl Client {
     }
 
     pub fn model_get(&self) -> Result<ModelConfig> {
-        ModelConfig::from_value(&self.call(json!({"op":"model"}))?)
+        let cfg = ModelConfig::from_value(&self.call(json!({"op":"model"}))?)?;
+        self.acknowledge_provider(&cfg.provider);
+        Ok(cfg)
     }
 
-    pub fn model_set(&self, model: Option<Option<&str>>, effort: Option<Option<&str>>) -> Result<ModelConfig> {
+    pub fn model_set(
+        &self,
+        provider: Option<Option<&str>>,
+        model: Option<Option<&str>>,
+        effort: Option<Option<&str>>,
+    ) -> Result<ModelConfig> {
         let mut body = json!({"op":"model"});
+        if let Some(provider) = provider {
+            body["provider"] = match provider {
+                Some(name) => json!(name),
+                None => Value::Null,
+            };
+        }
         if let Some(model) = model {
             body["model"] = match model {
                 Some(id) => json!(id),
@@ -661,23 +859,55 @@ impl Client {
                 None => Value::Null,
             };
         }
-        ModelConfig::from_value(&self.call(body)?)
+        let cfg = ModelConfig::from_value(&self.call(body)?)?;
+        self.acknowledge_provider(&cfg.provider);
+        Ok(cfg)
     }
 
-    pub fn submit_with_options(
+    pub fn providers(&self) -> Result<(String, bool, Option<String>, Vec<ProviderSummary>)> {
+        let val = self.call(json!({"op":"providers"}))?;
+        let active = field(&val, "active")?.to_owned();
+        self.acknowledge_provider(&active);
+        let overridden = val["overridden"].as_bool().unwrap_or(false);
+        let config_path = opt_str(&val, "config_path");
+        let rows = val["providers"].as_array().ok_or("invalid providers response")?;
+        let list = rows.iter().map(ProviderSummary::from_value).collect::<Result<Vec<_>>>()?;
+        Ok((active, overridden, config_path, list))
+    }
+
+    pub fn model_list(&self, provider: Option<&str>) -> Result<Vec<String>> {
+        let mut body = json!({"op":"model_list"});
+        if let Some(p) = provider {
+            body["provider"] = json!(p);
+        }
+        let val = self.call(body)?;
+        let rows = val["models"].as_array().ok_or("invalid model_list response")?;
+        rows.iter()
+            .map(|v| v.as_str().map(str::to_owned).ok_or_else(|| "invalid model ID in catalog".to_owned()))
+            .collect()
+    }
+
+    pub fn submit_full(
         &self,
         agent: &str,
         text: &str,
         review: bool,
         check: Option<&str>,
-        staged: bool,
+        sandbox: SandboxMode,
     ) -> Result<Value> {
         if text.trim().is_empty() {
             return Err("a nonempty task prompt is required".into());
         }
         let mut body = json!({"op":"submit", "agent":agent, "text":text, "review":review});
-        if staged {
-            body["staged"] = json!(true);
+        match sandbox {
+            SandboxMode::Direct => {}
+            SandboxMode::Staged => {
+                body["staged"] = json!(true);
+                body["sandbox"] = json!("staged");
+            }
+            SandboxMode::ReadOnly => {
+                body["sandbox"] = json!("read_only");
+            }
         }
         if let Some(command) = check {
             body["check"] = json!(command);
@@ -687,20 +917,27 @@ impl Client {
         Ok(receipt)
     }
 
-    pub fn continue_with_options(
+    pub fn continue_full(
         &self,
         id: &str,
         text: &str,
         review: bool,
         check: Option<&str>,
-        staged: bool,
+        sandbox: SandboxMode,
     ) -> Result<Value> {
         if text.trim().is_empty() {
             return Err("a nonempty task prompt is required".into());
         }
         let mut body = json!({"op":"continue", "id":id, "text":text, "review":review});
-        if staged {
-            body["staged"] = json!(true);
+        match sandbox {
+            SandboxMode::Direct => {}
+            SandboxMode::Staged => {
+                body["staged"] = json!(true);
+                body["sandbox"] = json!("staged");
+            }
+            SandboxMode::ReadOnly => {
+                body["sandbox"] = json!("read_only");
+            }
         }
         if let Some(command) = check {
             body["check"] = json!(command);
@@ -708,6 +945,42 @@ impl Client {
         let receipt = self.call(body)?;
         field(&receipt, "id")?;
         Ok(receipt)
+    }
+
+    pub fn steer(&self, id: &str, text: &str) -> Result<Value> {
+        self.call(json!({"op":"steer", "id":id, "text":text}))
+    }
+
+    pub fn compact(&self, id: &str) -> Result<Value> {
+        self.call(json!({"op":"compact", "id":id}))
+    }
+
+    pub fn diff(&self, base: Option<&str>, commit: Option<&str>) -> Result<String> {
+        let mut body = json!({"op":"diff"});
+        if let Some(b) = base {
+            body["base"] = json!(b);
+        }
+        if let Some(c) = commit {
+            body["commit"] = json!(c);
+        }
+        let val = self.call(body)?;
+        Ok(val["diff"].as_str().ok_or("invalid diff response")?.to_owned())
+    }
+
+    pub fn skills(&self) -> Result<Vec<SkillEntry>> {
+        let val = self.call(json!({"op":"skills"}))?;
+        serde_json::from_value(val["skills"].clone()).map_err(|_| "invalid skills response".into())
+    }
+
+    pub fn mcp_status(&self) -> Result<(Option<String>, Value)> {
+        let val = self.call(json!({"op":"mcp"}))?;
+        Ok((opt_str(&val, "config_path"), val["servers"].clone()))
+    }
+
+    pub fn workspace_files(&self, limit: usize) -> Result<Vec<String>> {
+        let val = self.call(json!({"op":"files", "limit": limit}))?;
+        let rows = val["files"].as_array().ok_or("invalid files response")?;
+        Ok(rows.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
     }
 
     pub fn wb_write(
@@ -820,7 +1093,7 @@ impl QuestionTracker {
                     let summary = task
                         .action
                         .as_ref()
-                        .map(|a| format!("{} {}", a.op(), preview(a.label(), 60)))
+                        .map(|a| format!("{} {}", a.op(), preview(&a.label(), 60)))
                         .unwrap_or_else(|| "pending action".into());
                     notices.push(TrackerNotice::Approval { id: task.id.clone(), agent: task.agent.clone(), summary });
                 } else if is_root && task.status.is_terminal() {

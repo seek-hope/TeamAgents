@@ -1,10 +1,11 @@
 //! Anthropic Messages API transport (`TEAMAGENTS_PROVIDER=anthropic`).
 use super::{
     checked_post_request, decode_action, decode_tool_call_str, decode_tool_call_value, is_context_overflow_payload,
-    is_quota_exceeded_payload, is_retryable_status, needs_leading_assignment, note_rate_limit, parse_history,
-    request_limit, retry_delay, send_with_redirects, system_prompt, tool_specs, wait_rate_limit, AuthHeader,
-    HistoryItem, ModelError, ModelOutput, ModelSettings, UsageStats, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT,
-    STREAM_LIMIT, TIMEOUT,
+    is_quota_exceeded_payload, is_retryable_status, needs_leading_assignment, note_rate_limit, pack_action_meta,
+    parse_history, read_stream_with_lines, request_limit, retry_delay, send_with_redirects, system_prompt, tool_specs,
+    validate_action_batch, wait_rate_limit, AuthHeader, HistoryItem, ModelAction, ModelError, ModelOutput,
+    ModelSettings, StreamCallback, StreamEvent, UsageStats, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT, STREAM_LIMIT,
+    TIMEOUT,
 };
 use crate::{protocol::TurnKind, Result};
 use serde::Deserialize;
@@ -14,7 +15,6 @@ use std::{env, io::Read, thread, time::Duration};
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const INVALID: &str = "invalid or ambiguous Anthropic response; no action accepted";
 const TEXT_ONLY: &str = "Anthropic must return a single assistant tool call or JSON action without refusals";
-const MULTI_TOOL: &str = "expected exactly one tool call per turn; emit one action at a time";
 
 pub(super) fn messages_endpoint(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
@@ -66,7 +66,7 @@ pub(super) fn resolve_thinking_and_max_tokens(
     (max_tokens, Some(json!({"type": "enabled", "budget_tokens": budget})))
 }
 
-fn configured_max_tokens() -> Result<Option<u32>> {
+pub(super) fn configured_max_tokens() -> Result<Option<u32>> {
     let Ok(raw) = env::var("ANTHROPIC_MAX_TOKENS") else {
         return Ok(None);
     };
@@ -142,6 +142,38 @@ pub(super) fn body(
                     push_block(&mut groups, "user", json!({"type": "text", "text": output}));
                 }
             }
+            HistoryItem::ToolBatch { calls, meta } => {
+                let signed_thinking: Vec<Value> = meta
+                    .and_then(|m| m.get("thinking_blocks"))
+                    .and_then(Value::as_array)
+                    .filter(|arr| !arr.is_empty())
+                    .cloned()
+                    .unwrap_or_default();
+                if !thinking_enabled || !signed_thinking.is_empty() {
+                    for tb in signed_thinking {
+                        push_block(&mut groups, "assistant", tb);
+                    }
+                    for call in &calls {
+                        push_block(
+                            &mut groups,
+                            "assistant",
+                            json!({"type": "tool_use", "id": call.call_id, "name": call.name, "input": call.args_value}),
+                        );
+                    }
+                    for call in &calls {
+                        push_block(
+                            &mut groups,
+                            "user",
+                            json!({"type": "tool_result", "tool_use_id": call.call_id, "content": call.output}),
+                        );
+                    }
+                } else {
+                    for call in &calls {
+                        push_block(&mut groups, "assistant", json!({"type": "text", "text": call.raw_assistant}));
+                        push_block(&mut groups, "user", json!({"type": "text", "text": call.output}));
+                    }
+                }
+            }
             HistoryItem::Message { role, content, meta } => {
                 if role == "assistant" && thinking_enabled {
                     if let Some(tbs) = meta.and_then(|m| m.get("thinking_blocks")).and_then(Value::as_array) {
@@ -187,15 +219,18 @@ pub(super) fn body(
         "text": system_prompt(kind),
         "cache_control": {"type": "ephemeral"}
     })];
+    let mut tool_choice = json!({
+        "type": if thinking_enabled { "auto" } else { "any" },
+    });
+    if !matches!(kind, TurnKind::Root | TurnKind::Node) {
+        tool_choice["disable_parallel_tool_use"] = json!(true);
+    }
     let mut payload = json!({
         "model": model,
         "system": system_blocks,
         "messages": messages,
         "tools": tools,
-        "tool_choice": {
-            "type": if thinking_enabled { "auto" } else { "any" },
-            "disable_parallel_tool_use": true
-        },
+        "tool_choice": tool_choice,
         "max_tokens": max_tokens,
         "stream": true,
     });
@@ -292,22 +327,25 @@ fn merge_anthropic_usage(acc: &mut Option<Value>, patch: Option<Value>) {
     }
 }
 
-fn build_anthropic_meta(
-    thinking_blocks: Vec<Value>,
-    call_id: Option<String>,
-    raw_arguments: Option<String>,
-) -> Option<Value> {
+fn build_anthropic_batch_meta(thinking_blocks: Vec<Value>, actions: &[ModelAction]) -> Option<Value> {
     let mut map = serde_json::Map::new();
     if !thinking_blocks.is_empty() {
         map.insert("thinking_blocks".into(), Value::Array(thinking_blocks));
     }
-    if let Some(id) = call_id.filter(|s| !s.is_empty()) {
-        map.insert("call_id".into(), Value::String(id));
-    }
-    if let Some(args) = raw_arguments {
-        map.insert("raw_arguments".into(), Value::String(args));
-    }
-    (!map.is_empty()).then_some(Value::Object(map))
+    pack_action_meta(actions, map)
+}
+
+fn finish_anthropic_output(
+    actions: Vec<ModelAction>,
+    kind: TurnKind,
+    thinking_blocks: Vec<Value>,
+    commentary: Option<String>,
+    reasoning_summary: Option<String>,
+    usage: Option<UsageStats>,
+) -> std::result::Result<ModelOutput, ModelError> {
+    let actions = validate_action_batch(actions, kind)?;
+    let meta = build_anthropic_batch_meta(thinking_blocks, &actions);
+    Ok(ModelOutput { actions, commentary, reasoning_summary, meta, usage })
 }
 
 enum SseDecodeErr {
@@ -542,11 +580,16 @@ fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<ModelOutput, 
     }
     check_stop_reason(stop_reason.as_deref()).map_err(SseDecodeErr::Model)?;
     let mut thinking_blocks = Vec::new();
+    let mut thinking_texts = Vec::new();
     let mut tool_uses = Vec::new();
     for (bk, _) in blocks {
         match bk {
             BlockKind::Thinking { kind: bk_kind, thinking, signature, data } => {
                 if bk_kind == "thinking" {
+                    let trimmed = thinking.trim();
+                    if !trimmed.is_empty() {
+                        thinking_texts.push(trimmed.to_owned());
+                    }
                     if let Some(sig) = signature.filter(|s| !s.is_empty()) {
                         thinking_blocks.push(json!({"type": "thinking", "thinking": thinking, "signature": sig}));
                     }
@@ -560,30 +603,44 @@ fn decode_sse(stream: &str, kind: TurnKind) -> std::result::Result<ModelOutput, 
             BlockKind::Text => {}
         }
     }
-    if tool_uses.len() > 1 {
-        return Err(SseDecodeErr::Model(ModelError::InvalidAction(MULTI_TOOL.into())));
-    }
     let usage = parse_anthropic_usage(raw_usage.as_ref());
-    if let Some((tid, tname, input_json, initial_input)) = tool_uses.into_iter().next() {
-        let has_raw = !input_json.trim().is_empty();
-        let action = if has_raw {
-            decode_tool_call_str(&tname, &input_json, kind)
-        } else {
-            decode_tool_call_value(&tname, initial_input.unwrap_or_else(|| json!({})), kind)
+    let reasoning_summary = (!thinking_texts.is_empty()).then(|| thinking_texts.join("\n"));
+    if !tool_uses.is_empty() {
+        let mut actions = Vec::with_capacity(tool_uses.len());
+        for (tid, tname, input_json, initial_input) in tool_uses {
+            let has_raw = !input_json.trim().is_empty();
+            let action = if has_raw {
+                decode_tool_call_str(&tname, &input_json, kind)
+            } else {
+                decode_tool_call_value(&tname, initial_input.unwrap_or_else(|| json!({})), kind)
+            }
+            .map_err(SseDecodeErr::Model)?;
+            actions.push(ModelAction {
+                action,
+                call_id: tid,
+                fc_id: None,
+                raw_arguments: has_raw.then_some(input_json),
+            });
         }
-        .map_err(SseDecodeErr::Model)?;
-        let meta = build_anthropic_meta(thinking_blocks, tid, has_raw.then_some(input_json));
-        return Ok(ModelOutput { action, meta, usage });
+        let commentary = (!text.trim().is_empty()).then(|| text.trim().to_owned());
+        return finish_anthropic_output(actions, kind, thinking_blocks, commentary, reasoning_summary, usage)
+            .map_err(SseDecodeErr::Model);
     }
     if !saw_text_block {
         return Err(SseDecodeErr::Model(ModelError::InvalidAction(TEXT_ONLY.into())));
     }
     let action = decode_action(&text, kind).map_err(SseDecodeErr::Model)?;
-    let meta = build_anthropic_meta(thinking_blocks, None, None);
-    Ok(ModelOutput { action, meta, usage })
+    let meta = build_anthropic_batch_meta(thinking_blocks, &[]);
+    Ok(ModelOutput::single(action, meta, usage).with_text(None, reasoning_summary))
 }
 
-fn redacted_error(status: Option<u16>, err_type: Option<&str>, kind: TurnKind, body: &[u8]) -> ModelError {
+fn redacted_error(
+    status: Option<u16>,
+    err_type: Option<&str>,
+    kind: TurnKind,
+    body: &[u8],
+    key_env: &str,
+) -> ModelError {
     if kind != TurnKind::Reporter
         && (status == Some(413) || (matches!(status, Some(400 | 422) | None) && is_context_overflow_payload(body)))
     {
@@ -594,20 +651,20 @@ fn redacted_error(status: Option<u16>, err_type: Option<&str>, kind: TurnKind, b
             "Anthropic billing or quota limit exceeded; check provider billing and usage".into(),
         );
     }
-    let detail = match err_type {
-        Some("authentication_error") => "authentication failed (check ANTHROPIC_API_KEY)",
-        Some("permission_error") => "access forbidden for this model or endpoint",
-        Some("rate_limit_error") => "rate limit exceeded; retry later",
-        Some("overloaded_error") => "service overloaded; retry later",
-        Some("invalid_request_error") => "request rejected (check context size, model ID and thinking budget)",
-        Some("not_found_error") => "model or endpoint not found",
+    let detail: String = match err_type {
+        Some("authentication_error") => format!("authentication failed (check {key_env})"),
+        Some("permission_error") => "access forbidden for this model or endpoint".into(),
+        Some("rate_limit_error") => "rate limit exceeded; retry later".into(),
+        Some("overloaded_error") => "service overloaded; retry later".into(),
+        Some("invalid_request_error") => "request rejected (check context size, model ID and thinking budget)".into(),
+        Some("not_found_error") => "model or endpoint not found".into(),
         _ => match status {
-            Some(401) => "authentication failed (check ANTHROPIC_API_KEY)",
-            Some(403) => "access forbidden for this model or endpoint",
-            Some(429) => "rate limit exceeded; retry later",
-            Some(400 | 404 | 422) => "request rejected (check context size, model ID and reasoning effort)",
-            Some(500..=599) => "service unavailable; retry later",
-            _ => "request failed; no action accepted",
+            Some(401) => format!("authentication failed (check {key_env})"),
+            Some(403) => "access forbidden for this model or endpoint".into(),
+            Some(429) => "rate limit exceeded; retry later".into(),
+            Some(400 | 404 | 422) => "request rejected (check context size, model ID and reasoning effort)".into(),
+            Some(500..=599) => "service unavailable; retry later".into(),
+            _ => "request failed; no action accepted".into(),
         },
     };
     match status {
@@ -616,11 +673,15 @@ fn redacted_error(status: Option<u16>, err_type: Option<&str>, kind: TurnKind, b
     }
 }
 
-pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result::Result<ModelOutput, ModelError> {
+pub(super) fn decode_json_response_for(
+    bytes: &[u8],
+    kind: TurnKind,
+    key_env: &str,
+) -> std::result::Result<ModelOutput, ModelError> {
     let raw: Value = serde_json::from_slice(bytes).map_err(|_| ModelError::Fatal(INVALID.into()))?;
     if raw["type"] == "error" || raw.get("error").is_some_and(|e| !e.is_null()) {
         let err_type = raw.pointer("/error/type").and_then(Value::as_str);
-        return Err(redacted_error(Some(200), err_type, kind, bytes));
+        return Err(redacted_error(Some(200), err_type, kind, bytes, key_env));
     }
     if raw["type"] != "message" || raw["role"] != "assistant" {
         return Err(ModelError::Fatal(INVALID.into()));
@@ -631,10 +692,15 @@ pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result:
     let mut text = String::new();
     let mut saw_text = false;
     let mut thinking_blocks = Vec::new();
+    let mut thinking_texts = Vec::new();
     let mut tool_uses = Vec::new();
     for block in content {
         match block["type"].as_str() {
             Some("thinking") => {
+                if let Some(t) = block.get("thinking").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+                {
+                    thinking_texts.push(t.to_owned());
+                }
                 if block.get("signature").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
                     thinking_blocks.push(block.clone());
                 }
@@ -665,20 +731,27 @@ pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result:
             _ => return Err(ModelError::InvalidAction(TEXT_ONLY.into())),
         }
     }
-    if tool_uses.len() > 1 {
-        return Err(ModelError::InvalidAction(MULTI_TOOL.into()));
-    }
-    if let Some((tid, name, input)) = tool_uses.into_iter().next() {
-        let action = decode_tool_call_value(&name, input, kind)?;
-        let meta = build_anthropic_meta(thinking_blocks, tid, None);
-        return Ok(ModelOutput { action, meta, usage });
+    let reasoning_summary = (!thinking_texts.is_empty()).then(|| thinking_texts.join("\n"));
+    if !tool_uses.is_empty() {
+        let mut actions = Vec::with_capacity(tool_uses.len());
+        for (tid, name, input) in tool_uses {
+            let action = decode_tool_call_value(&name, input, kind)?;
+            actions.push(ModelAction { action, call_id: tid, fc_id: None, raw_arguments: None });
+        }
+        let commentary = (!text.trim().is_empty()).then(|| text.trim().to_owned());
+        return finish_anthropic_output(actions, kind, thinking_blocks, commentary, reasoning_summary, usage);
     }
     if !saw_text {
         return Err(ModelError::InvalidAction(TEXT_ONLY.into()));
     }
     let action = decode_action(&text, kind)?;
-    let meta = build_anthropic_meta(thinking_blocks, None, None);
-    Ok(ModelOutput { action, meta, usage })
+    let meta = build_anthropic_batch_meta(thinking_blocks, &[]);
+    Ok(ModelOutput::single(action, meta, usage).with_text(None, reasoning_summary))
+}
+
+#[cfg(test)]
+pub(super) fn decode_json_response(bytes: &[u8], kind: TurnKind) -> std::result::Result<ModelOutput, ModelError> {
+    decode_json_response_for(bytes, kind, "ANTHROPIC_API_KEY")
 }
 
 enum RetryErr {
@@ -686,15 +759,43 @@ enum RetryErr {
     Done(ModelError),
 }
 
-fn read_bounded_stream(r: ureq::Response) -> std::result::Result<Vec<u8>, bool> {
-    let mut bytes = Vec::new();
-    if r.into_reader().take((STREAM_LIMIT + 1) as u64).read_to_end(&mut bytes).is_err() {
-        return Err(true);
+fn emit_anthropic_stream_line(line: &str, on_stream: Option<StreamCallback<'_>>) {
+    let Some(cb) = on_stream else {
+        return;
+    };
+    let Some(raw) = line.strip_prefix("data:") else {
+        return;
+    };
+    let trimmed = raw.strip_prefix(' ').unwrap_or(raw).trim();
+    if trimmed.is_empty() || trimmed == "[DONE]" {
+        return;
     }
-    if bytes.len() > STREAM_LIMIT {
-        return Err(false);
+    let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+        return;
+    };
+    match v["type"].as_str() {
+        Some("content_block_start") => {
+            if v.pointer("/content_block/type").and_then(Value::as_str) == Some("tool_use") {
+                if let Some(name) = v.pointer("/content_block/name").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                    cb(StreamEvent::ToolCallStarted(name.to_owned()));
+                }
+            }
+        }
+        Some("content_block_delta") => match v.pointer("/delta/type").and_then(Value::as_str) {
+            Some("thinking_delta") => {
+                if let Some(t) = v.pointer("/delta/thinking").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                    cb(StreamEvent::ReasoningDelta(t.to_owned()));
+                }
+            }
+            Some("text_delta") => {
+                if let Some(t) = v.pointer("/delta/text").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                    cb(StreamEvent::CommentaryDelta(t.to_owned()));
+                }
+            }
+            _ => {}
+        },
+        _ => {}
     }
-    Ok(bytes)
 }
 
 fn handle_outcome(
@@ -702,6 +803,8 @@ fn handle_outcome(
     kind: TurnKind,
     attempt: usize,
     retry_base: Duration,
+    key_env: &str,
+    on_stream: Option<StreamCallback<'_>>,
 ) -> std::result::Result<ModelOutput, RetryErr> {
     let resp = match outcome {
         Ok(r) if (200..300).contains(&r.status()) => r,
@@ -730,7 +833,7 @@ fn handle_outcome(
                 note_rate_limit(delay, retry_base);
                 return Err(RetryErr::Retryable(delay));
             }
-            return Err(RetryErr::Done(redacted_error(Some(status), err_type, kind, &err_buf)));
+            return Err(RetryErr::Done(redacted_error(Some(status), err_type, kind, &err_buf, key_env)));
         }
         Err(ureq::Error::Transport(_)) => {
             if attempt < HTTP_MAX_ATTEMPTS {
@@ -740,9 +843,10 @@ fn handle_outcome(
         }
     };
 
-    let media = resp.header("Content-Type").map(|_| resp.content_type().trim().to_ascii_lowercase());
-    let raw = match read_bounded_stream(resp) {
-        Ok(b) => b,
+    let (media, raw) = match read_stream_with_lines(resp, STREAM_LIMIT, |line| {
+        emit_anthropic_stream_line(line, on_stream);
+    }) {
+        Ok(pair) => pair,
         Err(true) => {
             if attempt < HTTP_MAX_ATTEMPTS {
                 return Err(RetryErr::Retryable(retry_delay(attempt, None, retry_base)));
@@ -780,25 +884,29 @@ fn handle_outcome(
                         note_rate_limit(delay, retry_base);
                         return RetryErr::Retryable(delay);
                     }
-                    RetryErr::Done(redacted_error(None, err_type.as_deref(), kind, raw_json.as_bytes()))
+                    RetryErr::Done(redacted_error(None, err_type.as_deref(), kind, raw_json.as_bytes(), key_env))
                 }
             });
         }
         if media.as_deref() == Some("application/json") || text.trim_start().starts_with('{') {
-            return decode_json_response(&raw, kind).map_err(RetryErr::Done);
+            return decode_json_response_for(&raw, kind, key_env).map_err(RetryErr::Done);
         }
     }
     Err(RetryErr::Done(ModelError::Fatal("Anthropic HTTP 200: expected event stream or JSON response".into())))
 }
 
-pub(super) fn transact_with_retry(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn transact_with_retry_for(
     base: &str,
     key: Option<&str>,
     timeout: Duration,
     bytes: &[u8],
     kind: TurnKind,
     retry_base: Duration,
+    env_names: (&str, &str),
+    on_stream: Option<StreamCallback<'_>>,
 ) -> std::result::Result<ModelOutput, ModelError> {
+    let (url_env, key_env) = env_names;
     let initial = messages_endpoint(base);
     for attempt in 1..=HTTP_MAX_ATTEMPTS {
         wait_rate_limit(retry_base);
@@ -806,21 +914,12 @@ pub(super) fn transact_with_retry(
         let outcome = send_with_redirects(&initial, Some(bytes), |url, send_auth| {
             let allow_query = !first_hop;
             first_hop = false;
-            Ok(checked_post_request(
-                url,
-                key,
-                send_auth,
-                timeout,
-                allow_query,
-                "ANTHROPIC_BASE_URL",
-                "ANTHROPIC_API_KEY",
-                AuthHeader::XApiKey,
-            )?
-            .set("anthropic-version", ANTHROPIC_VERSION)
-            .set("Accept", "text/event-stream, application/json"))
+            Ok(checked_post_request(url, key, send_auth, timeout, allow_query, url_env, key_env, AuthHeader::XApiKey)?
+                .set("anthropic-version", ANTHROPIC_VERSION)
+                .set("Accept", "text/event-stream, application/json"))
         })
         .map_err(ModelError::Fatal)?;
-        match handle_outcome(outcome, kind, attempt, retry_base) {
+        match handle_outcome(outcome, kind, attempt, retry_base, key_env, on_stream) {
             Ok(out) => return Ok(out),
             Err(RetryErr::Retryable(delay)) => thread::sleep(delay),
             Err(RetryErr::Done(err)) => return Err(err),
@@ -829,7 +928,29 @@ pub(super) fn transact_with_retry(
     unreachable!("loop always returns within HTTP_MAX_ATTEMPTS")
 }
 
-pub(super) fn complete(
+#[cfg(test)]
+pub(super) fn transact_with_retry(
+    base: &str,
+    key: Option<&str>,
+    timeout: Duration,
+    bytes: &[u8],
+    kind: TurnKind,
+    retry_base: Duration,
+) -> std::result::Result<ModelOutput, ModelError> {
+    transact_with_retry_for(
+        base,
+        key,
+        timeout,
+        bytes,
+        kind,
+        retry_base,
+        ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"),
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn complete_for(
     base: &str,
     key: Option<&str>,
     settings: &ModelSettings,
@@ -837,14 +958,16 @@ pub(super) fn complete(
     task: &str,
     history: &[Value],
     kind: TurnKind,
+    env_names: (&str, &str),
+    max_override: Option<u32>,
+    on_stream: Option<StreamCallback<'_>>,
 ) -> std::result::Result<ModelOutput, ModelError> {
     let model = settings.model.as_deref().ok_or_else(|| {
         ModelError::Fatal("set TEAMAGENTS_MODEL or select an Anthropic model with /model MODEL".into())
     })?;
-    let max_override = configured_max_tokens().map_err(ModelError::Fatal)?;
     let bytes =
         body(model, settings.effort.as_deref(), agent, task, history, kind, max_override).map_err(ModelError::Fatal)?;
-    transact_with_retry(base, key, TIMEOUT, &bytes, kind, HTTP_RETRY_BASE)
+    transact_with_retry_for(base, key, TIMEOUT, &bytes, kind, HTTP_RETRY_BASE, env_names, on_stream)
 }
 
 #[cfg(test)]
@@ -937,8 +1060,11 @@ mod tests {
         let none_v: Value = serde_json::from_slice(&none_raw).unwrap();
         assert_eq!(none_v["thinking"], json!({"type":"disabled"}));
         assert_eq!(none_v["max_tokens"], 4096);
-        assert_eq!(none_v["tool_choice"], json!({"type":"any","disable_parallel_tool_use":true}));
-        assert_eq!(v["tool_choice"], json!({"type":"auto","disable_parallel_tool_use":true}));
+        assert_eq!(none_v["tool_choice"], json!({"type":"any"}));
+        assert_eq!(v["tool_choice"], json!({"type":"auto"}));
+        let legacy_raw = body("claude-sonnet-4-5", None, "w1", "t1", &[], TurnKind::Legacy, Some(4096)).unwrap();
+        let legacy_v: Value = serde_json::from_slice(&legacy_raw).unwrap();
+        assert_eq!(legacy_v["tool_choice"], json!({"type":"any","disable_parallel_tool_use":true}));
     }
 
     #[test]
@@ -958,7 +1084,7 @@ mod tests {
             json!({"type":"message_stop"}),
         ]);
         let decoded = decode_sse(&sse, TurnKind::Root).ok().unwrap();
-        assert_eq!(decoded.action, json!({"op":"finish","text":"anthropic ok"}));
+        assert_eq!(decoded.primary_action(), &json!({"op":"finish","text":"anthropic ok"}));
         assert_eq!(decoded.meta.as_ref().unwrap()["thinking_blocks"][0]["signature"], "sig");
 
         let sse_tool = frames(&[
@@ -974,8 +1100,8 @@ mod tests {
             json!({"type":"message_stop"}),
         ]);
         assert_eq!(
-            decode_sse(&sse_tool, TurnKind::Node).ok().unwrap().action,
-            json!({"op":"edit_file","path":"doc.md","old":"a","new":"b"})
+            decode_sse(&sse_tool, TurnKind::Node).ok().unwrap().primary_action(),
+            &json!({"op":"edit_file","path":"doc.md","old":"a","new":"b"})
         );
 
         let sse_zero_arg = frames(&[
@@ -985,7 +1111,7 @@ mod tests {
             json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}),
             json!({"type":"message_stop"}),
         ]);
-        assert_eq!(decode_sse(&sse_zero_arg, TurnKind::Root).ok().unwrap().action, json!({"op":"members"}));
+        assert_eq!(decode_sse(&sse_zero_arg, TurnKind::Root).ok().unwrap().primary_action(), &json!({"op":"members"}));
 
         let tool_json_valid = json!({
             "type": "message",
@@ -995,8 +1121,8 @@ mod tests {
         })
         .to_string();
         assert_eq!(
-            decode_json_response(tool_json_valid.as_bytes(), TurnKind::Node).unwrap().action,
-            json!({"op":"finish","text":"json tool ok"})
+            decode_json_response(tool_json_valid.as_bytes(), TurnKind::Node).unwrap().primary_action(),
+            &json!({"op":"finish","text":"json tool ok"})
         );
 
         let tool_json = json!({
@@ -1011,7 +1137,7 @@ mod tests {
             Err(ModelError::InvalidAction(_))
         ));
 
-        let multi_tool_json = json!({
+        let multi_solo_json = json!({
             "type": "message",
             "role": "assistant",
             "stop_reason": "tool_use",
@@ -1022,9 +1148,30 @@ mod tests {
         })
         .to_string();
         assert!(matches!(
-            decode_json_response(multi_tool_json.as_bytes(), TurnKind::Node),
+            decode_json_response(multi_solo_json.as_bytes(), TurnKind::Legacy),
             Err(ModelError::InvalidAction(ref msg)) if msg.contains("exactly one tool call")
         ));
+        assert!(matches!(
+            decode_json_response(multi_solo_json.as_bytes(), TurnKind::Node),
+            Err(ModelError::InvalidAction(ref msg)) if msg.contains("solo control-flow")
+        ));
+        let parallel_json = json!({
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": "tool_use",
+            "content": [
+                {"type":"thinking","thinking":"Inspect both","signature":"sig1"},
+                {"type":"text","text":"Running two reads"},
+                {"type":"tool_use","id":"t1","name":"read_file","input":{"path":"a.rs"}},
+                {"type":"tool_use","id":"t2","name":"list_dir","input":{"path":"src"}}
+            ]
+        })
+        .to_string();
+        let parallel_out = decode_json_response(parallel_json.as_bytes(), TurnKind::Node).unwrap();
+        assert_eq!(parallel_out.actions.len(), 2);
+        assert_eq!(parallel_out.commentary.as_deref(), Some("Running two reads"));
+        assert_eq!(parallel_out.reasoning_summary.as_deref(), Some("Inspect both"));
+        assert_eq!(parallel_out.meta.as_ref().unwrap()["calls"].as_array().unwrap().len(), 2);
 
         let truncated_json = json!({
             "type": "message",
@@ -1123,7 +1270,7 @@ mod tests {
             Duration::from_millis(1),
         )
         .unwrap();
-        assert_eq!(got.action, json!({"op":"members"}));
+        assert_eq!(got.primary_action(), &json!({"op":"members"}));
         let bill_err = transact_with_retry(
             &base,
             Some("ant-key"),

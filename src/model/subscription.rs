@@ -1,9 +1,11 @@
 //! Sign in with ChatGPT token sharing. This transport has no configurable origin or billing fallback.
 use super::{
-    body, http_agent, is_context_overflow_payload, is_retryable_status, note_rate_limit,
-    responses::{decode_sse, StreamDecodeErr},
+    body_with_cache, http_agent, is_context_overflow_payload, is_retryable_status, note_rate_limit,
+    providers::WireProtocol,
+    read_stream_with_lines,
+    responses::{decode_sse, emit_responses_stream_line, StreamDecodeErr},
     retry_delay, send_with_redirects, valid_model_id, wait_rate_limit, ModelError, ModelOutput, ModelSettings,
-    Provider, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT, STREAM_LIMIT, TIMEOUT,
+    StreamCallback, WireOptions, HTTP_MAX_ATTEMPTS, HTTP_RETRY_BASE, LIMIT, STREAM_LIMIT, TIMEOUT,
 };
 use crate::{protocol::TurnKind, Result};
 use ring::digest::{digest, Digest, SHA256};
@@ -271,17 +273,28 @@ pub(super) fn complete(
     task: &str,
     history: &[Value],
     kind: TurnKind,
+    on_stream: Option<StreamCallback<'_>>,
 ) -> std::result::Result<ModelOutput, ModelError> {
     static CACHE: ModelCache = ModelCache(Mutex::new(None));
     let model = CACHE.select(token, settings.model.as_deref(), || models(token)).map_err(ModelError::Fatal)?;
-    let bytes = body(&model, settings.effort.as_deref(), agent, task, history, kind, Provider::ChatGpt)
-        .map_err(ModelError::Fatal)?;
+    let bytes = body_with_cache(
+        &model,
+        settings.effort.as_deref(),
+        agent,
+        task,
+        None,
+        history,
+        kind,
+        WireOptions::for_wire(WireProtocol::ChatGpt),
+    )
+    .map_err(ModelError::Fatal)?;
     infer_with_retry(
         RESPONSES,
         |url, send_auth| auth_request(http_agent(TIMEOUT).post(url), token, send_auth),
         &bytes,
         kind,
         HTTP_RETRY_BASE,
+        on_stream,
     )
 }
 
@@ -310,10 +323,26 @@ fn map_stream_err(err: StreamDecodeErr, kind: TurnKind) -> std::result::Result<M
 fn infer_response(
     outcome: std::result::Result<ureq::Response, ureq::Error>,
     kind: TurnKind,
+    on_stream: Option<StreamCallback<'_>>,
 ) -> std::result::Result<std::result::Result<ModelOutput, ModelError>, RetryErr> {
     let r = check_or_retry(outcome)?;
     // Some gateways omit the SSE media type. Only a validated terminal event authorizes an action.
-    let media = match r.header("Content-Type").map(|_| r.content_type().trim().to_ascii_lowercase()).as_deref() {
+    let (raw_media, stream_bytes) = match read_stream_with_lines(r, STREAM_LIMIT, |line| {
+        emit_responses_stream_line(line, on_stream);
+    }) {
+        Ok(pair) => pair,
+        Err(true) => {
+            return Err(RetryErr::Http {
+                retryable: true,
+                retry_after: None,
+                message: "ChatGPT response interrupted".into(),
+            })
+        }
+        Err(false) => {
+            return Ok(Err(ModelError::Fatal("ChatGPT response exceeds the size limit; no action accepted".into())))
+        }
+    };
+    let media = match raw_media.as_deref() {
         Some("text/event-stream") => "text/event-stream",
         Some("application/json") => "application/json",
         Some("text/plain") => "text/plain",
@@ -321,19 +350,6 @@ fn infer_response(
         Some("text/html") => "text/html",
         None => "missing Content-Type",
         _ => "other Content-Type",
-    };
-    let stream_bytes = match read_bounded(r, STREAM_LIMIT) {
-        Ok(b) => b,
-        Err(ReadError::Io) => {
-            return Err(RetryErr::Http {
-                retryable: true,
-                retry_after: None,
-                message: "ChatGPT response interrupted".into(),
-            })
-        }
-        Err(ReadError::Oversize) => {
-            return Ok(Err(ModelError::Fatal("ChatGPT response exceeds the size limit; no action accepted".into())))
-        }
     };
     let text = std::str::from_utf8(&stream_bytes).ok().map(|s| s.strip_prefix('\u{feff}').unwrap_or(s));
     if let Some(text) = text {
@@ -372,6 +388,7 @@ fn infer_with_retry(
     bytes: &[u8],
     kind: TurnKind,
     retry_base: Duration,
+    on_stream: Option<StreamCallback<'_>>,
 ) -> std::result::Result<ModelOutput, ModelError> {
     for attempt in 1..=HTTP_MAX_ATTEMPTS {
         wait_rate_limit(retry_base);
@@ -379,7 +396,7 @@ fn infer_with_retry(
             Ok(build(url, send_auth)?.set("Content-Type", "application/json").set("Accept", "text/event-stream"))
         })
         .map_err(ModelError::Fatal)?;
-        match infer_response(outcome, kind) {
+        match infer_response(outcome, kind, on_stream) {
             Ok(outcome) => return outcome,
             Err(RetryErr::Compaction(msg)) => {
                 if kind == TurnKind::Reporter {
@@ -402,8 +419,8 @@ fn infer_with_retry(
 #[cfg(test)]
 fn infer(req: ureq::Request, bytes: &[u8], kind: TurnKind) -> std::result::Result<Value, ModelError> {
     let outcome = req.set("Content-Type", "application/json").set("Accept", "text/event-stream").send_bytes(bytes);
-    match infer_response(outcome, kind) {
-        Ok(res) => res.map(|o| o.action),
+    match infer_response(outcome, kind, None) {
+        Ok(res) => res.map(|o| o.primary_action().clone()),
         Err(RetryErr::Compaction(msg)) if kind != TurnKind::Reporter => Err(ModelError::NeedsCompaction(msg)),
         Err(RetryErr::Quota(msg)) => Err(ModelError::QuotaExceeded(msg)),
         Err(RetryErr::Http { message, .. } | RetryErr::Compaction(message)) => Err(ModelError::Fatal(message)),
@@ -413,7 +430,7 @@ fn infer(req: ureq::Request, bytes: &[u8], kind: TurnKind) -> std::result::Resul
 #[cfg(test)]
 fn decode(stream: &str, kind: TurnKind) -> std::result::Result<Value, ModelError> {
     match decode_sse(stream, kind, TEXT_ONLY, INVALID) {
-        Ok(v) => Ok(v.action),
+        Ok(v) => Ok(v.primary_action().clone()),
         Err(e) => match map_stream_err(e, kind) {
             Ok(m) => Err(m),
             Err(RetryErr::Quota(m)) => Err(ModelError::QuotaExceeded(m)),
@@ -581,7 +598,17 @@ mod tests {
             json!({"role":"assistant","content":"prior action"}),
             json!({"role":"user","content":"receipt"}),
         ];
-        let bytes = body(&model, None, "worker", "task-id", &history, TurnKind::Node, Provider::ChatGpt).unwrap();
+        let bytes = body_with_cache(
+            &model,
+            None,
+            "worker",
+            "task-id",
+            None,
+            &history,
+            TurnKind::Node,
+            WireOptions::for_wire(WireProtocol::ChatGpt),
+        )
+        .unwrap();
         let req = authorize(http_agent(TIMEOUT).post(&format!("{url}/v1/responses")), TOKEN).unwrap();
         assert_eq!(infer(req, &bytes, TurnKind::Node).unwrap()["text"], "ok");
         let (line, headers, bytes) = server.join().unwrap();
@@ -594,7 +621,7 @@ mod tests {
             .collect();
         assert_eq!(
             wire,
-            json!({"model":"z-first","input":[history[0],history[1],history[2]],"instructions":super::super::WORKER,"tools":expected_tools,"tool_choice":"required","parallel_tool_calls":false,"store":false,"stream":true})
+            json!({"model":"z-first","input":[history[0],history[1],history[2]],"instructions":super::super::WORKER,"tools":expected_tools,"tool_choice":"required","parallel_tool_calls":true,"store":false,"stream":true})
         );
     }
 
@@ -672,9 +699,10 @@ mod tests {
             b"{}",
             TurnKind::Root,
             Duration::from_millis(1),
+            None,
         )
         .unwrap();
-        assert_eq!(retried.action["text"], "ok");
+        assert_eq!(retried.primary_action()["text"], "ok");
         server.join().unwrap();
 
         for (status, headers, payload, delay, expected) in [

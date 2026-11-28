@@ -965,7 +965,7 @@ fn responses_provider_handles_commentary_and_tools_end_to_end() {
     let (_, req1, mut s1) = Call::read_http(s1, "/v1/responses");
     assert_eq!(req1["stream"], true);
     assert_eq!(req1["tool_choice"], "required");
-    assert_eq!(req1["parallel_tool_calls"], false);
+    assert_eq!(req1["parallel_tool_calls"], true);
     assert!(req1["tools"].as_array().unwrap().iter().any(|t| t["name"] == "edit_file"));
     let fc_args = json!({"command":"echo RESPONSES_OK > hello.txt"}).to_string();
     let sse1 = sse_frames(&[
@@ -1046,7 +1046,7 @@ fn anthropic_provider_handles_thinking_stream_and_tools_end_to_end() {
     assert!(h0.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
     assert!(body0["system"][0]["text"].as_str().unwrap().contains("worker"));
     assert_eq!(body0["system"][0]["cache_control"], json!({"type":"ephemeral"}));
-    assert_eq!(body0["tool_choice"], json!({"type":"any","disable_parallel_tool_use":true}));
+    assert_eq!(body0["tool_choice"], json!({"type":"any"}));
     assert!(body0["tools"].as_array().unwrap().iter().any(|t| t["name"] == "edit_file"));
     let sse0 = sse_frames(&[
         json!({"type":"message_start","message":{"id":"a1","type":"message","role":"assistant","stop_reason":null}}),
@@ -1122,7 +1122,7 @@ fn api_provider_handles_native_tool_calls_end_to_end() {
     let s1 = accept_raw(&lab.socket);
     let (_, body1, mut s1) = Call::read_http(s1, "/v1/chat/completions");
     assert_eq!(body1["tool_choice"], "required");
-    assert_eq!(body1["parallel_tool_calls"], false);
+    assert_eq!(body1["parallel_tool_calls"], true);
     assert!(body1["tools"].as_array().unwrap().iter().any(|t| t["function"]["name"] == "edit_file"));
     let r1 = json!({
         "choices": [{
@@ -1361,4 +1361,349 @@ fn deepseek_provider_forked_handoff_shares_prefix_replays_reasoning_and_tracks_c
     assert_eq!(out["usage"]["input_tokens"], 2900);
     assert_eq!(out["usage"]["cached_tokens"], 1700);
     assert_eq!(out["usage"]["output_tokens"], 125);
+}
+
+#[test]
+fn custom_providers_and_live_provider_switching_work_without_daemon_restart() {
+    let second_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    second_listener.set_nonblocking(true).unwrap();
+    let chat_url = format!("http://{}/v1", second_listener.local_addr().unwrap());
+
+    let tmp_providers_dir = Temp(std::env::temp_dir().join(format!("prov-{}", Uuid::new_v4())));
+    fs::create_dir(&tmp_providers_dir.0).unwrap();
+    let providers_file = tmp_providers_dir.0.join("providers.json");
+    let providers_file_str = providers_file.to_str().unwrap().to_owned();
+
+    let run_provider_cli = |args: &[&str]| -> Output {
+        let mut c = Command::new(BIN);
+        c.env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("TEAMAGENTS_PROVIDERS_FILE", &providers_file_str)
+            .env("CUSTOM_RESP_KEY", "resp-secret-token")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        Process::spawn(c).output()
+    };
+
+    // Reject literal secret in --api-key-env and built-in name override before daemon ever starts.
+    let bad_secret = run_provider_cli(&[
+        "provider",
+        "add",
+        "bad-prov",
+        "--wire",
+        "responses",
+        "--base-url",
+        "http://127.0.0.1:18080/v1/responses",
+        "--api-key-env",
+        "sk-raw-secret-not-env",
+    ]);
+    assert!(!bad_secret.status.success());
+    assert!(String::from_utf8_lossy(&bad_secret.stderr).contains("environment variable NAME"));
+
+    let bad_builtin = run_provider_cli(&[
+        "provider",
+        "add",
+        "chatgpt",
+        "--wire",
+        "responses",
+        "--base-url",
+        "http://127.0.0.1:18080/v1/responses",
+    ]);
+    assert!(!bad_builtin.status.success());
+    assert!(String::from_utf8_lossy(&bad_builtin.stderr).contains("built-in"));
+
+    let add_chat = run_provider_cli(&[
+        "provider",
+        "add",
+        "custom-chat",
+        "--wire",
+        "chat_completions",
+        "--base-url",
+        &chat_url,
+        "--model",
+        "local-qwen",
+        "--context-window",
+        "65536",
+    ]);
+    assert!(add_chat.status.success(), "{}", String::from_utf8_lossy(&add_chat.stderr));
+
+    // Set up the daemon with lab.socket (Responses custom provider) and second_listener (Chat Completions custom provider).
+    // Note Lab::new_with hasn't bound lab.socket until creation, so start Lab first then register `custom-resp`.
+    let lab = Lab::new_with(
+        &[("TEAMAGENTS_PROVIDERS_FILE", &providers_file_str), ("CUSTOM_RESP_KEY", "resp-secret-token")],
+        true,
+    );
+    let resp_url = format!("http://{}/v1", lab.socket.local_addr().unwrap());
+    let add_resp = run_provider_cli(&[
+        "provider",
+        "add",
+        "custom-resp",
+        "--wire",
+        "responses",
+        "--base-url",
+        &resp_url,
+        "--api-key-env",
+        "CUSTOM_RESP_KEY",
+        "--model",
+        "resp-model",
+        "--tool-choice",
+        "auto",
+        "--default",
+    ]);
+    assert!(add_resp.status.success(), "{}", String::from_utf8_lossy(&add_resp.stderr));
+
+    let show_out = run_provider_cli(&["provider", "--json", "show", "custom-resp"]);
+    assert!(show_out.status.success());
+    let show_json: Value = serde_json::from_slice(&show_out.stdout).unwrap();
+    assert_eq!(show_json["api_key_env"], "CUSTOM_RESP_KEY");
+    assert!(!String::from_utf8_lossy(&show_out.stdout).contains("resp-secret-token"));
+    let disk_json = fs::read_to_string(&providers_file).unwrap();
+    assert!(!disk_json.contains("resp-secret-token"));
+
+    let daemon_pid = lab.daemon.as_ref().unwrap().0.as_ref().unwrap().id();
+
+    // Live `/model providers` and `/model` show `custom-resp` as the active default on the running daemon.
+    let provs_out = lab.chat("/model providers");
+    let provs_json: Value = serde_json::from_slice(&provs_out.stdout).unwrap();
+    assert_eq!(provs_json["active"], "custom-resp");
+
+    // Root 1 runs on `custom-resp` (`/v1/responses`) with Authorization Bearer from CUSTOM_RESP_KEY.
+    let exec1 = lab.client(&["exec", "first task on custom responses"]);
+    let (h1, b1, mut s1) = loop {
+        match lab.socket.accept() {
+            Ok((sock, _)) => break Call::read_http(sock, "/v1/responses"),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(POLL),
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert!(h1.to_ascii_lowercase().contains("authorization: bearer resp-secret-token"));
+    // Startup default provider honors TEAMAGENTS_MODEL when set in the daemon environment.
+    assert_eq!(b1["model"], MODEL);
+    let r1 = json!({
+        "id": "resp_custom_1",
+        "status": "completed",
+        "usage": {"input_tokens": 100, "output_tokens": 10},
+        "output": [{"type":"function_call","id":"fc_1","call_id":"call_1","name":"finish","arguments":r#"{"text":"root1 resp ok"}"#,"status":"completed"}]
+    })
+    .to_string();
+    write!(
+        s1,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{r1}",
+        r1.len()
+    )
+    .unwrap();
+    let out1 = exec1.json();
+    assert_eq!(out1["result"], "root1 resp ok");
+
+    // Live-switch to `custom-chat` WITHOUT restarting the daemon!
+    let sw_out = lab.chat("/model provider custom-chat");
+    let sw_json: Value = serde_json::from_slice(&sw_out.stdout).unwrap();
+    assert_eq!(sw_json["provider"], "custom-chat");
+    assert_eq!(sw_json["model"], "local-qwen");
+    assert_eq!(lab.daemon.as_ref().unwrap().0.as_ref().unwrap().id(), daemon_pid);
+
+    // Root 2 runs on `custom-chat` (`/v1/chat/completions`) on the exact same daemon PID.
+    let exec2 = lab.client(&["exec", "second task on custom chat"]);
+    let until = Instant::now() + LIMIT;
+    let c2 = loop {
+        match second_listener.accept() {
+            Ok((sock, _)) => break Call::read(sock, "local-qwen", None),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < until => thread::sleep(POLL),
+            Err(e) => panic!("expected request on custom-chat listener: {e}"),
+        }
+    };
+    c2.reply(finish("root2 chat ok"));
+    let out2 = exec2.json();
+    assert_eq!(out2["result"], "root2 chat ok");
+    assert_eq!(lab.daemon.as_ref().unwrap().0.as_ref().unwrap().id(), daemon_pid);
+
+    // Restarting the daemon preserves session active_provider = "custom-chat".
+    let mut lab = lab;
+    lab.restart();
+    let after_restart: Value = serde_json::from_slice(&lab.chat("/model").stdout).unwrap();
+    assert_eq!(after_restart["provider"], "custom-chat");
+
+    // Removing the currently active custom provider must NOT lock out `/model providers` or `/model provider default`.
+    let rm_out = run_provider_cli(&["provider", "remove", "custom-chat"]);
+    assert!(rm_out.status.success());
+    assert!(!lab.client(&["exec", "should fail on removed provider"]).output().status.success());
+    let recover_list = lab.chat("/model providers");
+    let recover_list_json: Value = serde_json::from_slice(&recover_list.stdout).unwrap();
+    assert_eq!(recover_list_json["active"], "custom-chat");
+    let reset_out = lab.chat("/model provider default");
+    let reset_json: Value = serde_json::from_slice(&reset_out.stdout).unwrap();
+    assert_eq!(reset_json["provider"], "custom-resp");
+}
+
+#[test]
+fn parallel_tools_agents_md_skill_and_apply_patch_work() {
+    let lab = Lab::new();
+    fs::write(lab.ws.join("AGENTS.md"), "Always preserve marker MAGIC_AGENT_RULE.\n").unwrap();
+    fs::create_dir_all(lab.ws.join(".teamagents/skills/demo")).unwrap();
+    fs::write(
+        lab.ws.join(".teamagents/skills/demo/SKILL.md"),
+        "---\nname: demo\ndescription: Demo workflow skill\n---\nFollow STEP_ALPHA carefully.\n",
+    )
+    .unwrap();
+    fs::write(lab.ws.join("sample.txt"), "hello\nworld\n").unwrap();
+
+    let exec = lab.client(&["exec", "Inspect skill and patch sample.txt"]);
+
+    // Turn 1: prompt includes AGENTS.md + skill index; model batches list_dir + read_skill in parallel.
+    let mut c1 = lab.call();
+    assert!(c1.contains("MAGIC_AGENT_RULE"), "missing AGENTS.md context: {:?}", c1.messages);
+    assert!(c1.contains("Demo workflow skill"), "missing skill index: {:?}", c1.messages);
+    let reply1 = json!({
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "tc_list", "type": "function", "function": {"name": "list_dir", "arguments": "{}"}},
+                    {"id": "tc_skill", "type": "function", "function": {"name": "read_skill", "arguments": r#"{"name":"demo"}"#}}
+                ]
+            }
+        }]
+    })
+    .to_string();
+    write!(
+        c1.socket,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply1}",
+        reply1.len()
+    )
+    .unwrap();
+    drop(c1.socket);
+
+    // Turn 2: both tool results appear; model calls V4A apply_patch updating sample.txt and creating created.txt.
+    let c2 = lab.call();
+    c2.observed("list_dir", "sample.txt");
+    c2.observed("read_skill", "STEP_ALPHA");
+    let patch_text = "*** Begin Patch\n*** Update File: sample.txt\n@@\n hello\n-world\n+patched\n*** Add File: created.txt\n+new file\n*** End Patch";
+    c2.reply(json!({"op": "apply_patch", "patch": patch_text}));
+
+    // Turn 3: apply_patch succeeded; finish.
+    let c3 = lab.call();
+    c3.observed("apply_patch", "sample.txt");
+    c3.reply(finish("patch ok"));
+
+    let out = exec.json();
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["result"], "patch ok");
+    assert_eq!(fs::read_to_string(lab.ws.join("sample.txt")).unwrap(), "hello\npatched\n");
+    assert_eq!(fs::read_to_string(lab.ws.join("created.txt")).unwrap(), "new file\n");
+    let st = lab.status(field(&out, "id"));
+    assert!(st["evidence"].as_array().unwrap().iter().any(|e| e["action"]["op"] == "apply_patch" && e["ok"] == true));
+}
+
+#[test]
+fn readonly_sandbox_midturn_steer_and_manual_compact_work() {
+    let lab = Lab::new();
+    fs::write(lab.ws.join("keep.txt"), "immutable\n").unwrap();
+    let exec = lab.client(&["exec", "--sandbox", "read-only", "Inspect workspace safely"]);
+
+    // Hold Turn 1 open while injecting a mid-turn steer note via CLI.
+    let c1 = lab.call();
+    let root_id = c1.id.clone();
+    let steer_res = lab.json(&["steer", &root_id, "PRIORITIZE_SECURITY_AUDIT"]);
+    assert_eq!(steer_res["ok"], true);
+    c1.reply(json!({"op": "edit_file", "path": "blocked.txt", "old": "", "new": "nope"}));
+
+    // Turn 2: sees read-only edit_file rejection AND injected steer guidance; tries mutating shell inside bwrap ro mount.
+    let c2 = lab.call();
+    assert!(c2.contains("read-only"), "expected read-only rejection: {:?}", c2.messages);
+    assert!(c2.contains("PRIORITIZE_SECURITY_AUDIT"), "expected steer note: {:?}", c2.messages);
+    c2.reply(shell("touch blocked_shell.txt"));
+
+    // Turn 3: shell write inside read-only sandbox fails; read via list_dir so history has >= 6 messages before finish.
+    let c3 = lab.call();
+    assert!(
+        c3.records().any(|v| v["tool"] == "shell" && v["ok"] == false),
+        "expected read-only shell failure: {:?}",
+        c3.messages
+    );
+    assert!(!lab.ws.join("blocked.txt").exists());
+    assert!(!lab.ws.join("blocked_shell.txt").exists());
+    c3.reply(json!({"op": "list_dir"}));
+
+    let c4 = lab.call();
+    c4.observed("list_dir", "keep.txt");
+    c4.reply(finish("ro ok"));
+
+    let out = exec.json();
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["result"], "ro ok");
+    assert_eq!(fs::read_to_string(lab.ws.join("keep.txt")).unwrap(), "immutable\n");
+
+    // Trigger manual compaction on the settled root and serve the summarization completion.
+    let compact_proc = lab.client(&["compact", &root_id]);
+    let compact_call = lab.call();
+    assert!(compact_call.any_message("Summarize these"), "{:?}", compact_call.messages);
+    compact_call.reply(finish("Compacted summary of read-only audit"));
+    let compact_out = compact_proc.json();
+    assert_eq!(compact_out["ok"], true);
+    let until = Instant::now() + LIMIT;
+    loop {
+        let st = lab.status(&root_id);
+        if st["status"] == "done" {
+            break;
+        }
+        assert!(Instant::now() < until, "status did not return to done after manual compact: {st}");
+        thread::sleep(POLL);
+    }
+}
+
+#[test]
+fn mcp_cli_and_stdio_tool_invocation_work() {
+    let mcp_tmp = Temp(std::env::temp_dir().join(format!("mcp-e2e-{}", Uuid::new_v4())));
+    fs::create_dir(&mcp_tmp.0).unwrap();
+    let mcp_file = mcp_tmp.0.join("mcp.json");
+    let script = mcp_tmp.0.join("mock_mcp.sh");
+    fs::write(
+        &script,
+        "#!/bin/sh\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *'\"initialize\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}\\n' ;;\n    *'\"tools/list\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo_secret\",\"description\":\"Echo env secret\"}]}}\\n' ;;\n    *'\"tools/call\"'*) printf '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"mcp_ok:%s\"}]}}\\n' \"$MCP_SECRET_VAL\" ;;\n  esac\ndone\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let mcp_file_str = mcp_file.to_string_lossy().into_owned();
+    let script_str = script.to_string_lossy().into_owned();
+    let lab = Lab::new_with(&[("TEAMAGENTS_MCP_FILE", &mcp_file_str), ("MCP_SECRET_VAL", "env-only-token")], true);
+
+    let add_out = lab
+        .cmd()
+        .args(["mcp", "add", "mock", "--command", "/bin/sh", "--arg", &script_str, "--env", "MCP_SECRET_VAL"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(add_out.status.success(), "{}", String::from_utf8_lossy(&add_out.stderr));
+
+    // Secret values never touch mcp.json; only env var name is stored.
+    let disk_cfg = fs::read_to_string(&mcp_file).unwrap();
+    assert!(disk_cfg.contains("MCP_SECRET_VAL"));
+    assert!(!disk_cfg.contains("env-only-token"));
+
+    let listed = lab.json(&["mcp", "list"]);
+    assert!(listed["servers"].as_array().unwrap().iter().any(|s| s["name"] == "mock"));
+    let tools = lab.json(&["mcp", "tools", "mock"]);
+    assert!(tools["tools"].as_array().unwrap().iter().any(|t| t["name"] == "echo_secret"));
+
+    let exec = lab.client(&["exec", "Run MCP tool"]);
+    let c1 = lab.call();
+    assert!(c1.contains("mock"), "expected MCP server name in context: {:?}", c1.messages);
+    c1.reply(json!({"op": "mcp_list", "server": "mock"}));
+
+    let c2 = lab.call();
+    c2.observed("mcp_list", "echo_secret");
+    c2.reply(json!({"op": "mcp_call", "server": "mock", "tool": "echo_secret", "arguments": {}}));
+
+    let c3 = lab.call();
+    c3.observed("mcp_call", "mcp_ok:env-only-token");
+    c3.reply(finish("mcp ok"));
+
+    let out = exec.json();
+    assert_eq!(out["status"], "done");
+    assert_eq!(out["result"], "mcp ok");
 }

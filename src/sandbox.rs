@@ -21,13 +21,48 @@ const MAX_BYTES: u64 = 256 << 20;
 const MAX_DEPTH: usize = 64;
 const CACHE_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SandboxMode {
+    #[default]
+    Direct,
+    Staged,
+    ReadOnly,
+}
+
+impl SandboxMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Staged => "staged",
+            Self::ReadOnly => "read_only",
+        }
+    }
+
+    pub(crate) fn parse(raw: &str) -> Result<Self> {
+        match raw.trim() {
+            "direct" => Ok(Self::Direct),
+            "staged" => Ok(Self::Staged),
+            "read_only" | "read-only" => Ok(Self::ReadOnly),
+            other => Err(format!("invalid sandbox mode {other:?}; expected direct, staged, or read-only")),
+        }
+    }
+
+    pub(crate) fn is_staged(self) -> bool {
+        matches!(self, Self::Staged)
+    }
+
+    pub(crate) fn is_read_only(self) -> bool {
+        matches!(self, Self::ReadOnly)
+    }
+}
+
 fn err(e: io::Error) -> String {
     format!("sandbox filesystem: {e}")
 }
 pub(crate) fn fd_path(f: &File) -> PathBuf {
     format!("/proc/self/fd/{}", f.as_raw_fd()).into()
 }
-fn pin(path: &Path) -> io::Result<File> {
+pub(crate) fn pin(path: &Path) -> io::Result<File> {
     OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_NOFOLLOW).open(path)
 }
 fn mount(f: &File) -> Result<u64> {
@@ -43,14 +78,14 @@ fn mount(f: &File) -> Result<u64> {
         Ok(s.stx_mnt_id)
     }
 }
-fn regular(m: &Metadata) -> Result<()> {
+pub(crate) fn regular(m: &Metadata) -> Result<()> {
     if m.is_file() && m.nlink() == 1 {
         Ok(())
     } else {
         Err("sandbox requires a single-link regular file".into())
     }
 }
-fn same_mount(f: &File, root: &File) -> Result<()> {
+pub(crate) fn same_mount(f: &File, root: &File) -> Result<()> {
     if mount(f)? != mount(root)? || f.metadata().map_err(err)?.dev() != root.metadata().map_err(err)?.dev() {
         return Err("sandbox refuses nested mounts and subvolumes".into());
     }
@@ -63,11 +98,11 @@ fn exists(p: &Path) -> Result<bool> {
         Err(e) => Err(err(e)),
     }
 }
-fn admin_dir(p: &Path) -> Result<bool> {
+pub(crate) fn admin_dir(p: &Path) -> Result<bool> {
     // Bare and separately named Git administrative directories must not become alternate writable views.
     Ok(exists(&p.join("HEAD"))? && (exists(&p.join("objects"))? || exists(&p.join("commondir"))?))
 }
-fn cached_target(p: &Path, dir: &File) -> Result<bool> {
+pub(crate) fn cached_target(p: &Path, dir: &File) -> Result<bool> {
     if p.file_name() != Some(OsStr::new("target")) {
         return Ok(false);
     }
@@ -86,7 +121,7 @@ fn cached_target(p: &Path, dir: &File) -> Result<bool> {
         Err(e) => Err(err(e)),
     }
 }
-fn reserved(p: &Path) -> bool {
+pub(crate) fn reserved(p: &Path) -> bool {
     p.components().any(|c| {
         let name = c.as_os_str();
         name.eq_ignore_ascii_case(".git") || name.eq_ignore_ascii_case(".teamagents-auth")
@@ -109,7 +144,7 @@ fn root_dir(root: &Path) -> Result<File> {
     }
     OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(root).map_err(err)
 }
-fn checked_dir(root: &File, parent: &File, name: &OsStr) -> Result<File> {
+pub(crate) fn checked_dir(root: &File, parent: &File, name: &OsStr) -> Result<File> {
     let child = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
@@ -138,6 +173,34 @@ fn parent_at(root: &File, path: &Path) -> Result<(File, PathBuf)> {
     Ok((dir, target))
 }
 
+fn ensure_parent_at(root: &File, path: &Path) -> Result<(File, PathBuf)> {
+    let components = path.components();
+    if reserved(path) || !components.clone().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+        return Err("reserved or non-relative workspace path".into());
+    }
+    let mut parts = components.filter_map(|c| if let Component::Normal(p) = c { Some(p) } else { None });
+    let name = parts.next_back().ok_or("path must name a file")?;
+    let mut dir = root.try_clone().map_err(err)?;
+    for part in parts {
+        dir = match checked_dir(root, &dir, part) {
+            Ok(d) => d,
+            Err(_) => {
+                let candidate = fd_path(&dir).join(part);
+                match fs::symlink_metadata(&candidate) {
+                    Ok(_) => return Err("reserved or non-directory workspace parent".into()),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        DirBuilder::new().mode(0o755).create(&candidate).map_err(err)?;
+                        checked_dir(root, &dir, part)?
+                    }
+                    Err(e) => return Err(err(e)),
+                }
+            }
+        };
+    }
+    let target = fd_path(&dir).join(name);
+    Ok((dir, target))
+}
+
 pub(crate) fn open_regular(dir: &File, path: &Path) -> Result<File> {
     let f = pin(path).map_err(err)?;
     regular(&f.metadata().map_err(err)?)?;
@@ -147,8 +210,30 @@ pub(crate) fn open_regular(dir: &File, path: &Path) -> Result<File> {
 
 pub(crate) struct Lock(File);
 impl Lock {
+    pub(crate) fn root_fd(&self) -> &File {
+        &self.0
+    }
     pub(crate) fn parent(&self, path: &Path) -> Result<(File, PathBuf)> {
         parent_at(&self.0, path)
+    }
+    pub(crate) fn ensure_parent(&self, path: &Path) -> Result<(File, PathBuf)> {
+        ensure_parent_at(&self.0, path)
+    }
+    pub(crate) fn dir(&self, path: Option<&Path>) -> Result<File> {
+        let Some(rel) = path.filter(|p| !p.as_os_str().is_empty() && *p != Path::new(".")) else {
+            return self.0.try_clone().map_err(err);
+        };
+        let components = rel.components();
+        if reserved(rel) || !components.clone().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+            return Err("reserved or non-relative workspace path".into());
+        }
+        let mut dir = self.0.try_clone().map_err(err)?;
+        for c in components {
+            if let Component::Normal(part) = c {
+                dir = checked_dir(&self.0, &dir, part)?;
+            }
+        }
+        Ok(dir)
     }
     pub(crate) fn workspace(root: &Path) -> Result<Self> {
         let f = root_dir(root)?;
@@ -315,7 +400,7 @@ enum OverlayMount {
     Tmpfs(PathBuf),
 }
 
-fn build_bwrap(workspace_src: &Path, overlays: &[OverlayMount]) -> Result<(Command, File)> {
+fn build_bwrap(workspace_src: &Path, overlays: &[OverlayMount], read_only: bool) -> Result<(Command, File)> {
     let mut cmd = Command::new("/usr/bin/bwrap");
     cmd.current_dir("/").env_clear().process_group(0).args([
         "--unshare-user",
@@ -371,7 +456,7 @@ fn build_bwrap(workspace_src: &Path, overlays: &[OverlayMount]) -> Result<(Comma
     if cert.is_file() {
         cmd.arg("--ro-bind").arg(cert.canonicalize().map_err(err)?).arg(cert);
     }
-    cmd.arg("--bind").arg(workspace_src).arg("/workspace");
+    cmd.arg(if read_only { "--ro-bind" } else { "--bind" }).arg(workspace_src).arg("/workspace");
     for overlay in overlays {
         match overlay {
             OverlayMount::ReadOnlyBind(src, dst) => {
@@ -420,7 +505,7 @@ impl Direct {
         Ok(Self { workspace: root.to_owned(), dir })
     }
 
-    pub(crate) fn command(&self) -> Result<(Command, File)> {
+    pub(crate) fn command_with_ro(&self, read_only: bool) -> Result<(Command, File)> {
         let mut overlays = Vec::new();
         for entry in fs::read_dir(fd_path(&self.dir)).map_err(err)? {
             let name = entry.map_err(err)?.file_name();
@@ -448,34 +533,36 @@ impl Direct {
                 overlays.push(OverlayMount::ReadOnlyBind(entry_path, mount_dst));
             }
         }
-        build_bwrap(&self.workspace, &overlays)
+        build_bwrap(&self.workspace, &overlays, read_only)
     }
 }
 
 pub(crate) enum Workspace {
     Direct(Direct),
     Staged(Stage),
+    ReadOnly(Direct),
 }
 
 impl Workspace {
-    pub(crate) fn new(root: &Path, staged: bool) -> Result<Self> {
-        if staged {
-            Ok(Self::Staged(Stage::new(root)?))
-        } else {
-            Ok(Self::Direct(Direct::new(root)?))
+    pub(crate) fn new_mode(root: &Path, mode: SandboxMode) -> Result<Self> {
+        match mode {
+            SandboxMode::Direct => Ok(Self::Direct(Direct::new(root)?)),
+            SandboxMode::Staged => Ok(Self::Staged(Stage::new(root)?)),
+            SandboxMode::ReadOnly => Ok(Self::ReadOnly(Direct::new(root)?)),
         }
     }
 
     pub(crate) fn command(&self) -> Result<(Command, File)> {
         match self {
-            Self::Direct(d) => d.command(),
+            Self::Direct(d) => d.command_with_ro(false),
             Self::Staged(s) => s.command(),
+            Self::ReadOnly(d) => d.command_with_ro(true),
         }
     }
 
     pub(crate) fn publish(self) -> Result<()> {
         match self {
-            Self::Direct(_) => Ok(()),
+            Self::Direct(_) | Self::ReadOnly(_) => Ok(()),
             Self::Staged(s) => s.publish(),
         }
     }
@@ -501,7 +588,7 @@ impl Stage {
     }
 
     pub(crate) fn command(&self) -> Result<(Command, File)> {
-        build_bwrap(&self.scratch.0, &[])
+        build_bwrap(&self.scratch.0, &[], false)
     }
 
     pub(crate) fn publish(self) -> Result<()> {

@@ -1,8 +1,11 @@
 mod cli;
+mod context;
 mod daemon;
+mod mcp;
 mod model;
 mod net;
 mod oauth;
+mod patch;
 mod protocol;
 mod sandbox;
 mod store;

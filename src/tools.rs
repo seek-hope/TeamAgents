@@ -1,12 +1,14 @@
 //! Workspace tools. The caller authorizes dispatch; every operation enforces its own boundary.
 use crate::{
+    context, mcp,
     net::Network,
-    sandbox::{self, fd_path as fd_dir},
+    patch,
+    sandbox::{self, fd_path as fd_dir, SandboxMode},
     Result,
 };
 use serde_json::Value;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     fs::{self, File, Metadata, OpenOptions},
     io::{self, BufRead, BufReader, Read, Write},
     os::{
@@ -23,6 +25,8 @@ use std::{
 };
 
 const FILE_LIMIT: usize = 8 * 1024 * 1024;
+const GREP_FILE_LIMIT: u64 = 2 * 1024 * 1024;
+const GREP_MAX_SCAN_FILES: usize = 10_000;
 pub(crate) const OUTPUT_LIMIT: usize = 128 * 1024; // per stream (half head + half tail on middle truncation)
 pub(crate) const HALF_OUTPUT: usize = OUTPUT_LIMIT / 2;
 const DEFAULT_SHELL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -49,8 +53,14 @@ fn load(dir: &File, path: &Path) -> Result<(String, Metadata)> {
     Ok((String::from_utf8(bytes).map_err(|_| "file is not UTF-8 text")?, meta))
 }
 
-fn load_slice(dir: &File, path: &Path, offset: Option<usize>, limit: Option<usize>) -> Result<String> {
-    if offset.is_none() && limit.is_none() {
+fn load_slice(
+    dir: &File,
+    path: &Path,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    line_numbers: bool,
+) -> Result<String> {
+    if offset.is_none() && limit.is_none() && !line_numbers {
         return load(dir, path).map(|(text, _)| text);
     }
     let start_line = match offset {
@@ -96,14 +106,31 @@ fn load_slice(dir: &File, path: &Path, offset: Option<usize>, limit: Option<usiz
             more = true;
             break;
         }
-        if out.len().saturating_add(line_str.len()) > FILE_LIMIT {
+        let formatted = if line_numbers {
+            let prefix = format!("L{line_no}: ");
+            let add_len = prefix.len().saturating_add(line_str.len());
+            if out.len().saturating_add(add_len) > FILE_LIMIT {
+                if out.is_empty() {
+                    return Err("selected line exceeds 8 MiB".into());
+                }
+                more = true;
+                break;
+            }
+            out.push_str(&prefix);
+            out.push_str(line_str);
+            end_line = line_no;
+            continue;
+        } else {
+            line_str
+        };
+        if out.len().saturating_add(formatted.len()) > FILE_LIMIT {
             if out.is_empty() {
                 return Err("selected line exceeds 8 MiB".into());
             }
             more = true;
             break;
         }
-        out.push_str(line_str);
+        out.push_str(formatted);
         end_line = line_no;
     }
     if more && end_line >= start_line {
@@ -283,13 +310,23 @@ enum DrainState {
 // No blocking reader threads: even a descendant that escapes the group and inherits a writer cannot hold us open.
 // Oversize output uses middle-truncation (head + tail preserved) so commands always finish with real exit codes.
 // Bounding each drain batch prevents a saturated pipe from starving the opposite stream or timeout checks.
-fn drain(stream: &mut UnixStream, buffer: &mut StreamBuffer, label: &str) -> Result<DrainState> {
+pub(crate) type ChunkCallback<'a> = &'a dyn Fn(&[u8]);
+
+fn drain(
+    stream: &mut UnixStream,
+    buffer: &mut StreamBuffer,
+    label: &str,
+    on_chunk: Option<ChunkCallback<'_>>,
+) -> Result<DrainState> {
     let mut buf = [0; 8192];
     let mut read_bytes = 0usize;
     loop {
         match stream.read(&mut buf) {
             Ok(0) => return Ok(DrainState::Eof),
             Ok(n) => {
+                if let Some(cb) = on_chunk {
+                    cb(&buf[..n]);
+                }
                 buffer.push(&buf[..n]);
                 read_bytes += n;
                 if read_bytes >= DRAIN_BATCH_BYTES {
@@ -339,10 +376,16 @@ fn poll_streams(out: Option<RawFd>, err: Option<RawFd>, wait: Duration) -> Resul
     Ok(())
 }
 
-fn shell(workspace: &Path, command: &str, timeout: Duration, staged: bool) -> Result<String> {
+fn shell_with_options(
+    workspace: &Path,
+    command: &str,
+    timeout: Duration,
+    mode: SandboxMode,
+    on_chunk: Option<ChunkCallback<'_>>,
+) -> Result<String> {
     let (mut stdout, out_fd) = pipe().map_err(|e| format!("shell stdout: {e}"))?;
     let (mut stderr, err_fd) = pipe().map_err(|e| format!("shell stderr: {e}"))?;
-    let stage = sandbox::Workspace::new(workspace, staged)?;
+    let stage = sandbox::Workspace::new_mode(workspace, mode)?;
     let (mut cmd, filter) = stage.command()?;
     let mut network = Network::prepare(&mut cmd)?;
     let mut child = cmd
@@ -363,10 +406,10 @@ fn shell(workspace: &Path, command: &str, timeout: Duration, staged: bool) -> Re
         let (mut out_state, mut err_state) = (DrainState::WouldBlock, DrainState::WouldBlock);
         loop {
             if out_state != DrainState::Eof {
-                out_state = drain(&mut stdout, &mut out, "stdout")?;
+                out_state = drain(&mut stdout, &mut out, "stdout", on_chunk)?;
             }
             if err_state != DrainState::Eof {
-                err_state = drain(&mut stderr, &mut err, "stderr")?;
+                err_state = drain(&mut stderr, &mut err, "stderr", on_chunk)?;
             }
             if exited(&child).map_err(|e| format!("poll shell: {e}"))? {
                 return Ok(());
@@ -406,10 +449,10 @@ fn shell(workspace: &Path, command: &str, timeout: Duration, staged: bool) -> Re
             let (mut out_state, mut err_state) = (DrainState::WouldBlock, DrainState::WouldBlock);
             loop {
                 if out_state != DrainState::Eof {
-                    out_state = drain(&mut stdout, &mut out, "stdout")?;
+                    out_state = drain(&mut stdout, &mut out, "stdout", on_chunk)?;
                 }
                 if err_state != DrainState::Eof {
-                    err_state = drain(&mut stderr, &mut err, "stderr")?;
+                    err_state = drain(&mut stderr, &mut err, "stderr", on_chunk)?;
                 }
                 if out_state == DrainState::Eof && err_state == DrainState::Eof {
                     return Ok(());
@@ -440,6 +483,242 @@ fn shell(workspace: &Path, command: &str, timeout: Duration, staged: bool) -> Re
     }
 }
 
+#[cfg(test)]
+fn shell(workspace: &Path, command: &str, timeout: Duration, staged: bool) -> Result<String> {
+    shell_with_options(
+        workspace,
+        command,
+        timeout,
+        if staged { SandboxMode::Staged } else { SandboxMode::Direct },
+        None,
+    )
+}
+
+fn opt_str<'a>(action: &'a Value, key: &str) -> Result<Option<&'a str>> {
+    let Some(v) = action.get(key).filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    v.as_str().ok_or_else(|| format!("expected string field {key}")).map(Some)
+}
+
+fn opt_bool(action: &Value, key: &str) -> Result<Option<bool>> {
+    let Some(v) = action.get(key).filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    v.as_bool().ok_or_else(|| format!("expected boolean field {key}")).map(Some)
+}
+
+fn glob_match(pat: &str, text: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pat.chars().collect(), text.chars().collect());
+    let (mut pi, mut ti, mut star, mut match_ti) = (0usize, 0usize, None, 0usize);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            pi += 1;
+            match_ti = ti;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            match_ti += 1;
+            ti = match_ti;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+fn list_dir(workspace: &Path, rel_path: Option<&str>, max_depth: usize, limit: usize) -> Result<String> {
+    let lock = sandbox::Lock::workspace(workspace)?;
+    let start_dir = lock.dir(rel_path.map(Path::new))?;
+    let max_depth = max_depth.clamp(1, 8);
+    let limit = limit.clamp(1, 1000);
+    let prefix = rel_path.filter(|s| !s.trim().is_empty() && *s != ".").map(PathBuf::from).unwrap_or_default();
+
+    let mut items: Vec<String> = Vec::new();
+    let mut truncated = false;
+    #[allow(clippy::too_many_arguments)]
+    fn walk_dir(
+        root: &File,
+        dir: &File,
+        rel: &Path,
+        depth: usize,
+        max_depth: usize,
+        limit: usize,
+        items: &mut Vec<String>,
+        truncated: &mut bool,
+    ) -> Result<()> {
+        if depth > max_depth || items.len() >= limit {
+            if items.len() >= limit {
+                *truncated = true;
+            }
+            return Ok(());
+        }
+        let mut children: BTreeMap<String, (PathBuf, bool, u64)> = BTreeMap::new();
+        for entry in fs::read_dir(fd_dir(dir)).map_err(|e| format!("read dir: {e}"))? {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(".teamagents-") {
+                continue;
+            }
+            let child_rel = if rel.as_os_str().is_empty() { PathBuf::from(&name) } else { rel.join(&name) };
+            if sandbox::reserved(&child_rel) {
+                continue;
+            }
+            let p = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&p) else { continue };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            children.insert(name_str.into_owned(), (p, meta.is_dir(), meta.len()));
+        }
+        for (_name_str, (p, is_dir, size)) in children {
+            if items.len() >= limit {
+                *truncated = true;
+                return Ok(());
+            }
+            let name = p.file_name().unwrap();
+            let child_rel = if rel.as_os_str().is_empty() { PathBuf::from(name) } else { rel.join(name) };
+            if is_dir {
+                let Ok(sub) = sandbox::checked_dir(root, dir, name) else { continue };
+                items.push(format!("{}/", child_rel.display()));
+                walk_dir(root, &sub, &child_rel, depth + 1, max_depth, limit, items, truncated)?;
+            } else if sandbox::regular(&fs::symlink_metadata(&p).map_err(|e| e.to_string())?).is_ok() {
+                items.push(format!("{} ({size} B)", child_rel.display()));
+            }
+        }
+        Ok(())
+    }
+
+    walk_dir(lock.root_fd(), &start_dir, &prefix, 1, max_depth, limit, &mut items, &mut truncated)?;
+    if items.is_empty() {
+        return Ok("(empty directory)".into());
+    }
+    if truncated {
+        items.push(format!("[truncated at {limit} entries]"));
+    }
+    Ok(items.join("\n"))
+}
+
+fn grep_files(
+    workspace: &Path,
+    pattern: &str,
+    rel_path: Option<&str>,
+    glob: Option<&str>,
+    case_insensitive: bool,
+    limit: usize,
+) -> Result<String> {
+    if pattern.is_empty() {
+        return Err("grep_files requires nonempty pattern".into());
+    }
+    let lock = sandbox::Lock::workspace(workspace)?;
+    let start_dir = lock.dir(rel_path.map(Path::new))?;
+    let prefix = rel_path.filter(|s| !s.trim().is_empty() && *s != ".").map(PathBuf::from).unwrap_or_default();
+    let limit = limit.clamp(1, 500);
+    let needle = if case_insensitive { pattern.to_ascii_lowercase() } else { pattern.to_owned() };
+
+    let mut scanned = 0usize;
+    let mut matches = Vec::new();
+    let mut truncated = false;
+    let mut stack = vec![(start_dir, prefix)];
+    while let Some((dir, rel)) = stack.pop() {
+        if matches.len() >= limit {
+            truncated = true;
+            break;
+        }
+        let Ok(rd) = fs::read_dir(fd_dir(&dir)) else { continue };
+        let mut entries = Vec::new();
+        for e in rd.flatten() {
+            entries.push(e);
+        }
+        entries.sort_by_key(|e| e.file_name());
+        let mut subdirs = Vec::new();
+        for entry in entries {
+            if scanned >= GREP_MAX_SCAN_FILES || matches.len() >= limit {
+                if matches.len() >= limit {
+                    truncated = true;
+                }
+                break;
+            }
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with(".teamagents-") {
+                continue;
+            }
+            let child_rel = if rel.as_os_str().is_empty() { PathBuf::from(&name) } else { rel.join(&name) };
+            if sandbox::reserved(&child_rel) {
+                continue;
+            }
+            let p = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&p) else { continue };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                if name == "node_modules" {
+                    continue;
+                }
+                if let Ok(sub) = sandbox::checked_dir(lock.root_fd(), &dir, &name) {
+                    subdirs.push((sub, child_rel));
+                }
+                continue;
+            }
+            if sandbox::regular(&meta).is_err() || meta.len() > GREP_FILE_LIMIT {
+                continue;
+            }
+            if let Some(g) = glob {
+                let rel_str = child_rel.to_string_lossy();
+                let target = if g.contains('/') { rel_str.as_ref() } else { &*name.to_string_lossy() };
+                if !glob_match(g, target) {
+                    continue;
+                }
+            }
+            scanned += 1;
+            let Ok(file) = sandbox::open_regular(&dir, &p) else { continue };
+            let mut raw = Vec::new();
+            if file.take(GREP_FILE_LIMIT + 1).read_to_end(&mut raw).is_err()
+                || raw.len() as u64 > GREP_FILE_LIMIT
+                || raw.contains(&0)
+            {
+                continue;
+            }
+            let Ok(text) = String::from_utf8(raw) else { continue };
+            for (idx, line) in text.lines().enumerate() {
+                let hit =
+                    if case_insensitive { line.to_ascii_lowercase().contains(&needle) } else { line.contains(&needle) };
+                if hit {
+                    let trimmed = line.trim_end();
+                    let snippet = if trimmed.len() > 300 {
+                        format!("{}...", &trimmed[..trimmed.floor_char_boundary(300)])
+                    } else {
+                        trimmed.to_owned()
+                    };
+                    matches.push(format!("{}:{}: {snippet}", child_rel.display(), idx + 1));
+                    if matches.len() >= limit {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
+        }
+        for sub in subdirs.into_iter().rev() {
+            stack.push(sub);
+        }
+    }
+    if matches.is_empty() {
+        return Ok(format!("No matches for `{pattern}`."));
+    }
+    if truncated {
+        matches.push(format!("[showing first {limit} matches]"));
+    }
+    Ok(matches.join("\n"))
+}
+
 fn opt_usize(action: &Value, key: &str) -> Result<Option<usize>> {
     let Some(v) = action.get(key).filter(|v| !v.is_null()) else {
         return Ok(None);
@@ -459,26 +738,59 @@ fn shell_timeout(action: &Value) -> Result<Duration> {
     Ok(Duration::from_millis(ms.clamp(100, MAX_SHELL_TIMEOUT.as_millis() as u64)))
 }
 
-pub fn execute_with_mode(workspace: &Path, action: &Value, staged: bool) -> Result<String> {
-    match field(action, "op")? {
+pub(crate) fn execute_with_options(
+    workspace: &Path,
+    action: &Value,
+    mode: SandboxMode,
+    on_chunk: Option<ChunkCallback<'_>>,
+) -> Result<String> {
+    let op = field(action, "op")?;
+    if mode.is_read_only() && matches!(op, "edit_file" | "apply_patch") {
+        return Err("workspace is in read-only mode; file edits are disabled".into());
+    }
+    match op {
         "read_file" => {
             let offset = opt_usize(action, "offset")?;
             let limit = opt_usize(action, "limit")?;
+            let line_numbers = opt_bool(action, "line_numbers")?.unwrap_or(false);
             let lock = sandbox::Lock::workspace(workspace)?;
             let (dir, target) = lock.parent(Path::new(field(action, "path")?))?;
-            load_slice(&dir, &target, offset, limit)
+            load_slice(&dir, &target, offset, limit, line_numbers)
         }
         "edit_file" => {
             let lock = sandbox::Lock::workspace(workspace)?;
             let (dir, target) = lock.parent(Path::new(field(action, "path")?))?;
             edit(&dir, &target, field(action, "old")?, field(action, "new")?)
         }
-        "shell" => shell(workspace, field(action, "command")?, shell_timeout(action)?, staged),
+        "apply_patch" => patch::apply_patch(workspace, field(action, "patch")?),
+        "list_dir" => {
+            let rel_path = opt_str(action, "path")?;
+            let depth = opt_usize(action, "depth")?.unwrap_or(2);
+            let limit = opt_usize(action, "limit")?.unwrap_or(200);
+            list_dir(workspace, rel_path, depth, limit)
+        }
+        "grep_files" => {
+            let pattern = field(action, "pattern")?;
+            let rel_path = opt_str(action, "path")?;
+            let glob = opt_str(action, "glob")?;
+            let ci = opt_bool(action, "case_insensitive")?.unwrap_or(false);
+            let limit = opt_usize(action, "limit")?.unwrap_or(100);
+            grep_files(workspace, pattern, rel_path, glob, ci, limit)
+        }
+        "shell" => shell_with_options(workspace, field(action, "command")?, shell_timeout(action)?, mode, on_chunk),
+        "read_skill" => context::read_skill_doc(workspace, field(action, "name")?),
+        "mcp_list" => mcp::list_tools_text(opt_str(action, "server")?),
+        "mcp_call" => mcp::call_tool_text(field(action, "server")?, field(action, "tool")?, action.get("arguments")),
         _ => Err("unknown workspace tool".into()),
     }
 }
 
 #[allow(dead_code)]
+pub fn execute_with_mode(workspace: &Path, action: &Value, staged: bool) -> Result<String> {
+    execute_with_options(workspace, action, if staged { SandboxMode::Staged } else { SandboxMode::Direct }, None)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn execute(workspace: &Path, action: &Value) -> Result<String> {
     execute_with_mode(workspace, action, false)
 }
@@ -639,5 +951,43 @@ mod tests {
         thread::sleep(Duration::from_millis(600));
         assert!(!t.0.join("leaked").exists() && !t.0.join("orphan").exists());
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn codex_native_read_list_grep_and_readonly_sandbox_work() {
+        let t = Temp::new();
+        fs::create_dir_all(t.0.join("src")).unwrap();
+        fs::write(t.0.join("src/main.rs"), "fn main() {\n    let Needle = 42;\n}\n").unwrap();
+        fs::write(t.0.join("src/bin.dat"), b"\x00\x01binary").unwrap();
+
+        let numbered = execute(&t.0, &json!({"op":"read_file","path":"src/main.rs","line_numbers":true})).unwrap();
+        assert_eq!(numbered, "L1: fn main() {\nL2:     let Needle = 42;\nL3: }\n");
+
+        let listed = execute(&t.0, &json!({"op":"list_dir","depth":2})).unwrap();
+        assert!(listed.contains("src/\n") && listed.contains("src/main.rs"), "{listed}");
+
+        let hits = execute(&t.0, &json!({"op":"grep_files","pattern":"needle","glob":"*.rs","case_insensitive":true}))
+            .unwrap();
+        assert_eq!(hits, "src/main.rs:2:     let Needle = 42;");
+
+        // Read-only mode refuses edit_file & apply_patch directly and mounts /workspace read-only in bwrap.
+        let ro_edit = execute_with_options(
+            &t.0,
+            &json!({"op":"edit_file","path":"src/main.rs","old":"42","new":"7"}),
+            SandboxMode::ReadOnly,
+            None,
+        )
+        .unwrap_err();
+        assert!(ro_edit.contains("read-only"));
+
+        let ro_shell = execute_with_options(
+            &t.0,
+            &json!({"op":"shell","command":"touch blocked.txt"}),
+            SandboxMode::ReadOnly,
+            None,
+        )
+        .unwrap_err();
+        assert!(ro_shell.contains("Read-only file system") || ro_shell.contains("failed"), "{ro_shell}");
+        assert!(!t.0.join("blocked.txt").exists());
     }
 }

@@ -3,6 +3,7 @@ use crate::{
     protocol::{
         outcome_label, preview, sanitize_inline, sanitize_multiline, ActionPreview, Policy, StageKind, TaskStatus,
     },
+    sandbox::SandboxMode,
     tui::{
         input::matching_commands,
         state::{
@@ -547,7 +548,11 @@ fn render_workspace(frame: &mut Frame, area: Rect, state: &mut AppState, pal: &P
     render_composer_dock(frame, chunks[4], state, pal, hits);
 
     if state.focus == Focus::Composer && state.overlay == Overlay::None {
-        render_slash_popup(frame, chunks[4], area, state, pal, hits);
+        if !matching_commands(state.input.as_str()).is_empty() {
+            render_slash_popup(frame, chunks[4], area, state, pal, hits);
+        } else if state.active_mention().is_some() {
+            render_mention_popup(frame, chunks[4], area, state, pal, hits);
+        }
     }
 }
 
@@ -811,7 +816,12 @@ fn render_welcome(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette
             Span::styled("   Model   ", pal.muted()),
             Span::styled(model_lbl, pal.secondary()),
         ]),
-        Line::from(vec![Span::styled("  Policy      ", pal.muted()), Span::styled(pol, pal.secondary())]),
+        Line::from(vec![
+            Span::styled("  Policy      ", pal.muted()),
+            Span::styled(pol, pal.secondary()),
+            Span::styled("   Sandbox   ", pal.muted()),
+            Span::styled(state.sandbox_mode.as_str(), pal.secondary()),
+        ]),
         Line::from(""),
         Line::from(Span::styled("▎ Workflow", Style::default().fg(pal.rainbow[6]).add_modifier(Modifier::BOLD))),
         Line::from(vec![
@@ -900,8 +910,89 @@ fn build_summary_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
         meta.push(ds("  ·  policy: ", pal.muted()));
         meta.push(ds(pol.as_str().to_owned(), if pol == Policy::Review { pal.active() } else { pal.muted() }));
     }
+    if let Some(sb) = &task.sandbox {
+        meta.push(ds("  ·  sandbox: ", pal.muted()));
+        meta.push(ds(sanitize_inline(sb), pal.secondary()));
+    }
     docs.push(DocLine::blank());
     docs.push(DocLine::from_spans(meta));
+    let mut telemetry = Vec::new();
+    if let Some(u) = &task.usage {
+        if u.input_tokens > 0 || u.output_tokens > 0 {
+            telemetry.push(ds("usage         ", pal.muted()));
+            telemetry.push(ds(format!("{} tok · {}% cached", u.input_tokens, u.cache_hit_rate_pct), pal.secondary()));
+        }
+    }
+    if task.pending_steerings > 0 {
+        if !telemetry.is_empty() {
+            telemetry.push(ds("  ·  ", pal.muted()));
+        } else {
+            telemetry.push(ds("steering      ", pal.muted()));
+        }
+        telemetry.push(ds(format!("{} steering queued", task.pending_steerings), pal.accent()));
+    }
+    if !telemetry.is_empty() {
+        docs.push(DocLine::from_spans(telemetry));
+    }
+    if task.live.is_some() || !task.live_children.is_empty() {
+        docs.push(DocLine::blank());
+        docs.push(DocLine::text("Live Activity", pal.section_title()));
+        let mut live_entries: Vec<(String, &crate::protocol::LiveActivity)> = Vec::new();
+        if let Some(l) = &task.live {
+            live_entries.push((format!("@{}", sanitize_inline(&task.agent)), l));
+        }
+        let mut child_ids: Vec<&String> = task.live_children.keys().collect();
+        child_ids.sort();
+        for cid in child_ids {
+            if let Some(l) = task.live_children.get(cid) {
+                live_entries.push((sanitize_inline(cid), l));
+            }
+        }
+        for (actor, l) in live_entries {
+            let mut spans = vec![
+                ds(format!("  ▸ {actor} "), pal.accent_bold()),
+                ds(format!("[{}]", sanitize_inline(&l.phase)), pal.secondary()),
+            ];
+            if !l.active_tools.is_empty() {
+                spans.push(ds("  tools: ", pal.muted()));
+                spans.push(ds(sanitize_inline(&l.active_tools.join(", ")), pal.primary()));
+            }
+            docs.push(DocLine::from_spans(spans));
+            if !l.commentary.is_empty() {
+                docs.push(DocLine::text(
+                    format!("    {}", sanitize_inline(&preview(&l.commentary, 140))),
+                    pal.primary(),
+                ));
+            } else if !l.reasoning.is_empty() {
+                docs.push(DocLine::text(
+                    format!("    … {}", sanitize_inline(&preview(&l.reasoning, 140))),
+                    pal.muted(),
+                ));
+            }
+            if !l.shell_tail.is_empty() {
+                for tail in
+                    sanitize_multiline(&l.shell_tail).lines().rev().take(3).collect::<Vec<_>>().into_iter().rev()
+                {
+                    docs.push(DocLine::text(format!("    $ {tail}"), pal.dim()));
+                }
+            }
+        }
+    }
+    if !task.plan.is_empty() {
+        docs.push(DocLine::blank());
+        docs.push(DocLine::text(format!("Plan ({})", task.plan.len()), pal.section_title()));
+        for step in &task.plan {
+            let (mark, st) = match step.status.as_str() {
+                "completed" => ("✓", pal.ok()),
+                "in_progress" => ("▸", pal.accent_bold()),
+                _ => (" ", pal.muted()),
+            };
+            docs.push(DocLine::from_spans(vec![
+                ds(format!("  [{mark}] "), st),
+                ds(sanitize_inline(&step.step), pal.primary()),
+            ]));
+        }
+    }
     if let Some(target) = state.continuation_target() {
         docs.push(DocLine::from_spans(vec![
             ds("continuation  ", pal.muted()),
@@ -1079,7 +1170,7 @@ fn build_summary_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
             docs.push(DocLine::from_spans(vec![
                 ds("  • ", pal.dim()),
                 ds(format!("[{ok_lbl}] "), ok_style),
-                ds(format!("{} {}", e.action.op(), sanitize_inline(&preview(e.action.label(), 80))), pal.secondary()),
+                ds(format!("{} {}", e.action.op(), sanitize_inline(&preview(&e.action.label(), 80))), pal.secondary()),
             ]));
         }
         for r in task.subtree_receipts.iter().take(6) {
@@ -1123,7 +1214,7 @@ fn build_evidence_docs(state: &AppState, pal: &Palette) -> Vec<DocLine> {
                 ds(format!("#{} ", idx + 1), pal.dim()),
                 ds(format!("[{ok_lbl}] "), ok_style.add_modifier(Modifier::BOLD)),
                 ds(entry.action.op().to_owned(), pal.accent_bold()),
-                ds(format!("  {}", sanitize_inline(entry.action.label())), pal.primary()),
+                ds(format!("  {}", sanitize_inline(&entry.action.label())), pal.primary()),
             ]));
             if !entry.result.is_empty() {
                 for line in sanitize_multiline(&entry.result).lines() {
@@ -1365,6 +1456,48 @@ fn push_action_preview_docs(docs: &mut Vec<DocLine>, action: &ActionPreview, pal
                 docs.push(DocLine::text(format!("  + {line}"), pal.diff_add()).with_bg(pal.diff_add_bg));
             }
         }
+        ActionPreview::ApplyPatch { patch } => {
+            docs.push(DocLine::from_spans(vec![ds("  apply_patch:", pal.accent_bold())]));
+            for (kind, text) in crate::patch::preview_patch(patch).into_iter().take(60) {
+                match kind {
+                    'H' | '@' => docs.push(DocLine::text(format!("  {text}"), pal.accent_bold())),
+                    '+' => docs.push(DocLine::text(format!("  +{text}"), pal.diff_add()).with_bg(pal.diff_add_bg)),
+                    '-' => docs.push(DocLine::text(format!("  -{text}"), pal.diff_del()).with_bg(pal.diff_del_bg)),
+                    _ => docs.push(DocLine::text(format!("   {text}"), pal.secondary())),
+                }
+            }
+        }
+        ActionPreview::ListDir { path } => {
+            docs.push(DocLine::from_spans(vec![
+                ds("  list_dir: ", pal.accent_bold()),
+                ds(sanitize_inline(path), pal.primary()),
+            ]));
+        }
+        ActionPreview::GrepFiles { pattern, path } => {
+            let suffix = path.as_deref().map(|p| format!(" in {p}")).unwrap_or_default();
+            docs.push(DocLine::from_spans(vec![
+                ds("  grep_files: ", pal.accent_bold()),
+                ds(sanitize_inline(&format!("{pattern}{suffix}")), pal.primary()),
+            ]));
+        }
+        ActionPreview::ReadSkill { name } => {
+            docs.push(DocLine::from_spans(vec![
+                ds("  read_skill: ", pal.accent_bold()),
+                ds(sanitize_inline(name), pal.primary()),
+            ]));
+        }
+        ActionPreview::McpList { server } => {
+            docs.push(DocLine::from_spans(vec![
+                ds("  mcp_list: ", pal.accent_bold()),
+                ds(sanitize_inline(server.as_deref().unwrap_or("all")), pal.primary()),
+            ]));
+        }
+        ActionPreview::McpCall { server, tool } => {
+            docs.push(DocLine::from_spans(vec![
+                ds("  mcp_call: ", pal.accent_bold()),
+                ds(sanitize_inline(&format!("{server}:{tool}")), pal.primary()),
+            ]));
+        }
         ActionPreview::Other { op, summary } => {
             docs.push(DocLine::from_spans(vec![
                 ds(format!("  {}: ", sanitize_inline(op)), pal.accent_bold()),
@@ -1489,6 +1622,8 @@ fn render_composer_dock(frame: &mut Frame, area: Rect, state: &AppState, pal: &P
     // Top hairline cleanly separates workspace from the surface-tinted composer dock.
     let line_style = pal.border(focused).bg(pal.canvas_bg);
     let cont_target = state.continuation_target();
+    let can_steer = cont_target.is_none()
+        && state.selected_root_task().is_some_and(|r| !r.status.is_terminal() && r.kind != StageKind::Legacy);
     if let Some(root_id) = &state.answering_root {
         let mut w = HitSpanWriter::new(rows[0], hits);
         let lbl = format!("─── Answering root {} (Esc cancel) ", preview(root_id, 12));
@@ -1503,6 +1638,8 @@ fn render_composer_dock(frame: &mut Frame, area: Rect, state: &AppState, pal: &P
         let new_lbl = " + New (Ctrl+N) ";
         let left_lbl = if let Some(target) = &cont_target {
             format!("─── ↳ Continue @{} ({}) ", sanitize_inline(&target.label), target.kind)
+        } else if can_steer {
+            "─── ⇢ Steer active session ".to_owned()
         } else if state.selected_root_task().is_some_and(|r| !r.status.is_terminal()) {
             "─── Session active ".to_owned()
         } else {
@@ -1510,7 +1647,7 @@ fn render_composer_dock(frame: &mut Frame, area: Rect, state: &AppState, pal: &P
         };
         let avail_left = (rows[0].width as usize).saturating_sub(new_lbl.width() + 2);
         let left_fit = truncate_display(&left_lbl, avail_left);
-        let left_style = if cont_target.is_some() { pal.accent().bg(pal.canvas_bg) } else { line_style };
+        let left_style = if cont_target.is_some() || can_steer { pal.accent().bg(pal.canvas_bg) } else { line_style };
         w.push(left_fit, left_style, None);
         let end_x = rows[0].x + rows[0].width;
         let pill_x = end_x.saturating_sub(new_lbl.width() as u16 + 1);
@@ -1542,6 +1679,8 @@ fn render_composer_dock(frame: &mut Frame, area: Rect, state: &AppState, pal: &P
         (" ? ", pal.accent_soft().bg(pal.surface_bg))
     } else if cont_target.is_some() {
         (" ↳ ", if focused { pal.accent().bg(pal.surface_bg) } else { pal.muted().bg(pal.surface_bg) })
+    } else if can_steer {
+        (" ⇢ ", if focused { pal.accent().bg(pal.surface_bg) } else { pal.muted().bg(pal.surface_bg) })
     } else if focused {
         (" › ", pal.accent_bold().bg(pal.surface_bg))
     } else {
@@ -1562,10 +1701,12 @@ fn render_composer_dock(frame: &mut Frame, area: Rect, state: &AppState, pal: &P
                 sanitize_inline(&target.label)
             );
             placeholder_buf.as_str()
+        } else if can_steer {
+            "Type steering guidance (applied on next turn), or Ctrl+N for new session…"
         } else if state.selected_task().is_some() {
             "This session view cannot continue directly — press Ctrl+N or click + New for a fresh session…"
         } else {
-            "New session — describe a coding or research task, or type / for commands (Shift+Enter newline)…"
+            "New session — describe a coding or research task, or type / for commands (@ for files, Shift+Enter newline)…"
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -1633,8 +1774,12 @@ fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState, pal: &Pale
         pal.muted().bg(pal.sidebar_bg)
     };
     writer.push(pol_lbl, pol_style, None);
-    if state.staged_mode {
-        writer.push(" · staged", Style::default().fg(pal.rainbow[2]).bg(pal.sidebar_bg), None);
+    match state.sandbox_mode {
+        SandboxMode::Direct => {}
+        SandboxMode::Staged => writer.push(" · staged", Style::default().fg(pal.rainbow[2]).bg(pal.sidebar_bg), None),
+        SandboxMode::ReadOnly => {
+            writer.push(" · read-only", Style::default().fg(pal.rainbow[3]).bg(pal.sidebar_bg), None);
+        }
     }
     if let Some(chk) = &state.armed_check {
         writer.push(format!(" · check: {}", truncate_display(chk, 18)), pal.accent_soft().bg(pal.sidebar_bg), None);
@@ -1699,6 +1844,52 @@ fn render_slash_popup(
         ]);
         frame.render_widget(Paragraph::new(line), row_rect);
         hits.push(row_rect, HitTarget::SlashItem(orig_idx));
+    }
+}
+
+fn render_mention_popup(
+    frame: &mut Frame,
+    composer: Rect,
+    bounds: Rect,
+    state: &AppState,
+    pal: &Palette,
+    hits: &mut HitMap,
+) {
+    let Some((_, _, _, matches)) = state.active_mention() else {
+        return;
+    };
+    let max_items = matches.len().min(9);
+    let h = (max_items + 2) as u16;
+    let w = bounds.width.clamp(28, 72).min(bounds.width);
+    let y = composer.y.saturating_sub(h);
+    let rect = Rect::new(composer.x, y, w, h.min(bounds.height));
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(pal.elevated())
+        .border_style(pal.border(true))
+        .title(Span::styled(" Workspace Files (@) — Tab/Enter or Click ", pal.accent_bold()));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let sel = state.mention_idx % matches.len();
+    for (row_idx, path) in matches.iter().take(max_items).enumerate() {
+        let ry = inner.y + row_idx as u16;
+        if ry >= inner.y + inner.height {
+            break;
+        }
+        let selected = row_idx == sel;
+        let bg = if selected { pal.selected_bg } else { pal.elevated_bg };
+        let row_rect = Rect::new(inner.x, ry, inner.width, 1);
+        let text = format!(" @{}", truncate_display(path, inner.width.saturating_sub(3) as usize));
+        let pad = (inner.width as usize).saturating_sub(text.width());
+        let line = Line::from(vec![
+            Span::styled(text, if selected { pal.selected_row() } else { pal.primary().bg(bg) }),
+            Span::styled(" ".repeat(pad), Style::default().bg(bg)),
+        ]);
+        frame.render_widget(Paragraph::new(line), row_rect);
+        hits.push(row_rect, HitTarget::MentionItem(row_idx));
     }
 }
 
@@ -1788,26 +1979,74 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
                 frame.render_widget(Paragraph::new(w.finish()), body[1]);
             }
         }
-        Overlay::Model { model_input, effort_idx, catalog, selected_catalog, field } => {
-            let rect = centered_rect(area, 78, 22);
+        Overlay::Model {
+            providers,
+            provider_idx,
+            initial_provider: _,
+            model_input,
+            effort_idx,
+            catalog,
+            selected_catalog,
+            field,
+        } => {
+            let rect = centered_rect(area, 82, 24);
             hits.push(rect, HitTarget::ModalSurface);
             frame.render_widget(Clear, rect);
-            let provider = state.model.as_ref().map_or("unknown", |m| m.provider.as_str());
+            let active_p = providers.get(*provider_idx);
+            let provider = active_p
+                .map(|p| p.name.as_str())
+                .unwrap_or_else(|| state.model.as_ref().map_or("unknown", |m| m.provider.as_str()));
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .style(pal.elevated())
                 .border_style(pal.border(true))
                 .title(Span::styled(
-                    format!(" Model & Effort ({provider}) — [Tab] Field  [Enter] Save  [Esc] Close "),
+                    format!(" Provider & Model ({provider}) — [Tab] Field  [Enter] Save  [Esc] Close "),
                     pal.accent_bold(),
                 ));
             let inner = block.inner(rect);
             frame.render_widget(block, rect);
-            if inner.height < 6 || inner.width < 20 {
+            if inner.height < 9 || inner.width < 20 {
                 return;
             }
-            let input_rect = Rect::new(inner.x, inner.y, inner.width, 1);
+            let prov_rect = Rect::new(inner.x, inner.y, inner.width, 1);
+            let mut pw = HitSpanWriter::new(prov_rect, hits);
+            pw.push(
+                " Provider: ",
+                if *field == ModelField::ProviderBar { pal.accent_bold() } else { pal.muted() },
+                Some(HitTarget::ModalModelField(ModelField::ProviderBar)),
+            );
+            for (i, p) in providers.iter().enumerate() {
+                if i > 0 {
+                    pw.push(" ", pal.elevated(), None);
+                }
+                let style = if i == *provider_idx { pal.pill(pal.accent) } else { pal.pill_inactive() };
+                let lbl = if p.ready {
+                    format!(" {} ", sanitize_inline(&p.name))
+                } else {
+                    format!(" {}! ", sanitize_inline(&p.name))
+                };
+                pw.push(lbl, style, Some(HitTarget::ModalProviderOption(i)));
+            }
+            frame.render_widget(Paragraph::new(pw.finish()), prov_rect);
+
+            if let Some(p) = active_p {
+                let info_line = if let Some(env_name) = p.api_key_env.as_deref() {
+                    format!("           {} · key env: {} · {}", p.wire, env_name, p.status)
+                } else {
+                    format!("           {} · {}", p.wire, p.status)
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        truncate_display(&sanitize_inline(&info_line), inner.width as usize),
+                        if p.ready { pal.dim() } else { pal.error() },
+                    ))),
+                    Rect::new(inner.x, inner.y + 1, inner.width, 1),
+                );
+            }
+
+            let input_rect = Rect::new(inner.x, inner.y + 2, inner.width, 1);
             hits.push(input_rect, HitTarget::ModalModelField(ModelField::ModelInput));
             let input_line = Line::from(vec![
                 Span::styled(
@@ -1825,7 +2064,7 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
             ]);
             frame.render_widget(Paragraph::new(input_line), input_rect);
 
-            let eff_rect = Rect::new(inner.x, inner.y + 2, inner.width, 1);
+            let eff_rect = Rect::new(inner.x, inner.y + 4, inner.width, 1);
             let mut ew = HitSpanWriter::new(eff_rect, hits);
             ew.push(
                 " Effort:   ",
@@ -1841,18 +2080,18 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
             }
             frame.render_widget(Paragraph::new(ew.finish()), eff_rect);
 
-            let cat_y = inner.y + 4;
+            let cat_y = inner.y + 6;
             let save_y = inner.y + inner.height - 1;
             match catalog {
                 CatalogState::Idle => frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
-                        " Enter a model ID above (blank resets to TEAMAGENTS_MODEL).",
+                        " Enter a model ID above (blank resets to provider default).",
                         pal.muted(),
                     ))),
                     Rect::new(inner.x, cat_y, inner.width, 1),
                 ),
                 CatalogState::Loading => frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(" Loading ChatGPT account model catalog…", pal.active()))),
+                    Paragraph::new(Line::from(Span::styled(" Loading model catalog…", pal.active()))),
                     Rect::new(inner.x, cat_y, inner.width, 1),
                 ),
                 CatalogState::Error(e) => frame.render_widget(
@@ -1865,7 +2104,7 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
                 CatalogState::Loaded(list) => {
                     frame.render_widget(
                         Paragraph::new(Line::from(Span::styled(
-                            format!(" Account Catalog ({}) — click or ↑↓:", list.len()),
+                            format!(" Catalog ({}) — click or ↑↓:", list.len()),
                             if *field == ModelField::CatalogList { pal.accent_bold() } else { pal.muted() },
                         ))),
                         Rect::new(inner.x, cat_y, inner.width, 1),
@@ -1896,7 +2135,7 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
             if *field == ModelField::ModelInput && inner.width > 12 {
                 let (_, cur_x, _) = model_input.visual_layout(usize::MAX);
                 let cx = inner.x + 11 + cur_x.min(inner.width.saturating_sub(12));
-                frame.set_cursor_position(Position::new(cx, inner.y));
+                frame.set_cursor_position(Position::new(cx, inner.y + 2));
             }
         }
         Overlay::Check { input } => {
@@ -1969,8 +2208,58 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
                 }
             }
         }
+        Overlay::TextView { title, lines, scroll, is_diff } => {
+            let rect = centered_rect(area, 96, 28);
+            hits.push(rect, HitTarget::ModalSurface);
+            frame.render_widget(Clear, rect);
+            let close_x = rect.x + rect.width.saturating_sub(11);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .style(pal.elevated())
+                .border_style(pal.border(true))
+                .title(Span::styled(
+                    format!(" {} — [↑↓/PgUp/PgDn] Scroll  [Esc] Close ", sanitize_inline(title)),
+                    pal.accent_bold(),
+                ));
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            hits.push(Rect::new(close_x, rect.y, 10.min(rect.width), 1), HitTarget::ModalClose);
+            let rendered: Vec<Line> = lines
+                .iter()
+                .map(|raw| {
+                    let clean = sanitize_inline(raw);
+                    let style = if *is_diff {
+                        if clean.starts_with("@@") || clean.starts_with("diff --git") {
+                            pal.accent_bold().bg(pal.elevated_bg)
+                        } else if clean.starts_with('+') && !clean.starts_with("+++") {
+                            pal.diff_add().bg(pal.diff_add_bg)
+                        } else if clean.starts_with('-') && !clean.starts_with("---") {
+                            pal.diff_del().bg(pal.diff_del_bg)
+                        } else {
+                            pal.primary().bg(pal.elevated_bg)
+                        }
+                    } else {
+                        pal.primary().bg(pal.elevated_bg)
+                    };
+                    Line::from(Span::styled(clean, style))
+                })
+                .collect();
+            let total = rendered.len();
+            let view_h = inner.height as usize;
+            let pos = (*scroll as usize).min(total.saturating_sub(view_h.max(1)));
+            frame.render_widget(Paragraph::new(rendered).scroll((pos as u16, 0)), inner);
+            if total > view_h {
+                let mut sb = ScrollbarState::new(total.saturating_sub(view_h) + 1).position(pos);
+                frame.render_stateful_widget(
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight).style(pal.dim()),
+                    inner,
+                    &mut sb,
+                );
+            }
+        }
         Overlay::Help => {
-            let rect = centered_rect(area, 82, 22);
+            let rect = centered_rect(area, 86, 25);
             hits.push(rect, HitTarget::ModalSurface);
             frame.render_widget(Clear, rect);
             let block = Block::default()
@@ -1983,21 +2272,24 @@ fn render_modal(frame: &mut Frame, area: Rect, state: &AppState, pal: &Palette, 
             frame.render_widget(block, rect);
             let help_lines = vec![
                 Line::from(Span::styled(" Keyboard Shortcuts (Navigation, Layout & Actions)", pal.section_title())),
-                Line::from("  Tab/BackTab  Cycle panes / complete /cmd   Ctrl+N   New blank session"),
-                Line::from("  Ctrl+B       Toggle sidebar                Ctrl+P   Pending approvals queue"),
-                Line::from("  Alt+1..5     Inspector tabs                F1 / ?   Toggle help sheet"),
-                Line::from("  Ctrl+Q       Leave TUI (daemon keeps running)"),
-                Line::from("  ↑↓ / j k     Move selection / scroll       PgUp/Dn  Scroll fast"),
-                Line::from("  [ / ]        Sessions / Agents sidebar     Space    Fold or pick"),
-                Line::from("  a / d / r    Approve / deny / reply        x        Cancel active"),
-                Line::from("  Del ×2       Arm then delete selected root session"),
-                Line::from("  i / /        Jump to composer (Esc leaves / cancels delete)"),
+                Line::from("  Tab/BackTab  Complete /cmd or @file / cycle panes   Ctrl+N   New blank session"),
+                Line::from("  Ctrl+B       Toggle sidebar                         Ctrl+P   Pending approvals queue"),
+                Line::from("  Alt+1..5     Inspector tabs                         F1 / ?   Toggle help sheet"),
+                Line::from("  Ctrl+Q       Leave TUI (daemon keeps running)       Del ×2   Delete root session"),
+                Line::from("  ↑↓ / j k     Move selection / scroll                PgUp/Dn  Scroll fast"),
+                Line::from("  [ / ]        Sessions / Agents sidebar              Space    Fold or pick"),
+                Line::from("  a / d / r    Approve / deny / reply                 x        Cancel active"),
+                Line::from("  i / /        Jump to composer (plain input on running root sends mid-turn steer)"),
                 Line::from(""),
                 Line::from(Span::styled(" Slash Commands (Configuration & Workflows)", pal.section_title())),
-                Line::from("  /model [MODEL [EFFORT]|effort E|default]   Model & reasoning effort"),
-                Line::from("  /to [NAME]                                 Pick or set target agent"),
-                Line::from("  /check [COMMAND|off]                       Arm/edit/clear --check"),
-                Line::from("  /review [on|off]       /staged [on|off]    Toggle review or staged sandbox"),
+                Line::from("  /model [provider P|MODEL [EFFORT]|...]     Switch provider, model & effort"),
+                Line::from("  /provider [list|use P|add ...|remove NAME] Manage custom providers"),
+                Line::from("  /to [NAME]             /check [CMD|off]    Pick agent or arm --check"),
+                Line::from("  /sandbox [direct|staged|read-only]         Select workspace sandbox mode"),
+                Line::from("  /plan TEXT             /review code [BASE] Run read-only plan or code review"),
+                Line::from("  /diff [BASE]           /steer TEXT         View git diff or steer active run"),
+                Line::from("  /compact               /status             Compact active root or inspect status"),
+                Line::from("  /skills                /mcp                Inspect discovered SKILL.md & MCP"),
                 Line::from("  /wb [get|set|append|resolve|del] ...       Inspect or edit whiteboard"),
                 Line::from("  /new [TEXT]            /answer ROOT_ID TEXT  New session or reply"),
                 Line::from("  /clear                 /stop               Clear feed / stop daemon"),
@@ -2066,7 +2358,7 @@ mod tests {
     }
 
     fn sample_state() -> AppState {
-        let mut state = AppState::new("team-agents".into(), "default".into(), true, false);
+        let mut state = AppState::new("team-agents".into(), "default".into(), true, SandboxMode::Direct);
         state.palette = RAINBOW_PALETTE;
         let root = TaskRecord::from_value(&json!({
             "id": "r1", "root": "r1", "agent": "default", "status": "done",
@@ -2086,6 +2378,7 @@ mod tests {
             tasks: Ok(vec![root, child]),
             members: Ok(vec![Member { name: "default".into() }, Member { name: "worker".into() }]),
             model: Ok(ModelConfig { provider: "api".into(), model: Some("gpt-5".into()), effort: Some("high".into()) }),
+            providers: None,
         });
         state
     }
@@ -2174,5 +2467,68 @@ mod tests {
             );
             assert_eq!(state.inspector_tab, InspectorTab::Evidence);
         }
+    }
+
+    #[test]
+    fn renders_plan_live_activity_mentions_and_diff_overlay() {
+        let mut state = sample_state();
+        let active = TaskRecord::from_value(&json!({
+            "id": "r2", "root": "r2", "agent": "default", "status": "running", "kind": "root",
+            "sandbox": "read_only", "pending_steerings": 1,
+            "usage": {"input_tokens": 4200, "cached_tokens": 3150, "output_tokens": 210, "cache_hit_rate": 0.75, "last_input_tokens": 1800},
+            "plan": [{"step": "Inspect store.rs", "status": "completed"}, {"step": "Patch UI", "status": "in_progress"}],
+            "live": {"phase": "running", "reasoning": "", "commentary": "Checking tree rendering", "active_tools": ["read_file"], "shell_tail": "line1"},
+            "evidence": [{"action": {"op": "apply_patch", "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch"}, "ok": true, "result": "M a.txt (+1/-1)"}]
+        }))
+        .unwrap();
+        state.apply_backend_event(BackendEvent::Snapshot {
+            tasks: Ok(vec![active]),
+            members: Ok(vec![Member { name: "default".into() }]),
+            model: Ok(ModelConfig { provider: "deepseek".into(), model: Some("deepseek-flash".into()), effort: None }),
+            providers: None,
+        });
+        state.apply_backend_event(BackendEvent::FilesLoaded(vec!["src/tui/ui.rs".into(), "Cargo.toml".into()]));
+        state.selected_task_id = Some("r2".into());
+        state.focus = Focus::Composer;
+
+        let (summary_view, _, _) = render_and_hits(&mut state, 128, 38);
+        assert!(summary_view.contains("Live Activity") && summary_view.contains("read_file"));
+        assert!(summary_view.contains("Plan (2)") && summary_view.contains("Inspect store.rs"));
+        assert!(summary_view.contains("4200 tok") && summary_view.contains("75% cached"));
+        assert!(summary_view.contains("Steer active session"));
+
+        state.input.set_text("check @ui.rs");
+        let (_, _, hits) = render_and_hits(&mut state, 128, 38);
+        assert!(hits.entries.iter().any(|(_, t)| matches!(t, HitTarget::MentionItem(_))));
+
+        state.input.clear();
+        state.inspector_tab = InspectorTab::Evidence;
+        let (ev_view, _, _) = render_and_hits(&mut state, 128, 38);
+        assert!(ev_view.contains("apply_patch") && ev_view.contains("M a.txt (+1/-1)"));
+
+        let appr_child = TaskRecord::from_value(&json!({
+            "id": "c-patch", "root": "r2", "parent": "r2", "agent": "worker",
+            "status": "approval", "approval_id": "ap-patch",
+            "action": {"op": "apply_patch", "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch"}
+        }))
+        .unwrap();
+        state.apply_backend_event(BackendEvent::Snapshot {
+            tasks: Ok(vec![appr_child]),
+            members: Ok(vec![Member { name: "default".into() }]),
+            model: Ok(ModelConfig { provider: "deepseek".into(), model: Some("deepseek-flash".into()), effort: None }),
+            providers: None,
+        });
+        state.overlay = Overlay::Approvals { selected: 0 };
+        let (appr_view, _, _) = render_and_hits(&mut state, 128, 38);
+        assert!(appr_view.contains("apply_patch:") && appr_view.contains("+new"));
+
+        state.overlay = Overlay::TextView {
+            title: "Workspace Diff".into(),
+            lines: vec!["@@ -1,1 +1,1 @@".into(), "-old line".into(), "+new line".into()],
+            scroll: 0,
+            is_diff: true,
+        };
+        let (diff_view, _, _) = render_and_hits(&mut state, 128, 38);
+        assert!(diff_view.contains("Workspace Diff") && diff_view.contains("+new line"));
     }
 }
